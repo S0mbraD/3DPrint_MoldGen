@@ -236,7 +236,7 @@ export function useRunFEA() {
         result: data.result as FEAResultInfo,
       };
     },
-    onSuccess: ({ feaId, result }) => store.setFEAResult(feaId, result),
+    onSuccess: ({ feaId, result }) => store.setFEAResult(feaId, result as unknown as Record<string, unknown>),
     onError: () => store.setFEARunning(false),
   });
 }
@@ -250,7 +250,7 @@ export function useFetchFEAVisualization() {
       if (!resp.ok) throw new Error(await resp.text());
       return (await resp.json()) as FEAVisualizationData;
     },
-    onSuccess: (data) => store.setFEAVisualizationData(data),
+    onSuccess: (data) => store.setFEAVisualizationData(data as unknown as Record<string, unknown>),
   });
 }
 

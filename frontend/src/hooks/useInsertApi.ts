@@ -35,21 +35,7 @@ export function useGenerateInserts() {
   const { setInsertId, setPlates, setAssemblyValid, setValidationMessages, setGenerating } =
     useInsertStore();
   return useMutation({
-    mutationFn: async (params: {
-      model_id: string;
-      organ_type?: string;
-      anchor_type?: string;
-      insert_type?: string;
-      n_plates?: number;
-      thickness?: number;
-      mold_id?: string;
-      conformal_offset?: number;
-      rib_height?: number;
-      rib_spacing?: number;
-      lattice_cell_size?: number;
-      lattice_strut_diameter?: number;
-      lattice_type?: string;
-    }) => {
+    mutationFn: async (params: Record<string, unknown>) => {
       setGenerating(true);
       const res = await fetch(`${API}/generate`, {
         method: "POST",

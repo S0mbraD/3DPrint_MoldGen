@@ -1,4 +1,4 @@
-"""InsertAgent — 内嵌支撑板设计（AI辅助位置分析+自动生成+装配验证）"""
+"""InsertAgent — 内嵌支撑板设计（AI辅助板型分析+锚固+立柱+装配验证）"""
 
 from __future__ import annotations
 
@@ -7,15 +7,17 @@ from moldgen.ai.agent_base import AgentContext, AgentRole, BaseAgent, StepResult
 
 class InsertAgent(BaseAgent):
     ORGAN_STRATEGIES = {
-        "肝": ("solid", "mesh_holes", "中央横断面板"),
-        "肾": ("solid", "mesh_holes", "中央横断面板"),
-        "脑": ("solid", "mesh_holes", "中央横断面板"),
-        "胃": ("hollow", "grooves", "内壁支撑环"),
-        "膀胱": ("hollow", "grooves", "内壁支撑环"),
-        "血管": ("tubular", "bumps", "轴向骨架"),
-        "肠": ("tubular", "bumps", "轴向骨架"),
-        "皮肤": ("sheet", "diamond", "底板"),
-        "肌肉": ("sheet", "diamond", "底板"),
+        "肝": ("solid", "conformal", "mesh_holes", "仿形板+贯穿孔"),
+        "肾": ("solid", "conformal", "mesh_holes", "仿形板+贯穿孔"),
+        "脑": ("solid", "conformal", "grooves", "仿形板+沟槽"),
+        "胃": ("hollow", "flat", "bumps", "平板+凸起互锁"),
+        "膀胱": ("hollow", "flat", "bumps", "平板+凸起互锁"),
+        "血管": ("tubular", "flat", "mesh_holes", "平板+贯穿孔"),
+        "肠": ("tubular", "flat", "grooves", "平板+沟槽"),
+        "手臂": ("limb", "ribbed", "mesh_holes", "加强筋板+贯穿孔"),
+        "腿": ("limb", "ribbed", "mesh_holes", "加强筋板+贯穿孔"),
+        "皮肤": ("sheet", "lattice", "diamond", "格栅板+菱形纹"),
+        "肌肉": ("sheet", "ribbed", "bumps", "加强筋板+凸起"),
     }
 
     def __init__(self):
@@ -27,16 +29,17 @@ class InsertAgent(BaseAgent):
 
     @property
     def description(self) -> str:
-        return "支撑板设计Agent — 位置分析/自动生成/锚固结构/装配验证"
+        return "内嵌支撑板设计Agent — 板型分析/锚固设计/立柱布置/装配验证"
 
     @property
     def system_prompt(self) -> str:
         return (
             "你是 MoldGen 的支撑板设计专家。你结合解剖学知识和工程经验，"
-            "为硅胶模具设计内嵌支撑板。核心能力：分析模型几何结构确定位置、"
-            "根据器官类型选择锚固结构、确保可一体置入模具并被硅胶包裹、验证装配。"
-            "器官策略：实质性器官→网孔锚固，空腔器官→沟槽锚固，"
-            "管道结构→凸起锚固，组织片→菱形纹锚固。"
+            "为硅胶教具设计内嵌结构加固板。核心概念：支撑板是置于硅胶教具"
+            "内部的刚性结构板，通过锚固特征（贯穿孔/凸起/沟槽/燕尾榫）与"
+            "硅胶结合，并通过细小支撑立柱穿过模具壁定位。"
+            "板型：平板(截面挤出)、仿形板(曲面跟随)、加强筋板(平板+肋条)、"
+            "格栅板(轻量点阵)。"
         )
 
     def get_available_tools(self) -> list[str]:
@@ -54,24 +57,24 @@ class InsertAgent(BaseAgent):
         if not context.model_id:
             return StepResult(step_name=task, success=False, error="未加载模型")
 
-        organ_type, anchor_type = self._detect_organ(task)
+        organ_type, insert_type, anchor_type = self._detect_organ(task)
 
-        if "分析" in task or "位置" in task:
+        if "分析" in task or "位置" in task or "推荐" in task:
             return await self._analyze(context, organ_type)
 
-        if "生成" in task or "添加" in task or "支撑" in task:
-            return await self._full_pipeline(context, organ_type, anchor_type)
+        if "生成" in task or "添加" in task or "支撑" in task or "板" in task:
+            return await self._full_pipeline(context, organ_type, insert_type, anchor_type)
 
         if "验证" in task or "检查" in task:
             return await self._validate(context)
 
-        return await self._full_pipeline(context, organ_type, anchor_type)
+        return await self._full_pipeline(context, organ_type, insert_type, anchor_type)
 
-    def _detect_organ(self, task: str) -> tuple[str, str | None]:
-        for keyword, (organ_type, anchor, _desc) in self.ORGAN_STRATEGIES.items():
+    def _detect_organ(self, task: str) -> tuple[str, str | None, str | None]:
+        for keyword, (organ_type, ins_type, anc_type, _desc) in self.ORGAN_STRATEGIES.items():
             if keyword in task:
-                return organ_type, anchor
-        return "general", None
+                return organ_type, ins_type, anc_type
+        return "general", None, None
 
     async def _analyze(self, ctx: AgentContext, organ_type: str) -> StepResult:
         r = await self.call_tool(
@@ -85,16 +88,21 @@ class InsertAgent(BaseAgent):
         )
 
     async def _full_pipeline(
-        self, ctx: AgentContext, organ_type: str, anchor_type: str | None,
+        self, ctx: AgentContext, organ_type: str,
+        insert_type: str | None, anchor_type: str | None,
     ) -> StepResult:
         tool_calls = []
-        r = await self.call_tool(
-            "insert_generate",
-            model_id=ctx.model_id,
-            organ_type=organ_type,
-            anchor_type=anchor_type,
-            mold_id=ctx.mold_id,
-        )
+        params: dict = {
+            "model_id": ctx.model_id,
+            "organ_type": organ_type,
+            "mold_id": ctx.mold_id,
+        }
+        if insert_type:
+            params["insert_type"] = insert_type
+        if anchor_type:
+            params["anchor_type"] = anchor_type
+
+        r = await self.call_tool("insert_generate", **params)
         tool_calls.append({"tool": "insert_generate", "result": r.to_dict()})
 
         if r.success and isinstance(r.data, dict) and r.data.get("insert_id"):
@@ -115,5 +123,5 @@ class InsertAgent(BaseAgent):
     async def _validate(self, ctx: AgentContext) -> StepResult:
         return StepResult(
             step_name="validate", success=True,
-            output={"message": "请先通过 insert_generate 生成支撑板后再验证"},
+            output={"message": "请先生成支撑板后再验证装配"},
         )

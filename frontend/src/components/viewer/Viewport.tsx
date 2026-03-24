@@ -15,6 +15,7 @@ import { ModelViewer } from "./ModelViewer";
 import { MoldShellViewer } from "./MoldShellViewer";
 import { InsertPlateViewer } from "./InsertPlateViewer";
 import { SimulationViewer, StreamlineViewer, DefectMarkers, SurfaceOverlayViewer, FEAViewer } from "./SimulationViewer";
+import { SimFloatingBar } from "./SimFloatingBar";
 import { useInsertStore } from "../../stores/insertStore";
 import { useRepairModel, useSimplifyModel, useTransformModel } from "../../hooks/useModelApi";
 import { toastSuccess, toastError } from "../../stores/toastStore";
@@ -140,6 +141,9 @@ export function Viewport() {
 
       {/* Heatmap legend */}
       {hasVisualization && heatmapVisible && <HeatmapLegend />}
+
+      {/* Floating simulation controls bar */}
+      <SimFloatingBar />
     </div>
   );
 }
@@ -308,7 +312,7 @@ function DisplayModeSwitcher() {
   }, [open]);
 
   return (
-    <div ref={ref} className="absolute top-14 left-3 z-10">
+    <div ref={ref} className="absolute top-8 left-3 z-10">
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1 px-2 py-1 rounded bg-bg-secondary/80 backdrop-blur-sm border border-border/50 text-[10px] text-text-muted hover:text-text-primary transition-colors"
@@ -534,17 +538,27 @@ const STEP_HINTS: Record<WorkflowStep, string> = {
   export: "导出模型、模具和支撑板文件",
 };
 
+const STEP_LABELS: Record<WorkflowStep, string> = {
+  import: "导入",
+  repair: "编辑",
+  orientation: "方向",
+  mold: "模具",
+  insert: "支撑板",
+  gating: "浇注",
+  simulation: "仿真",
+  export: "导出",
+};
+
 function ViewportOverlay() {
   const currentStep = useAppStore((s) => s.currentStep);
   const modelLoaded = useAppStore((s) => s.modelLoaded);
 
   return (
     <>
-      {/* Keyboard hints (top-left) */}
-      <div className="absolute top-3 left-3 pointer-events-none">
-        <div className="text-[10px] text-text-muted/60 space-y-0.5">
-          <div>鼠标左键: 旋转 | 右键: 平移 | 滚轮: 缩放</div>
-          <div>Ctrl+1~8: 切换步骤 | Ctrl+B/I: 面板 | Ctrl+,: 设置</div>
+      {/* Keyboard hints (top, centered) */}
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none">
+        <div className="text-[9px] text-text-muted/40 whitespace-nowrap">
+          鼠标左键: 旋转 | 右键: 平移 | 滚轮: 缩放 | Ctrl+1~8: 切换步骤
         </div>
       </div>
 
@@ -552,21 +566,7 @@ function ViewportOverlay() {
       <div className="absolute bottom-3 left-3 pointer-events-none">
         <div className="px-2.5 py-1.5 rounded-md bg-bg-secondary/80 backdrop-blur-sm border border-border/50 text-[10px] text-text-secondary">
           <span className="text-accent font-medium mr-1.5">
-            {currentStep === "import"
-              ? "导入"
-              : currentStep === "repair"
-                ? "编辑"
-                : currentStep === "orientation"
-                  ? "方向"
-                  : currentStep === "mold"
-                    ? "模具"
-                    : currentStep === "insert"
-                      ? "支撑板"
-                      : currentStep === "gating"
-                        ? "浇注"
-                        : currentStep === "simulation"
-                          ? "仿真"
-                          : "导出"}
+            {STEP_LABELS[currentStep]}
           </span>
           {STEP_HINTS[currentStep]}
         </div>

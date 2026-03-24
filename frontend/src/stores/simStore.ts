@@ -238,11 +238,11 @@ export const useSimStore = create<SimState>((set) => ({
   heatmapField: "fill_time",
   heatmapVisible: true,
   heatmapOpacity: 0.85,
-  pointSize: 3.0,
+  pointSize: 4.5,
 
-  streamlinesVisible: false,
-  streamlineCount: 40,
-  particleDensity: 1,
+  streamlinesVisible: true,
+  streamlineCount: 50,
+  particleDensity: 2,
 
   animationPlaying: false,
   animationProgress: 1.0,

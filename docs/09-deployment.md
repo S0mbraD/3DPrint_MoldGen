@@ -449,6 +449,30 @@ CMD ["python3", "-m", "uvicorn", "moldgen.main:app", "--host", "0.0.0.0"]
 | 键盘快捷键 | Ctrl+1~8 覆盖全部 8 个工作流步骤 | 旧版仅 6 个, 跳过了方向和浇注 |
 | MoldStore | 支持 v3 类型: `HoleInfo`, `AlignmentFeatureInfo`, `min_draft_angle` | 前后端数据对齐 |
 
+### v6 前端 UI/UX 重构
+
+| 页面/组件 | 改进 | 效果 |
+|-----------|------|------|
+| 共享组件 | 新增 `CollapsibleSection` 可折叠区域组件 | 长面板内容可收起，减少滚动 |
+| 共享组件 | 新增 `ParamSlider` / `ParamSelect` / `ParamRow` 参数组件 | 统一参数输入样式，代码复用 |
+| 共享组件 | 新增 `ResultCard` / `ResultRow` 结果展示组件 | 统一结果卡片样式 |
+| 共享组件 | 新增 `StepHint` 步骤引导组件 | 完成步骤后引导用户进入下一步 |
+| 共享组件 | 新增 `StatusBadge` 工作流进度徽章 | 各面板顶部显示步骤完成状态 |
+| ActionButton | 新增 `variant="primary"` 主按钮样式 + `disabled` 属性 | 关键操作视觉突出 |
+| Section | 新增 `icon` 和 `badge` 属性 | 段落标题带图标和状态标记 |
+| 所有面板 | 空状态改为图标+文案+跳转按钮 | 比纯文字"请先导入模型"更友好 |
+| 所有面板 | 顶部添加 `StatusBadge` 工作流进度条 | 一目了然当前状态 |
+| 支撑板面板 | 仿形/加强筋/格栅参数全部可编辑 (ParamSlider) | 偏移距离/筋高/间距/胞元尺寸等可调 |
+| 支撑板面板 | 参数传递到后端 (conformal_offset/rib_height/lattice_cell_size 等) | UI参数真正生效 |
+| 支撑板面板 | 板数选择改为数字按钮组 (1/2/3/4) | 点击比输入框更方便 |
+| 浇注面板 | 排气孔数改为按钮组 (1/2/3/4/6/8) | 快速选择 |
+| 浇注面板 | 使用 `ParamSlider` 重构参数输入 | 统一风格 |
+| 仿真面板 | 热力图/动画/截面/表面映射/FEA 改为 CollapsibleSection | 长面板不再需要大量滚动 |
+| 仿真面板 | 各子section 带 badge 显示状态 (已加载/播放中/完成等) | 快速掌握各功能状态 |
+| 模具面板 | 完成后底部显示 `StepHint` 引导至支撑板/浇注 | 流程引导 |
+| CrossSectionCanvas | 修复 useCallback/useState 为正确的 useEffect | 截面图可靠刷新 |
+| MoldPanel | 修复浇口评分 `(score ?? 0 * 100)` → `((score ?? 0) * 100)` | 正确显示百分比 |
+
 ### v5 前端升级
 
 | 页面/组件 | 改进 | 效果 |

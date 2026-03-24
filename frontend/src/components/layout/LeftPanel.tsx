@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronLeft, Upload, Settings, Loader2, Scissors, Maximize2, RotateCcw, Compass, SplitSquareVertical, Box, Droplets, Zap, RefreshCw, Pin, CheckCircle2, Download, Package, Grid3x3, FlipVertical, ArrowUpDown, RotateCw, ZoomIn, ZoomOut, FileText, Play, Pause, RotateCcw as Rewind, Eye, EyeOff, Layers, ThermometerSun, Activity, Timer, Gauge, Slice, ChevronDown, ChevronUp, BarChart3, Lightbulb } from "lucide-react";
+import { ChevronLeft, Upload, Settings, Loader2, Scissors, Maximize2, RotateCcw, Compass, SplitSquareVertical, Box, Droplets, Zap, RefreshCw, Pin, CheckCircle2, Download, Package, Grid3x3, FlipVertical, ArrowUpDown, RotateCw, ZoomIn, FileText, Layers, Activity, Slice, ChevronDown, BarChart3, Lightbulb, Ruler, Anchor } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useModelStore } from "../../stores/modelStore";
@@ -9,7 +9,6 @@ import { useInsertStore } from "../../stores/insertStore";
 import { useUploadModel, useSimplifyModel, useSubdivideModel, useTransformModel, useRepairModel } from "../../hooks/useModelApi";
 import { useOrientationAnalysis, usePartingGeneration, useMoldGeneration } from "../../hooks/useMoldApi";
 import { useGatingDesign, useRunSimulation, useRunOptimization, useFetchVisualization, useFetchCrossSection, useFetchSurfaceMap, useRunFEA, useFetchFEAVisualization } from "../../hooks/useSimApi";
-import type { HeatmapField } from "../../stores/simStore";
 import { useAnalyzePositions, useGenerateInserts, useValidateAssembly } from "../../hooks/useInsertApi";
 import { useExportModel, useExportMold, useExportInsert, useExportAll } from "../../hooks/useExportApi";
 import { StepToolbar } from "./StepToolbar";
@@ -242,32 +241,32 @@ function EditPanel() {
     return () => window.removeEventListener("moldgen:toolbar-action", handler);
   }, []);
 
-  if (!modelId) return null;
+  const setStep = useAppStore((s) => s.setStep);
+
+  if (!modelId) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
+        <Scissors size={28} className="opacity-30" />
+        <p className="text-xs">请先导入模型</p>
+        <button onClick={() => setStep("import")} className="text-[10px] text-accent hover:underline">前往导入</button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
-      <Section title="修复">
+      <Section title="修复" icon={<RotateCcw size={11} />}>
         <ActionButton
           icon={<RotateCcw size={13} />}
           label="自动修复"
           loading={repair.isPending}
+          variant="primary"
           onClick={() => handleAction("自动修复", () => repair.mutateAsync(modelId))}
         />
       </Section>
 
-      <Section title="简化">
-        <div className="flex items-center gap-2 mb-2">
-          <input
-            type="range"
-            min={0.05}
-            max={1}
-            step={0.05}
-            value={targetRatio}
-            onChange={(e) => setTargetRatio(parseFloat(e.target.value))}
-            className="flex-1 accent-accent"
-          />
-          <span className="text-[10px] text-text-muted w-8">{Math.round(targetRatio * 100)}%</span>
-        </div>
+      <Section title="简化" icon={<Scissors size={11} />}>
+        <ParamSlider label="保留比例" value={targetRatio} onChange={setTargetRatio} min={0.05} max={1} step={0.05} unit="" width="w-16" />
         <ActionButton
           icon={<Scissors size={13} />}
           label={`简化到 ${meshInfo ? Math.round(meshInfo.face_count * targetRatio).toLocaleString() : "?"} 面`}
@@ -276,20 +275,8 @@ function EditPanel() {
         />
       </Section>
 
-      <Section title="细分">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-[10px] text-text-muted shrink-0">迭代</span>
-          <input
-            type="range"
-            min={1}
-            max={4}
-            step={1}
-            value={subdivIter}
-            onChange={(e) => setSubdivIter(parseInt(e.target.value))}
-            className="flex-1 accent-accent"
-          />
-          <span className="text-[10px] text-text-muted w-4">{subdivIter}</span>
-        </div>
+      <Section title="细分" icon={<Grid3x3 size={11} />}>
+        <ParamSlider label="迭代次数" value={subdivIter} onChange={(v) => setSubdivIter(Math.round(v))} min={1} max={4} step={1} unit="×" width="w-16" />
         <ActionButton
           icon={<Grid3x3 size={13} />}
           label={`Loop 细分 ×${subdivIter}`}
@@ -298,7 +285,7 @@ function EditPanel() {
         />
       </Section>
 
-      <Section title="变换">
+      <Section title="变换" icon={<Maximize2 size={11} />}>
         <div className="grid grid-cols-2 gap-1.5">
           <ActionButton
             icon={<Maximize2 size={13} />}
@@ -326,7 +313,7 @@ function EditPanel() {
         </div>
       </Section>
 
-      <Section title="旋转">
+      <Section title="旋转" icon={<RotateCw size={11} />}>
         <div className="grid grid-cols-3 gap-1.5">
           {([
             { key: "x", vec: [1, 0, 0] },
@@ -344,21 +331,8 @@ function EditPanel() {
         </div>
       </Section>
 
-      <Section title="缩放">
-        <div className="flex items-center gap-2 mb-2">
-          <ZoomOut size={11} className="text-text-muted shrink-0" />
-          <input
-            type="range"
-            min={0.1}
-            max={5}
-            step={0.1}
-            value={scaleVal}
-            onChange={(e) => setScaleVal(parseFloat(e.target.value))}
-            className="flex-1 accent-accent"
-          />
-          <ZoomIn size={11} className="text-text-muted shrink-0" />
-          <span className="text-[10px] text-text-muted w-10 text-right">{scaleVal.toFixed(1)}×</span>
-        </div>
+      <Section title="缩放" icon={<ZoomIn size={11} />}>
+        <ParamSlider label="缩放倍率" value={scaleVal} onChange={setScaleVal} min={0.1} max={5} step={0.1} unit="×" width="w-16" />
         <ActionButton
           icon={<Maximize2 size={13} />}
           label={`缩放 ${scaleVal.toFixed(1)}×`}
@@ -367,7 +341,7 @@ function EditPanel() {
         />
       </Section>
 
-      <Section title="测量 (只读)">
+      <Section title="网格信息" icon={<Ruler size={11} />}>
         {meshInfo && (
           <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
             <div className="flex justify-between">
@@ -401,6 +375,12 @@ function EditPanel() {
           </div>
         )}
       </Section>
+
+      <StepHint
+        text="模型编辑完成后，前往「方向」步骤分析最佳脱模方向。"
+        action={() => setStep("orientation")}
+        actionLabel="前往方向分析 →"
+      />
     </div>
   );
 }
@@ -415,10 +395,14 @@ function OrientationPanel() {
   const [nFinal, setNFinal] = useState(5);
   const [manualDir, setManualDir] = useState([0, 0, 1]);
 
+  const setStep = useAppStore((s) => s.setStep);
+
   if (!modelId) {
     return (
-      <div className="text-center text-text-muted text-xs py-8">
-        请先导入模型
+      <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
+        <Compass size={28} className="opacity-30" />
+        <p className="text-xs">请先导入模型</p>
+        <button onClick={() => setStep("import")} className="text-[10px] text-accent hover:underline">前往导入</button>
       </div>
     );
   }
@@ -438,30 +422,19 @@ function OrientationPanel() {
 
   return (
     <div className="space-y-4">
-      <Section title="采样参数">
+      <Section title="采样参数" icon={<Settings size={11} />}>
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">Fibonacci 采样数</span>
-            <div className="flex items-center gap-1">
-              <input type="range" min={50} max={500} step={50} value={nSamples}
-                onChange={(e) => setNSamples(parseInt(e.target.value))} className="w-20 accent-accent" />
-              <span className="text-[10px] text-text-muted w-8 text-right">{nSamples}</span>
-            </div>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">精细候选数</span>
-            <input type="number" min={3} max={20} value={nFinal}
-              onChange={(e) => setNFinal(parseInt(e.target.value) || 5)}
-              className="w-14 text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary text-right" />
-          </div>
+          <ParamSlider label="Fibonacci 采样" value={nSamples} onChange={(v) => setNSamples(Math.round(v))} min={50} max={500} step={50} />
+          <ParamSlider label="精细候选数" value={nFinal} onChange={(v) => setNFinal(Math.round(v))} min={3} max={20} step={1} />
         </div>
       </Section>
 
-      <Section title="分析">
+      <Section title="方向分析" icon={<Compass size={11} />}>
         <ActionButton
           icon={<Compass size={13} />}
           label={isAnalyzing ? "分析中..." : "分析最优脱模方向"}
           loading={isAnalyzing}
+          variant="primary"
           onClick={() => orientation.mutate({ modelId, nSamples, nFinal }, {
             onSuccess: (r) => toastSuccess("方向分析完成", `评分 ${(r.best_score.total_score * 100).toFixed(0)}%`),
             onError: (e) => toastError("分析失败", (e as Error).message),
@@ -471,55 +444,22 @@ function OrientationPanel() {
 
       {orientationResult && (
         <>
-          <Section title="最佳方向">
-            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-              className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
-              <div className="flex justify-between">
-                <span className="text-text-muted">方向向量</span>
-                <span className="text-text-primary font-mono">
-                  [{orientationResult.best_direction.map((v) => v.toFixed(3)).join(", ")}]
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-muted">综合评分</span>
-                <span className="text-accent font-bold">
-                  {(orientationResult.best_score.total_score * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="h-px bg-border" />
-              <div className="flex justify-between">
-                <span className="text-text-muted">可见率</span>
-                <span>{(orientationResult.best_score.visibility_ratio * 100).toFixed(1)}%</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-muted">倒扣率</span>
-                <span className={orientationResult.best_score.undercut_ratio > 0.1 ? "text-danger" : "text-success"}>
-                  {(orientationResult.best_score.undercut_ratio * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-muted">平坦度</span>
-                <span>{(orientationResult.best_score.flatness * 100).toFixed(1)}%</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-muted">最小拔模角</span>
-                <span>{orientationResult.best_score.min_draft_angle.toFixed(1)}°</span>
-              </div>
+          <Section title="最佳方向" icon={<CheckCircle2 size={11} />}>
+            <ResultCard>
+              <ResultRow label="方向向量" value={`[${orientationResult.best_direction.map((v) => v.toFixed(3)).join(", ")}]`} />
+              <ResultRow label="综合评分" value={`${(orientationResult.best_score.total_score * 100).toFixed(1)}%`} color="text-accent font-bold" />
+              <div className="h-px bg-border my-0.5" />
+              <ResultRow label="可见率" value={`${(orientationResult.best_score.visibility_ratio * 100).toFixed(1)}%`} />
+              <ResultRow label="倒扣率" value={`${(orientationResult.best_score.undercut_ratio * 100).toFixed(1)}%`}
+                color={orientationResult.best_score.undercut_ratio > 0.1 ? "text-danger" : "text-success"} />
+              <ResultRow label="平坦度" value={`${(orientationResult.best_score.flatness * 100).toFixed(1)}%`} />
+              <ResultRow label="最小拔模角" value={`${orientationResult.best_score.min_draft_angle.toFixed(1)}°`} />
               {orientationResult.best_score.mean_draft_angle != null && (
-                <div className="flex justify-between">
-                  <span className="text-text-muted">平均拔模角</span>
-                  <span>{orientationResult.best_score.mean_draft_angle.toFixed(1)}°</span>
-                </div>
+                <ResultRow label="平均拔模角" value={`${orientationResult.best_score.mean_draft_angle.toFixed(1)}°`} />
               )}
-              <div className="flex justify-between">
-                <span className="text-text-muted">对称性</span>
-                <span>{(orientationResult.best_score.symmetry * 100).toFixed(1)}%</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-muted">稳定性</span>
-                <span>{(orientationResult.best_score.stability * 100).toFixed(1)}%</span>
-              </div>
-            </motion.div>
+              <ResultRow label="对称性" value={`${(orientationResult.best_score.symmetry * 100).toFixed(1)}%`} />
+              <ResultRow label="稳定性" value={`${(orientationResult.best_score.stability * 100).toFixed(1)}%`} />
+            </ResultCard>
           </Section>
 
           <Section title={`候选方向 — 点击应用 (${orientationResult.top_candidates.length})`}>
@@ -590,10 +530,11 @@ function OrientationPanel() {
             />
           </Section>
 
-          <div className="p-2 rounded border border-accent/20 bg-accent/5 text-[10px] text-text-secondary">
-            <p className="font-medium text-accent mb-1">提示</p>
-            <p>点击候选方向可直接切换。方向已自动应用到3D视口中（黄色箭头）。下一步请前往"模具"步骤生成分型面和壳体。</p>
-          </div>
+          <StepHint
+            text="点击候选方向可直接切换。方向已自动应用到3D视口中（黄色箭头）。下一步请前往「模具」步骤。"
+            action={() => setStep("mold")}
+            actionLabel="前往模具 →"
+          />
         </>
       )}
     </div>
@@ -606,6 +547,7 @@ function MoldPanel() {
   const orientation = useOrientationAnalysis();
   const parting = usePartingGeneration();
   const moldGen = useMoldGeneration();
+  const setStep = useAppStore((s) => s.setStep);
   const [wallThickness, setWallThickness] = useState(4.0);
   const [shellType, setShellType] = useState("box");
   const [partingStyle, setPartingStyle] = useState("flat");
@@ -614,15 +556,25 @@ function MoldPanel() {
 
   if (!modelId) {
     return (
-      <div className="text-center text-text-muted text-xs py-8">
-        请先导入模型
+      <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
+        <Box size={28} className="opacity-30" />
+        <p className="text-xs">请先导入模型</p>
+        <button onClick={() => setStep("import")} className="text-[10px] text-accent hover:underline">前往导入</button>
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      <Section title="1. 脱模方向分析">
+      {/* Workflow status */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <StatusBadge ok={!!orientationResult} label="方向" />
+        <StatusBadge ok={!!partingResult} label="分型面" />
+        <StatusBadge ok={!!moldResult} label="壳体" />
+      </div>
+
+      <Section title="1. 脱模方向分析" icon={<Compass size={11} />}
+        badge={orientationResult ? <span className="text-[8px] text-success font-medium">✓</span> : undefined}>
         <ActionButton
           icon={<Compass size={13} />}
           label={isAnalyzing ? "分析中..." : "分析最优方向"}
@@ -837,7 +789,7 @@ function MoldPanel() {
                   <>
                     <div className="flex justify-between">
                       <span className="text-text-muted">评分</span>
-                      <span className="text-accent font-bold">{((moldResult.pour_hole as { score?: number }).score ?? 0 * 100).toFixed(1)}%</span>
+                      <span className="text-accent font-bold">{(((moldResult.pour_hole as { score?: number }).score ?? 0) * 100).toFixed(1)}%</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-text-muted">直径</span>
@@ -880,19 +832,21 @@ function MoldPanel() {
             {moldResult.alignment_features && moldResult.alignment_features.length > 0 && (
               <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
                 <div className="text-text-muted font-semibold mb-1">对齐特征</div>
-                <div className="flex justify-between">
-                  <span className="text-text-muted">定位销</span>
-                  <span>{moldResult.alignment_features.filter(f => f.type === "pin").length} 个</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-text-muted">配合孔</span>
-                  <span>{moldResult.alignment_features.filter(f => f.type === "hole").length} 个</span>
-                </div>
+                <ResultRow label="定位销" value={`${moldResult.alignment_features.filter(f => f.type === "pin").length} 个`} />
+                <ResultRow label="配合孔" value={`${moldResult.alignment_features.filter(f => f.type === "hole").length} 个`} />
               </div>
             )}
           </motion.div>
         )}
       </Section>
+
+      {moldResult && (
+        <StepHint
+          text="模具已生成。可前往「内骨骼」步骤生成内部骨架结构，或前往「浇注」步骤设计浇注系统。"
+          action={() => setStep("insert")}
+          actionLabel="前往内骨骼 →"
+        />
+      )}
     </div>
   );
 }
@@ -904,202 +858,301 @@ function InsertPanel() {
   const analyzePos = useAnalyzePositions();
   const generate = useGenerateInserts();
   const validate = useValidateAssembly();
+  const setStep = useAppStore((s) => s.setStep);
+
   const [organType, setOrganType] = useState("general");
   const [insertType, setInsertType] = useState("flat");
-  const [anchorType, setAnchorType] = useState("mesh_holes");
-  const [nPlates, setNPlates] = useState(1);
   const [thickness, setThickness] = useState(2.0);
+  const [internalOffset, setInternalOffset] = useState(5.0);
+  const [plateScale, setPlateScale] = useState(0.55);
+  const [conformalOffset, setConformalOffset] = useState(3.0);
+  // Feature toggles
+  const [addMeshHoles, setAddMeshHoles] = useState(false);
+  const [meshHoleSize, setMeshHoleSize] = useState(2.0);
+  const [addRibs, setAddRibs] = useState(false);
+  const [ribHeight, setRibHeight] = useState(3.0);
+  const [ribSpacing, setRibSpacing] = useState(8.0);
+  const [addInterlocking, setAddInterlocking] = useState<string | null>(null);
+  const [interlockSize, setInterlockSize] = useState(2.0);
+  // Pillars
+  const [pillarDiameter, setPillarDiameter] = useState(2.0);
+  const [pillarCount, setPillarCount] = useState(4);
+  const [pillarSide, setPillarSide] = useState("auto");
 
   if (!modelId) {
     return (
-      <div className="text-center text-text-muted text-xs py-8">
-        请先导入模型
+      <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
+        <Box size={28} className="opacity-30" />
+        <p className="text-xs">请先导入模型</p>
+        <button onClick={() => setStep("import")} className="text-[10px] text-accent hover:underline">前往导入</button>
       </div>
     );
   }
 
+  const INSERT_TYPE_LABELS: Record<string, string> = {
+    flat: "平板", conformal: "仿形板",
+  };
+
   return (
     <div className="space-y-4">
-      <Section title="器官类型">
-        <select
-          value={organType}
-          onChange={(e) => setOrganType(e.target.value)}
-          className="w-full text-xs bg-bg-secondary border border-border rounded px-2 py-1.5 text-text-primary"
-        >
+      <div className="p-2 rounded-lg bg-accent/5 border border-accent/15">
+        <p className="text-[10px] text-text-secondary leading-relaxed">
+          内嵌支撑板置于硅胶教具内部，通过锚固特征与硅胶牢固结合，
+          通过细小立柱穿过模具壁定位。为教具提供骨骼/组织的真实触感。
+        </p>
+      </div>
+
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <StatusBadge ok={!!modelId} label="模型" />
+        <StatusBadge ok={!!moldId} label="模具" />
+        <StatusBadge ok={positions.length > 0} label="分析" />
+        <StatusBadge ok={plates.length > 0} label="支撑板" />
+        <StatusBadge ok={assemblyValid} label="验证" />
+      </div>
+
+      <Section title="器官/模型类型" icon={<Layers size={11} />}>
+        <select value={organType} onChange={(e) => setOrganType(e.target.value)}
+          className="w-full text-xs bg-bg-secondary border border-border rounded px-2 py-1.5 text-text-primary">
           <option value="general">通用</option>
           <option value="solid">实质性器官 (肝/肾/脑)</option>
           <option value="hollow">空腔器官 (胃/膀胱)</option>
           <option value="tubular">管道结构 (血管/肠道)</option>
+          <option value="limb">四肢/骨骼结构</option>
           <option value="sheet">组织片 (皮肤/肌肉)</option>
         </select>
       </Section>
 
-      <Section title="1. 位置分析">
+      <Section title="1. 截面位置分析" icon={<Compass size={11} />}
+        badge={positions.length > 0 ? <span className="text-[9px] text-accent">{positions.length} 个候选</span> : undefined}>
         <ActionButton
           icon={<Compass size={13} />}
-          label={isAnalyzing ? "分析中..." : "分析最佳位置"}
+          label={isAnalyzing ? "分析中..." : "分析截面位置"}
           loading={isAnalyzing}
           onClick={() => analyzePos.mutate({ model_id: modelId, organ_type: organType }, {
-            onSuccess: () => toastSuccess("位置分析完成"),
-            onError: (e) => toastError("位置分析失败", (e as Error).message),
+            onSuccess: () => toastSuccess("截面分析完成"),
+            onError: (e) => toastError("截面分析失败", (e as Error).message),
           })}
         />
         {positions.length > 0 && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-            className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1">
-            {positions.slice(0, 3).map((p, i) => (
-              <div key={i} className="flex justify-between">
-                <span className="text-text-muted">{p.reason}</span>
-                <span className="text-accent">{(p.score * 100).toFixed(0)}%</span>
+          <ResultCard className="mt-2">
+            {positions.slice(0, 5).map((p, i) => (
+              <div key={i} className="flex justify-between items-center py-0.5">
+                <div className="flex items-center gap-1">
+                  <span className="text-text-muted w-4">#{i+1}</span>
+                  <span className="text-text-secondary">{p.reason}</span>
+                </div>
+                <span className={cn("font-semibold", p.score > 0.6 ? "text-success" : p.score > 0.3 ? "text-accent" : "text-warning")}>
+                  {(p.score * 100).toFixed(0)}%
+                </span>
               </div>
             ))}
-          </motion.div>
+          </ResultCard>
         )}
       </Section>
 
-      <Section title="2. 支撑板参数">
+      <Section title="2. 板型与参数" icon={<Settings size={11} />}>
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">板型</span>
-            <select value={insertType} onChange={(e) => setInsertType(e.target.value)}
-              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary">
-              <option value="flat">平板</option>
-              <option value="conformal">仿形板</option>
-              <option value="ribbed">加强筋板</option>
-              <option value="lattice">格栅结构</option>
-            </select>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">板厚</span>
-            <div className="flex items-center gap-1">
-              <input type="range" min={1} max={5} step={0.5} value={thickness}
-                onChange={(e) => setThickness(parseFloat(e.target.value))} className="w-20 accent-accent" />
-              <span className="text-[10px] text-text-muted w-10 text-right">{thickness}mm</span>
-            </div>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">数量</span>
-            <input type="number" min={1} max={4} value={nPlates}
-              onChange={(e) => setNPlates(parseInt(e.target.value) || 1)}
-              className="w-14 text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary text-right" />
-          </div>
+          <ParamSelect label="基础板型" value={insertType} onChange={setInsertType}
+            options={[
+              { value: "flat", label: "平板 — 截面挤出" },
+              { value: "conformal", label: "仿形板 — 跟随曲面" },
+            ]} />
+          <ParamSlider label="板厚" value={thickness} onChange={setThickness} min={1} max={5} step={0.5} unit="mm" />
+          <ParamSlider label="内嵌深度" value={internalOffset} onChange={setInternalOffset} min={2} max={15} step={0.5} unit="mm" />
+          <ParamSlider label="板面比例" value={plateScale} onChange={setPlateScale} min={0.2} max={0.8} step={0.05} unit="" />
+
           {insertType === "conformal" && (
-            <div className="p-1.5 rounded bg-bg-secondary/50 space-y-1.5">
-              <div className="text-[9px] text-accent font-medium">仿形参数</div>
-              <div className="flex items-center justify-between">
-                <span className="text-[9px] text-text-muted">偏移距离</span>
-                <span className="text-[9px] text-text-muted">3.0mm</span>
-              </div>
-            </div>
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
+              className="p-2 rounded-lg border border-accent/15 bg-accent/5 space-y-2">
+              <div className="text-[9px] text-accent font-semibold uppercase tracking-wider">仿形参数</div>
+              <ParamSlider label="曲面偏移" value={conformalOffset} onChange={setConformalOffset} min={1} max={8} step={0.5} unit="mm" />
+            </motion.div>
           )}
-          {insertType === "ribbed" && (
-            <div className="p-1.5 rounded bg-bg-secondary/50 space-y-1.5">
-              <div className="text-[9px] text-accent font-medium">加强筋参数</div>
-              <div className="flex items-center justify-between">
-                <span className="text-[9px] text-text-muted">筋高/间距</span>
-                <span className="text-[9px] text-text-muted">3.0mm / 8.0mm</span>
-              </div>
-            </div>
-          )}
-          {insertType === "lattice" && (
-            <div className="p-1.5 rounded bg-bg-secondary/50 space-y-1.5">
-              <div className="text-[9px] text-accent font-medium">格栅参数</div>
-              <div className="flex items-center justify-between">
-                <span className="text-[9px] text-text-muted">胞元尺寸</span>
-                <span className="text-[9px] text-text-muted">5.0mm</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[9px] text-text-muted">杆径</span>
-                <span className="text-[9px] text-text-muted">1.2mm</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[9px] text-text-muted">拓扑</span>
-                <span className="text-[9px] text-text-muted">BCC 体心立方</span>
-              </div>
-            </div>
-          )}
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">锚固类型</span>
-            <select value={anchorType} onChange={(e) => setAnchorType(e.target.value)}
-              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary">
-              <option value="mesh_holes">网孔</option>
-              <option value="bumps">凸起</option>
-              <option value="grooves">沟槽</option>
-              <option value="dovetail">燕尾</option>
-              <option value="diamond">菱形纹</option>
-            </select>
-          </div>
         </div>
       </Section>
 
-      <Section title="3. 生成支撑板">
+      <Section title="3. 板面特征 (可选)" icon={<Anchor size={11} />}>
+        <div className="space-y-2.5">
+          {/* Mesh Holes Toggle */}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-text-secondary">表面网孔</span>
+            <button onClick={() => setAddMeshHoles(!addMeshHoles)}
+              className={cn("px-2.5 py-1 rounded text-[10px] font-medium transition-colors",
+                addMeshHoles ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+              {addMeshHoles ? "已启用" : "关闭"}
+            </button>
+          </div>
+          {addMeshHoles && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
+              className="pl-2 border-l-2 border-accent/30 space-y-1.5">
+              <ParamSlider label="孔径" value={meshHoleSize} onChange={setMeshHoleSize} min={1} max={4} step={0.5} unit="mm" />
+              <div className="text-[9px] text-text-muted">硅胶渗透通孔，增强板-硅胶结合力</div>
+            </motion.div>
+          )}
+
+          {/* Ribs Toggle */}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-text-secondary">加强筋</span>
+            <button onClick={() => setAddRibs(!addRibs)}
+              className={cn("px-2.5 py-1 rounded text-[10px] font-medium transition-colors",
+                addRibs ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+              {addRibs ? "已启用" : "关闭"}
+            </button>
+          </div>
+          {addRibs && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
+              className="pl-2 border-l-2 border-accent/30 space-y-1.5">
+              <ParamSlider label="筋高度" value={ribHeight} onChange={setRibHeight} min={1} max={6} step={0.5} unit="mm" />
+              <ParamSlider label="筋间距" value={ribSpacing} onChange={setRibSpacing} min={3} max={15} step={1} unit="mm" />
+              <div className="text-[9px] text-text-muted">交叉肋条增强板面刚性</div>
+            </motion.div>
+          )}
+
+          {/* Interlocking Toggle */}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-text-secondary">啮合固定</span>
+            <select value={addInterlocking ?? "none"}
+              onChange={(e) => setAddInterlocking(e.target.value === "none" ? null : e.target.value)}
+              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary">
+              <option value="none">关闭</option>
+              <option value="dovetail">燕尾榫</option>
+              <option value="bumps">凸起互锁</option>
+              <option value="grooves">沟槽结合</option>
+              <option value="diamond">菱形纹</option>
+            </select>
+          </div>
+          {addInterlocking && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
+              className="pl-2 border-l-2 border-accent/30 space-y-1.5">
+              <ParamSlider label="特征尺寸" value={interlockSize} onChange={setInterlockSize} min={1} max={4} step={0.5} unit="mm" />
+              <div className="text-[9px] text-text-muted">板面边缘/表面的机械咬合结构</div>
+            </motion.div>
+          )}
+        </div>
+      </Section>
+
+      <Section title="4. 支撑立柱" icon={<Pin size={11} />}>
+        <div className="space-y-2">
+          <ParamSlider label="立柱直径" value={pillarDiameter} onChange={setPillarDiameter} min={1} max={4} step={0.5} unit="mm" />
+          <ParamRow label="立柱数量">
+            <div className="flex items-center gap-1">
+              {[2, 3, 4, 6].map((n) => (
+                <button key={n} onClick={() => setPillarCount(n)}
+                  className={cn("w-6 h-6 rounded text-[10px] font-medium transition-colors",
+                    pillarCount === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                  {n}
+                </button>
+              ))}
+            </div>
+          </ParamRow>
+          <ParamSelect label="立柱方位" value={pillarSide} onChange={setPillarSide}
+            options={[
+              { value: "auto", label: "自动 (最短轴)" },
+              { value: "bottom", label: "底部 (-Y)" },
+              { value: "top", label: "顶部 (+Y)" },
+              { value: "back", label: "背面 (-Z)" },
+              { value: "front", label: "正面 (+Z)" },
+              { value: "left", label: "左侧 (-X)" },
+              { value: "right", label: "右侧 (+X)" },
+            ]} />
+        </div>
+      </Section>
+
+      <Section title="5. 生成支撑板" icon={<Box size={11} />}>
         <ActionButton
-          icon={<Pin size={13} />}
-          label={isGenerating ? "生成中..." : "生成支撑板"}
+          icon={<Box size={13} />}
+          label={isGenerating ? "生成中..." : `生成${INSERT_TYPE_LABELS[insertType] ?? "支撑板"}`}
           loading={isGenerating}
+          variant="primary"
           onClick={() => generate.mutate({
-            model_id: modelId, organ_type: organType, anchor_type: anchorType,
+            model_id: modelId,
+            organ_type: organType,
             insert_type: insertType,
-            n_plates: nPlates, thickness, mold_id: moldId ?? undefined,
-          }, {
-            onSuccess: () => toastSuccess("支撑板已生成", `${nPlates} 块 ${
-              insertType === "flat" ? "平板" : insertType === "conformal" ? "仿形板" :
-              insertType === "ribbed" ? "加强筋板" : "格栅板"
-            }`),
+            thickness,
+            internal_offset: internalOffset,
+            plate_scale: plateScale,
+            conformal_offset: conformalOffset,
+            add_mesh_holes: addMeshHoles,
+            mesh_hole_size: meshHoleSize,
+            add_ribs: addRibs,
+            rib_height: ribHeight,
+            rib_spacing: ribSpacing,
+            add_interlocking: addInterlocking,
+            interlock_feature_size: interlockSize,
+            pillar_diameter: pillarDiameter,
+            pillar_count: pillarCount,
+            pillar_side: pillarSide,
+            n_plates: 1,
+            mold_id: moldId ?? undefined,
+          } as Record<string, unknown>, {
+            onSuccess: () => toastSuccess("支撑板已生成", INSERT_TYPE_LABELS[insertType]),
             onError: (e) => toastError("支撑板生成失败", (e as Error).message),
           })}
         />
         {plates.length > 0 && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-            className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+          <ResultCard className="mt-2">
             {plates.map((p, i) => (
-              <div key={i} className="border-b border-border/50 pb-1 mb-1 last:border-0">
-                <div className="flex justify-between">
-                  <span className="text-text-muted">板 #{i + 1}</span>
-                  <span className="text-accent">{
-                    p.insert_type === "conformal" ? "仿形" :
-                    p.insert_type === "ribbed" ? "加强筋" :
-                    p.insert_type === "lattice" ? "格栅" : "平板"
-                  }</span>
+              <div key={i} className="space-y-1 py-1 border-b border-border/30 last:border-0">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-accent font-bold">板{i+1}</span>
+                    <span className="px-1 py-0.5 rounded bg-accent/10 text-accent text-[8px] font-medium">
+                      {INSERT_TYPE_LABELS[p.insert_type ?? ""] ?? insertType}
+                    </span>
+                    {p.anchor && (
+                      <span className="px-1 py-0.5 rounded bg-success/10 text-success text-[8px]">
+                        {p.anchor.type ?? "锚固"}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-text-muted">{p.face_count.toLocaleString()} 面</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-text-muted">面数</span>
-                  <span>{p.face_count.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-text-muted">锚固</span>
-                  <span>{p.anchor ? `${p.anchor.type} ×${p.anchor.count}` : "无"}</span>
-                </div>
+                {p.n_pillars > 0 && (
+                  <div className="text-[10px] text-text-muted">
+                    支撑立柱: {p.n_pillars} 根
+                  </div>
+                )}
               </div>
             ))}
-          </motion.div>
+          </ResultCard>
         )}
       </Section>
 
-      <Section title="4. 装配验证">
+      <Section title="6. 装配验证" icon={<CheckCircle2 size={11} />}>
         <ActionButton
           icon={<CheckCircle2 size={13} />}
           label="验证装配"
           loading={validate.isPending}
+          disabled={!insertId}
           onClick={() => insertId && validate.mutate({ model_id: modelId, insert_id: insertId, mold_id: moldId ?? undefined }, {
             onSuccess: () => toastInfo("装配验证完成"),
             onError: (e) => toastError("验证失败", (e as Error).message),
           })}
         />
         {validationMessages.length > 0 && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-            className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1">
-            <div className="flex items-center gap-1 mb-1">
-              <span className={assemblyValid ? "text-green-400" : "text-warning"}>
-                {assemblyValid ? "✓ 验证通过" : "⚠ 存在问题"}
+          <ResultCard className={cn("mt-2", assemblyValid ? "ring-1 ring-success/30" : "ring-1 ring-warning/30")}>
+            <div className="flex items-center gap-1.5 mb-1">
+              {assemblyValid
+                ? <CheckCircle2 size={12} className="text-success" />
+                : <span className="text-warning text-sm">⚠</span>}
+              <span className={assemblyValid ? "text-success font-medium" : "text-warning font-medium"}>
+                {assemblyValid ? "验证通过" : "存在问题"}
               </span>
             </div>
             {validationMessages.map((m, i) => (
-              <div key={i} className="text-text-muted">{m}</div>
+              <div key={i} className="text-text-muted pl-5">{m}</div>
             ))}
-          </motion.div>
+          </ResultCard>
         )}
       </Section>
+
+      {plates.length > 0 && (
+        <StepHint
+          text="支撑板已生成。板片嵌入硅胶内部，通过锚固特征结合，立柱穿过模具壁定位。可前往「浇注」步骤。"
+          action={() => setStep("gating")}
+          actionLabel="前往浇注系统 →"
+        />
+      )}
     </div>
   );
 }
@@ -1109,21 +1162,24 @@ function GatingPanel() {
   const moldId = useMoldStore((s) => s.moldId);
   const { gatingId, gatingResult, isDesigningGating, selectedMaterial, setMaterial } = useSimStore();
   const gatingDesign = useGatingDesign();
+  const setStep = useAppStore((s) => s.setStep);
   const [gateDiam, setGateDiam] = useState(6.0);
   const [runnerWidth, setRunnerWidth] = useState(4.0);
   const [nVents, setNVents] = useState(3);
 
   if (!modelId || !moldId) {
     return (
-      <div className="text-center text-text-muted text-xs py-8">
-        请先生成模具（步骤: 模具）
+      <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
+        <Droplets size={28} className="opacity-30" />
+        <p className="text-xs">请先生成模具</p>
+        <button onClick={() => setStep("mold")} className="text-[10px] text-accent hover:underline">前往模具步骤</button>
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      <Section title="材料">
+      <Section title="灌注材料" icon={<Layers size={11} />}>
         <select value={selectedMaterial} onChange={(e) => setMaterial(e.target.value)}
           className="w-full text-xs bg-bg-secondary border border-border rounded px-2 py-1.5 text-text-primary">
           <option value="silicone_a10">硅胶 Shore A10 (软)</option>
@@ -1136,38 +1192,30 @@ function GatingPanel() {
         </select>
       </Section>
 
-      <Section title="浇口参数">
+      <Section title="浇口参数" icon={<Settings size={11} />}>
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">浇口直径</span>
+          <ParamSlider label="浇口直径" value={gateDiam} onChange={setGateDiam} min={2} max={12} step={0.5} unit="mm" />
+          <ParamSlider label="浇道宽度" value={runnerWidth} onChange={setRunnerWidth} min={2} max={10} step={0.5} unit="mm" />
+          <ParamRow label="排气孔数">
             <div className="flex items-center gap-1">
-              <input type="range" min={2} max={12} step={0.5} value={gateDiam}
-                onChange={(e) => setGateDiam(parseFloat(e.target.value))} className="w-20 accent-accent" />
-              <span className="text-[10px] text-text-muted w-12 text-right">{gateDiam}mm</span>
+              {[1, 2, 3, 4, 6, 8].map((n) => (
+                <button key={n} onClick={() => setNVents(n)}
+                  className={cn("w-6 h-6 rounded text-[10px] font-medium transition-colors",
+                    nVents === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                  {n}
+                </button>
+              ))}
             </div>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">浇道宽度</span>
-            <div className="flex items-center gap-1">
-              <input type="range" min={2} max={10} step={0.5} value={runnerWidth}
-                onChange={(e) => setRunnerWidth(parseFloat(e.target.value))} className="w-20 accent-accent" />
-              <span className="text-[10px] text-text-muted w-12 text-right">{runnerWidth}mm</span>
-            </div>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">排气孔数</span>
-            <input type="number" min={1} max={8} value={nVents}
-              onChange={(e) => setNVents(parseInt(e.target.value) || 3)}
-              className="w-14 text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary text-right" />
-          </div>
+          </ParamRow>
         </div>
       </Section>
 
-      <Section title="设计">
+      <Section title="设计" icon={<Droplets size={11} />}>
         <ActionButton
           icon={<Droplets size={13} />}
           label={isDesigningGating ? "设计中..." : "自动设计浇注系统"}
           loading={isDesigningGating}
+          variant="primary"
           onClick={() => gatingDesign.mutate({
             modelId, moldId,
             gateDiameter: gateDiam,
@@ -1180,56 +1228,29 @@ function GatingPanel() {
       </Section>
 
       {gatingResult && (
-        <Section title="设计结果">
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-            className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
-            <div className="flex justify-between">
-              <span className="text-text-muted">浇口评分</span>
-              <span className="text-accent font-bold">{(gatingResult.gate.score * 100).toFixed(1)}%</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">流道平衡</span>
-              <span>{(gatingResult.gate.flow_balance * 100).toFixed(1)}%</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">可达性</span>
-              <span>{(gatingResult.gate.accessibility * 100).toFixed(1)}%</span>
-            </div>
-            <div className="h-px bg-border" />
-            <div className="flex justify-between">
-              <span className="text-text-muted">浇口直径</span>
-              <span>{gatingResult.gate_diameter.toFixed(1)}mm</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">浇道宽度</span>
-              <span>{gatingResult.runner_width.toFixed(1)}mm</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">排气孔</span>
-              <span>{gatingResult.vents.length} 个</span>
-            </div>
-            <div className="h-px bg-border" />
-            <div className="flex justify-between">
-              <span className="text-text-muted">型腔体积</span>
-              <span>{gatingResult.cavity_volume.toFixed(0)} mm³</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">预计材料量</span>
-              <span>{gatingResult.estimated_material_volume.toFixed(0)} mm³</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">预计充填时间</span>
-              <span>{gatingResult.estimated_fill_time.toFixed(1)} s</span>
-            </div>
-          </motion.div>
+        <Section title="设计结果" icon={<CheckCircle2 size={11} />}>
+          <ResultCard>
+            <ResultRow label="浇口评分" value={`${(gatingResult.gate.score * 100).toFixed(1)}%`} color="text-accent font-bold" />
+            <ResultRow label="流道平衡" value={`${(gatingResult.gate.flow_balance * 100).toFixed(1)}%`} />
+            <ResultRow label="可达性" value={`${(gatingResult.gate.accessibility * 100).toFixed(1)}%`} />
+            <div className="h-px bg-border my-0.5" />
+            <ResultRow label="浇口直径" value={`${gatingResult.gate_diameter.toFixed(1)}mm`} />
+            <ResultRow label="浇道宽度" value={`${gatingResult.runner_width.toFixed(1)}mm`} />
+            <ResultRow label="排气孔" value={`${gatingResult.vents.length} 个`} />
+            <div className="h-px bg-border my-0.5" />
+            <ResultRow label="型腔体积" value={`${gatingResult.cavity_volume.toFixed(0)} mm³`} />
+            <ResultRow label="预计材料" value={`${gatingResult.estimated_material_volume.toFixed(0)} mm³`} />
+            <ResultRow label="预计充填" value={`${gatingResult.estimated_fill_time.toFixed(1)} s`} />
+          </ResultCard>
         </Section>
       )}
 
       {gatingId && (
-        <div className="p-2 rounded border border-accent/20 bg-accent/5 text-[10px] text-text-secondary">
-          <p className="font-medium text-accent mb-1">下一步</p>
-          <p>浇注系统已就绪。前往"仿真"步骤运行灌注仿真和自动优化。</p>
-        </div>
+        <StepHint
+          text="浇注系统已就绪。前往「仿真」步骤运行灌注仿真和自动优化。"
+          action={() => setStep("simulation")}
+          actionLabel="前往仿真 →"
+        />
       )}
     </div>
   );
@@ -1242,20 +1263,13 @@ function SimPanel() {
     selectedMaterial, gatingId, gatingResult, simId, simResult,
     optimizationResult, isDesigningGating, isSimulating, isOptimizing,
     setMaterial, visualizationData, isLoadingVisualization,
-    heatmapField, heatmapVisible, heatmapOpacity, pointSize,
-    streamlinesVisible, streamlineCount, particleDensity,
-    animationPlaying, animationProgress, animationSpeed, animationLoop,
+    heatmapField,
+    particleDensity,
     crossSectionAxis, crossSectionPosition,
-    crossSectionData, analysisExpanded,
-    setHeatmapField, setHeatmapVisible, setHeatmapOpacity, setPointSize,
-    setStreamlinesVisible, setStreamlineCount, setParticleDensity,
-    setAnimationPlaying, setAnimationProgress, setAnimationSpeed, setAnimationLoop,
+    crossSectionData,
     setCrossSectionAxis, setCrossSectionPosition,
-    setAnalysisExpanded,
-    surfaceMapData, surfaceMapVisible, surfaceMapLoading,
-    setSurfaceMapVisible,
-    feaId, feaResult, feaVisualizationData, feaRunning, feaField, feaVisible,
-    setFEAField, setFEAVisible,
+    surfaceMapData, surfaceMapLoading,
+    feaResult, feaVisualizationData, feaRunning,
   } = useSimStore();
   const gatingDesign = useGatingDesign();
   const runSim = useRunSimulation();
@@ -1268,28 +1282,31 @@ function SimPanel() {
   const [simLevel, setSimLevel] = useState(2);
   const [feaMaterial, setFeaMaterial] = useState("pla");
 
+  const setStep = useAppStore((s) => s.setStep);
+
   if (!modelId || !moldId) {
     return (
-      <div className="text-center text-text-muted text-xs py-8">
-        请先生成模具（步骤: 模具）
+      <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
+        <Droplets size={28} className="opacity-30" />
+        <p className="text-xs">请先生成模具</p>
+        <button onClick={() => setStep("mold")} className="text-[10px] text-accent hover:underline">前往模具步骤</button>
       </div>
     );
   }
 
-  const FIELD_OPTIONS: { value: HeatmapField; label: string; icon: React.ReactNode }[] = [
-    { value: "fill_time", label: "充填时间", icon: <Timer size={11} /> },
-    { value: "pressure", label: "压力场", icon: <Gauge size={11} /> },
-    { value: "velocity", label: "流速场", icon: <Activity size={11} /> },
-    { value: "shear_rate", label: "剪切率", icon: <Zap size={11} /> },
-    { value: "temperature", label: "温度场", icon: <ThermometerSun size={11} /> },
-    { value: "cure_progress", label: "固化进度", icon: <Layers size={11} /> },
-    { value: "thickness", label: "壁厚分布", icon: <Slice size={11} /> },
-  ];
-
   return (
     <div className="space-y-4">
+      {/* Workflow status */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <StatusBadge ok={!!gatingId} label="浇注" />
+        <StatusBadge ok={!!simResult} label="仿真" />
+        <StatusBadge ok={!!visualizationData} label="可视化" />
+        <StatusBadge ok={!!optimizationResult} label="优化" />
+        <StatusBadge ok={!!feaResult} label="FEA" />
+      </div>
+
       {/* 1. Material */}
-      <Section title="1. 材料选择">
+      <Section title="1. 材料选择" icon={<Layers size={11} />}>
         <select
           value={selectedMaterial}
           onChange={(e) => setMaterial(e.target.value)}
@@ -1306,7 +1323,8 @@ function SimPanel() {
       </Section>
 
       {/* 2. Gating */}
-      <Section title="2. 浇注系统">
+      <Section title="2. 浇注系统" icon={<Droplets size={11} />}
+        badge={gatingId ? <span className="text-[8px] text-success font-medium">✓</span> : undefined}>
         <ActionButton
           icon={<Droplets size={13} />}
           label={isDesigningGating ? "设计中..." : "设计浇注系统"}
@@ -1340,7 +1358,10 @@ function SimPanel() {
       </Section>
 
       {/* 3. Simulation */}
-      <Section title="3. 灌注仿真">
+      <Section title="3. 灌注仿真" icon={<Zap size={11} />}
+        badge={simResult ? <span className={cn("text-[8px] font-medium", simResult.fill_fraction >= 0.99 ? "text-success" : "text-warning")}>
+          {(simResult.fill_fraction * 100).toFixed(0)}%
+        </span> : undefined}>
         <div className="flex items-center justify-between mb-2">
           <span className="text-[10px] text-text-muted">仿真级别</span>
           <div className="flex items-center gap-1">
@@ -1407,9 +1428,10 @@ function SimPanel() {
         )}
       </Section>
 
-      {/* 4. Heatmap Visualization */}
+      {/* 4. Visualization Data */}
       {simResult && (
-        <Section title="4. 热力图可视化">
+        <Section title="4. 可视化" icon={<BarChart3 size={11} />}
+          badge={visualizationData ? <span className="text-[8px] text-success font-medium">已加载</span> : undefined}>
           {!visualizationData && !isLoadingVisualization && simResult.has_visualization && simId && (
             <ActionButton
               icon={<BarChart3 size={13} />}
@@ -1425,100 +1447,15 @@ function SimPanel() {
             </div>
           )}
           {visualizationData && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-2.5">
-              {/* Visibility toggle */}
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-text-muted">热力图</span>
-                <button onClick={() => setHeatmapVisible(!heatmapVisible)}
-                  className={cn("p-1 rounded transition-colors", heatmapVisible ? "bg-accent/20 text-accent" : "bg-bg-secondary text-text-muted")}>
-                  {heatmapVisible ? <Eye size={12} /> : <EyeOff size={12} />}
-                </button>
+            <div className="space-y-2">
+              <div className="text-[9px] text-success p-1.5 bg-success/5 rounded">
+                ✓ 已加载 {(visualizationData.n_points * particleDensity).toLocaleString()} 粒子
+                · {visualizationData.defect_positions.length} 缺陷
               </div>
-
-              {/* Field selector */}
-              <div className="space-y-1">
-                <span className="text-[10px] text-text-muted">显示场</span>
-                <div className="grid grid-cols-2 gap-1">
-                  {FIELD_OPTIONS.map((opt) => (
-                    <button key={opt.value} onClick={() => setHeatmapField(opt.value)}
-                      className={cn(
-                        "flex items-center gap-1 px-1.5 py-1 rounded text-[9px] transition-colors",
-                        heatmapField === opt.value
-                          ? "bg-accent/20 text-accent ring-1 ring-accent/30"
-                          : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
-                      )}>
-                      {opt.icon}
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
+              <div className="text-[9px] text-text-muted p-1.5 bg-bg-secondary rounded">
+                可视化控制已移至视口下方浮动工具栏
               </div>
-
-              {/* Opacity */}
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-text-muted">透明度</span>
-                <div className="flex items-center gap-1">
-                  <input type="range" min={0.1} max={1} step={0.05} value={heatmapOpacity}
-                    onChange={(e) => setHeatmapOpacity(parseFloat(e.target.value))}
-                    className="w-16 accent-accent" />
-                  <span className="text-[10px] text-text-muted w-8 text-right">{Math.round(heatmapOpacity * 100)}%</span>
-                </div>
-              </div>
-
-              {/* Point size */}
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-text-muted">点大小</span>
-                <div className="flex items-center gap-1">
-                  <input type="range" min={1} max={8} step={0.5} value={pointSize}
-                    onChange={(e) => setPointSize(parseFloat(e.target.value))}
-                    className="w-16 accent-accent" />
-                  <span className="text-[10px] text-text-muted w-6 text-right">{pointSize}</span>
-                </div>
-              </div>
-
-              {/* Particle density */}
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-text-muted">粒子密度</span>
-                <div className="flex items-center gap-1">
-                  {[1, 2, 3].map((d) => (
-                    <button key={d} onClick={() => setParticleDensity(d)}
-                      className={cn(
-                        "px-1.5 py-0.5 rounded text-[9px] transition-colors",
-                        particleDensity === d ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
-                      )}>
-                      {d}×
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Streamlines */}
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-text-muted">流线显示</span>
-                <div className="flex items-center gap-1.5">
-                  <button onClick={() => setStreamlinesVisible(!streamlinesVisible)}
-                    className={cn("p-1 rounded transition-colors", streamlinesVisible ? "bg-accent/20 text-accent" : "bg-bg-secondary text-text-muted")}>
-                    {streamlinesVisible ? <Eye size={12} /> : <EyeOff size={12} />}
-                  </button>
-                </div>
-              </div>
-              {streamlinesVisible && (
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-text-muted">流线数量</span>
-                  <div className="flex items-center gap-1">
-                    <input type="range" min={10} max={80} step={5} value={streamlineCount}
-                      onChange={(e) => setStreamlineCount(parseInt(e.target.value))}
-                      className="w-16 accent-accent" />
-                    <span className="text-[10px] text-text-muted w-6 text-right">{streamlineCount}</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Stats */}
-              <div className="text-[9px] text-text-muted">
-                {(visualizationData.n_points * particleDensity).toLocaleString()} 粒子 ({visualizationData.n_points.toLocaleString()} 体素) | 缺陷标记 {visualizationData.defect_positions.length}
-              </div>
-            </motion.div>
+            </div>
           )}
           {!simResult.has_visualization && (
             <div className="text-[10px] text-text-muted p-2 bg-bg-secondary rounded">
@@ -1528,71 +1465,31 @@ function SimPanel() {
         </Section>
       )}
 
-      {/* 5. Fill Animation Player */}
-      {visualizationData && (
-        <Section title="5. 充填动画">
-          <div className="space-y-2">
-            {/* Playback controls */}
-            <div className="flex items-center gap-1.5">
-              <button onClick={() => { setAnimationProgress(0); setAnimationPlaying(true); }}
-                className="p-1 rounded bg-bg-secondary hover:bg-bg-hover text-text-muted" title="从头播放">
-                <Rewind size={12} />
-              </button>
-              <button onClick={() => setAnimationPlaying(!animationPlaying)}
-                className={cn("p-1.5 rounded transition-colors", animationPlaying ? "bg-accent text-white" : "bg-bg-secondary hover:bg-bg-hover text-text-muted")}
-                title={animationPlaying ? "暂停" : "播放"}>
-                {animationPlaying ? <Pause size={12} /> : <Play size={12} />}
-              </button>
-              <div className="flex-1">
-                <input type="range" min={0} max={1} step={0.01} value={animationProgress}
-                  onChange={(e) => { setAnimationProgress(parseFloat(e.target.value)); setAnimationPlaying(false); }}
-                  className="w-full accent-accent" />
-              </div>
-              <span className="text-[10px] text-text-muted w-10 text-right tabular-nums">
-                {(animationProgress * 100).toFixed(0)}%
-              </span>
+      {/* 5. Surface Overlay */}
+      {visualizationData && simId && (
+        <Section title="5. 表面叠加" icon={<Layers size={11} />}
+          badge={surfaceMapData ? <span className="text-[8px] text-success font-medium">已加载</span> : undefined}>
+          {!surfaceMapData && (
+            <ActionButton
+              icon={<Layers size={13} />}
+              label={surfaceMapLoading ? "加载中..." : "生成表面热力图"}
+              loading={surfaceMapLoading}
+              onClick={() => fetchSurfaceMap.mutate({ simId, modelId, field: heatmapField })}
+            />
+          )}
+          {surfaceMapData && (
+            <div className="text-[9px] text-success p-1.5 bg-success/5 rounded">
+              ✓ 表面映射已叠加于模型表面 — 可在浮动栏切换
             </div>
-
-            {/* Speed & loop */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] text-text-muted">速度</span>
-                {[0.5, 1, 2, 4].map((s) => (
-                  <button key={s} onClick={() => setAnimationSpeed(s)}
-                    className={cn(
-                      "px-1.5 py-0.5 rounded text-[9px] transition-colors",
-                      animationSpeed === s ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
-                    )}>
-                    {s}×
-                  </button>
-                ))}
-              </div>
-              <button onClick={() => setAnimationLoop(!animationLoop)}
-                className={cn(
-                  "px-1.5 py-0.5 rounded text-[9px] transition-colors",
-                  animationLoop ? "bg-accent/20 text-accent" : "bg-bg-secondary text-text-muted",
-                )}>
-                循环
-              </button>
-            </div>
-
-            {/* Time info */}
-            {simResult && (
-              <div className="text-[9px] text-text-muted">
-                当前时刻: {(animationProgress * simResult.fill_time_seconds).toFixed(2)}s
-                / {simResult.fill_time_seconds.toFixed(2)}s
-              </div>
-            )}
-          </div>
+          )}
         </Section>
       )}
 
       {/* 6. Cross-Section */}
       {visualizationData && simId && (
-        <Section title="6. 截面分析">
+        <CollapsibleSection title="6. 截面分析" icon={<Slice size={11} />} defaultOpen={false}>
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-text-muted">截面轴</span>
+            <ParamRow label="截面轴">
               <div className="flex items-center gap-1">
                 {(["x", "y", "z"] as const).map((ax) => (
                   <button key={ax} onClick={() => setCrossSectionAxis(ax)}
@@ -1604,16 +1501,8 @@ function SimPanel() {
                   </button>
                 ))}
               </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-text-muted">位置</span>
-              <div className="flex items-center gap-1">
-                <input type="range" min={0} max={1} step={0.02} value={crossSectionPosition}
-                  onChange={(e) => setCrossSectionPosition(parseFloat(e.target.value))}
-                  className="w-20 accent-accent" />
-                <span className="text-[10px] text-text-muted w-8 text-right">{(crossSectionPosition * 100).toFixed(0)}%</span>
-              </div>
-            </div>
+            </ParamRow>
+            <ParamSlider label="位置" value={crossSectionPosition} onChange={setCrossSectionPosition} min={0} max={1} step={0.02} width="w-20" />
             <ActionButton
               icon={<Slice size={13} />}
               label="生成截面热力图"
@@ -1632,209 +1521,117 @@ function SimPanel() {
               </motion.div>
             )}
           </div>
-        </Section>
+        </CollapsibleSection>
       )}
 
       {/* 7. Analysis Report */}
       {simResult?.analysis && (
-        <Section title="7. 综合分析报告">
-          <button onClick={() => setAnalysisExpanded(!analysisExpanded)}
-            className="w-full flex items-center justify-between p-2 rounded bg-bg-secondary text-[10px] text-text-secondary hover:bg-bg-hover transition-colors">
-            <div className="flex items-center gap-1.5">
-              <BarChart3 size={12} className="text-accent" />
-              <span>质量评分: <span className="text-accent font-bold">{(simResult.analysis.fill_quality_score * 100).toFixed(1)}%</span></span>
+        <CollapsibleSection title="7. 综合分析" icon={<BarChart3 size={11} />} defaultOpen={false}
+          badge={<span className={cn("text-[8px] font-bold", simResult.analysis.fill_quality_score > 0.7 ? "text-success" : "text-warning")}>
+            {(simResult.analysis.fill_quality_score * 100).toFixed(0)}%
+          </span>}>
+          <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+            <div className="text-text-muted font-semibold">均匀性指标</div>
+            <AnalysisBar label="充填均匀" value={simResult.analysis.fill_uniformity_index} />
+            <AnalysisBar label="压力均匀" value={simResult.analysis.pressure_uniformity_index} />
+            <AnalysisBar label="速度均匀" value={simResult.analysis.velocity_uniformity_index} />
+            <AnalysisBar label="充填平衡" value={simResult.analysis.fill_balance_score} />
+
+            <div className="text-text-muted font-semibold mt-2">剪切 & 温度</div>
+            <ResultRow label="最大剪切率" value={`${simResult.analysis.max_shear_rate.toFixed(1)} 1/s`} />
+            <ResultRow label="平均剪切率" value={`${simResult.analysis.avg_shear_rate.toFixed(1)} 1/s`} />
+            <ResultRow label="温度范围" value={`${simResult.analysis.temperature_range[0].toFixed(1)}~${simResult.analysis.temperature_range[1].toFixed(1)} °C`} />
+            <ResultRow label="平均固化" value={`${(simResult.analysis.avg_cure_progress * 100).toFixed(1)}%`} />
+
+            <div className="text-text-muted font-semibold mt-2">壁厚分析</div>
+            <ResultRow label="壁厚范围" value={`${simResult.analysis.min_thickness.toFixed(1)}~${simResult.analysis.max_thickness.toFixed(1)} mm`} />
+            <ResultRow label="薄壁占比" value={`${(simResult.analysis.thin_wall_fraction * 100).toFixed(1)}%`}
+              color={simResult.analysis.thin_wall_fraction > 0.1 ? "text-warning" : undefined} />
+            <ResultRow label="厚壁占比" value={`${(simResult.analysis.thick_wall_fraction * 100).toFixed(1)}%`}
+              color={simResult.analysis.thick_wall_fraction > 0.1 ? "text-warning" : undefined} />
+
+            <div className="text-text-muted font-semibold mt-2">效率指标</div>
+            <ResultRow label="流长比" value={simResult.analysis.flow_length_ratio.toFixed(1)} />
+            <ResultRow label="浇口效率" value={`${(simResult.analysis.gate_efficiency * 100).toFixed(1)}%`} />
+            <ResultRow label="滞流区" value={simResult.analysis.n_stagnation_zones}
+              color={simResult.analysis.n_stagnation_zones > 3 ? "text-warning" : undefined} />
+            <ResultRow label="高剪切区" value={simResult.analysis.n_high_shear_zones}
+              color={simResult.analysis.n_high_shear_zones > 2 ? "text-warning" : undefined} />
+          </div>
+
+          {simResult.analysis.recommendations.length > 0 && (
+            <div className="p-2 rounded border border-accent/20 bg-accent/5 text-[10px] text-text-secondary mt-1.5 space-y-1">
+              <div className="flex items-center gap-1 font-medium text-accent">
+                <Lightbulb size={11} />
+                优化建议
+              </div>
+              {simResult.analysis.recommendations.map((rec, i) => (
+                <div key={i} className="pl-3 text-text-muted leading-relaxed">• {rec}</div>
+              ))}
             </div>
-            {analysisExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-          </button>
-
-          <AnimatePresence>
-            {analysisExpanded && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                className="overflow-hidden"
-              >
-                <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5 mt-1">
-                  <div className="text-text-muted font-semibold">均匀性指标</div>
-                  <AnalysisBar label="充填均匀" value={simResult.analysis.fill_uniformity_index} />
-                  <AnalysisBar label="压力均匀" value={simResult.analysis.pressure_uniformity_index} />
-                  <AnalysisBar label="速度均匀" value={simResult.analysis.velocity_uniformity_index} />
-                  <AnalysisBar label="充填平衡" value={simResult.analysis.fill_balance_score} />
-
-                  <div className="text-text-muted font-semibold mt-2">剪切 & 温度</div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">最大剪切率</span>
-                    <span>{simResult.analysis.max_shear_rate.toFixed(1)} 1/s</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">平均剪切率</span>
-                    <span>{simResult.analysis.avg_shear_rate.toFixed(1)} 1/s</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">温度范围</span>
-                    <span>{simResult.analysis.temperature_range[0].toFixed(1)}~{simResult.analysis.temperature_range[1].toFixed(1)} °C</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">平均固化进度</span>
-                    <span>{(simResult.analysis.avg_cure_progress * 100).toFixed(1)}%</span>
-                  </div>
-
-                  <div className="text-text-muted font-semibold mt-2">壁厚分析</div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">壁厚范围</span>
-                    <span>{simResult.analysis.min_thickness.toFixed(1)}~{simResult.analysis.max_thickness.toFixed(1)} mm</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">薄壁占比</span>
-                    <span className={simResult.analysis.thin_wall_fraction > 0.1 ? "text-warning" : ""}>
-                      {(simResult.analysis.thin_wall_fraction * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">厚壁占比</span>
-                    <span className={simResult.analysis.thick_wall_fraction > 0.1 ? "text-warning" : ""}>
-                      {(simResult.analysis.thick_wall_fraction * 100).toFixed(1)}%
-                    </span>
-                  </div>
-
-                  <div className="text-text-muted font-semibold mt-2">其他指标</div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">流长比</span>
-                    <span>{simResult.analysis.flow_length_ratio.toFixed(1)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">浇口效率</span>
-                    <span>{(simResult.analysis.gate_efficiency * 100).toFixed(1)}%</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">滞流区</span>
-                    <span className={simResult.analysis.n_stagnation_zones > 3 ? "text-warning" : ""}>
-                      {simResult.analysis.n_stagnation_zones}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">高剪切区</span>
-                    <span className={simResult.analysis.n_high_shear_zones > 2 ? "text-warning" : ""}>
-                      {simResult.analysis.n_high_shear_zones}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Recommendations */}
-                {simResult.analysis.recommendations.length > 0 && (
-                  <div className="p-2 rounded border border-accent/20 bg-accent/5 text-[10px] text-text-secondary mt-1.5 space-y-1">
-                    <div className="flex items-center gap-1 font-medium text-accent">
-                      <Lightbulb size={11} />
-                      优化建议
-                    </div>
-                    {simResult.analysis.recommendations.map((rec, i) => (
-                      <div key={i} className="pl-3 text-text-muted leading-relaxed">• {rec}</div>
-                    ))}
-                  </div>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </Section>
+          )}
+        </CollapsibleSection>
       )}
 
       {/* 8. Auto Optimization */}
-      <Section title={simResult?.analysis ? "8. 自动优化" : "4. 自动优化"}>
+      <Section title="8. 自动优化" icon={<RefreshCw size={11} />}>
         <ActionButton
           icon={<RefreshCw size={13} />}
           label={isOptimizing ? "优化中..." : "自动优化"}
           loading={isOptimizing}
+          variant="primary"
+          disabled={!gatingId}
           onClick={() => gatingId && runOpt.mutate({ modelId, moldId, gatingId }, {
             onSuccess: () => toastSuccess("优化完成"),
             onError: (e) => toastError("优化失败", (e as Error).message),
           })}
         />
         {optimizationResult && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-            className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1">
-            <div className="flex justify-between">
-              <span className="text-text-muted">收敛</span>
-              <span className={optimizationResult.converged ? "text-success" : "text-warning"}>
-                {optimizationResult.converged ? "是" : "否"}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">迭代次数</span>
-              <span>{optimizationResult.iterations}</span>
-            </div>
+          <ResultCard className="mt-2">
+            <ResultRow label="收敛" value={optimizationResult.converged ? "是" : "否"}
+              color={optimizationResult.converged ? "text-success" : "text-warning"} />
+            <ResultRow label="迭代次数" value={optimizationResult.iterations} />
             <div className="flex justify-between">
               <span className="text-text-muted">充填率</span>
               <span>
                 {(optimizationResult.initial_fill_fraction * 100).toFixed(1)}%
-                {" → "}
-                <span className="text-accent">{(optimizationResult.final_fill_fraction * 100).toFixed(1)}%</span>
+                <span className="text-text-muted mx-0.5">→</span>
+                <span className="text-accent font-semibold">{(optimizationResult.final_fill_fraction * 100).toFixed(1)}%</span>
               </span>
             </div>
             <div className="flex justify-between">
               <span className="text-text-muted">缺陷数</span>
               <span>
-                {optimizationResult.initial_defects} → <span className="text-accent">{optimizationResult.final_defects}</span>
+                {optimizationResult.initial_defects}
+                <span className="text-text-muted mx-0.5">→</span>
+                <span className="text-accent font-semibold">{optimizationResult.final_defects}</span>
               </span>
             </div>
-          </motion.div>
+          </ResultCard>
         )}
       </Section>
 
-      {/* 9. Surface Overlay */}
-      {visualizationData && simId && (
-        <Section title="9. 表面叠加显示">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-text-muted">模型表面映射</span>
-              <button onClick={() => setSurfaceMapVisible(!surfaceMapVisible)}
-                className={cn("p-1 rounded transition-colors", surfaceMapVisible ? "bg-accent/20 text-accent" : "bg-bg-secondary text-text-muted")}>
-                {surfaceMapVisible ? <Eye size={12} /> : <EyeOff size={12} />}
-              </button>
-            </div>
-            {!surfaceMapData && (
-              <ActionButton
-                icon={<Layers size={13} />}
-                label={surfaceMapLoading ? "加载中..." : "生成表面热力图"}
-                loading={surfaceMapLoading}
-                onClick={() => fetchSurfaceMap.mutate({
-                  simId, modelId, field: heatmapField,
-                })}
-              />
-            )}
-            {surfaceMapData && (
-              <div className="text-[9px] text-text-muted">
-                表面映射已加载 — 模拟数据已叠加于模型表面
-              </div>
-            )}
-          </div>
-        </Section>
-      )}
 
-      {/* 10. FEA Structural Analysis */}
-      <Section title={visualizationData ? "10. 有限元分析 (FEA)" : "4. 有限元分析 (FEA)"}>
+      {/* 9. FEA Structural Analysis */}
+      <Section title="9. 有限元分析 (FEA)" icon={<Activity size={11} />}
+        badge={feaResult ? <span className="text-[8px] text-success font-medium">完成</span> : undefined}>
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">材料</span>
-            <select
-              value={feaMaterial}
-              onChange={(e) => setFeaMaterial(e.target.value)}
-              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
-            >
-              <option value="pla">PLA</option>
-              <option value="abs">ABS</option>
-              <option value="petg">PETG</option>
-              <option value="nylon">尼龙</option>
-              <option value="silicone">硅胶</option>
-              <option value="resin">树脂</option>
-              <option value="aluminum">铝合金</option>
-              <option value="steel">钢</option>
-            </select>
-          </div>
+          <ParamSelect label="材料" value={feaMaterial} onChange={setFeaMaterial}
+            options={[
+              { value: "pla", label: "PLA" },
+              { value: "abs", label: "ABS" },
+              { value: "petg", label: "PETG" },
+              { value: "nylon", label: "尼龙" },
+              { value: "silicone", label: "硅胶" },
+              { value: "resin", label: "树脂" },
+              { value: "aluminum", label: "铝合金" },
+              { value: "steel", label: "钢" },
+            ]} />
           <ActionButton
             icon={<Activity size={13} />}
             label={feaRunning ? "分析中..." : "运行结构分析"}
             loading={feaRunning}
+            variant="primary"
             onClick={() => runFEA.mutate({ modelId, materialPreset: feaMaterial }, {
               onSuccess: ({ feaId: fid }) => {
                 toastSuccess("FEA 分析完成");
@@ -1843,63 +1640,23 @@ function SimPanel() {
               onError: (e) => toastError("FEA 分析失败", (e as Error).message),
             })}
           />
-          {feaResult && (
-            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-              className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1">
-              <div className="flex justify-between">
-                <span className="text-text-muted">最大位移</span>
-                <span className="text-accent">{(feaResult as Record<string, number>).max_displacement_mm?.toFixed(4)} mm</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-muted">最大应力</span>
-                <span className={(feaResult as Record<string, number>).min_safety_factor < 1.5 ? "text-danger" : ""}>
-                  {(feaResult as Record<string, number>).max_stress_mpa?.toFixed(2)} MPa
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-muted">最小安全系数</span>
-                <span className={cn(
-                  (feaResult as Record<string, number>).min_safety_factor < 1.0 ? "text-danger font-bold" :
-                    (feaResult as Record<string, number>).min_safety_factor < 2.0 ? "text-warning" : "text-success"
-                )}>
-                  {(feaResult as Record<string, number>).min_safety_factor?.toFixed(2)}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-muted">平均应力</span>
-                <span>{(feaResult as Record<string, number>).avg_stress_mpa?.toFixed(3)} MPa</span>
-              </div>
-            </motion.div>
-          )}
-
+          {feaResult && (() => {
+            const r = feaResult as Record<string, number>;
+            return (
+              <ResultCard className="mt-1">
+                <ResultRow label="最大位移" value={`${r.max_displacement_mm?.toFixed(4)} mm`} color="text-accent" />
+                <ResultRow label="最大应力" value={`${r.max_stress_mpa?.toFixed(2)} MPa`}
+                  color={r.min_safety_factor < 1.5 ? "text-danger" : undefined} />
+                <ResultRow label="最小安全系数" value={r.min_safety_factor?.toFixed(2)}
+                  color={r.min_safety_factor < 1.0 ? "text-danger font-bold" : r.min_safety_factor < 2.0 ? "text-warning" : "text-success"} />
+                <ResultRow label="平均应力" value={`${r.avg_stress_mpa?.toFixed(3)} MPa`} />
+              </ResultCard>
+            );
+          })()}
           {feaVisualizationData && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-2 mt-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-text-muted">FEA 可视化</span>
-                <button onClick={() => setFEAVisible(!feaVisible)}
-                  className={cn("p-1 rounded transition-colors", feaVisible ? "bg-accent/20 text-accent" : "bg-bg-secondary text-text-muted")}>
-                  {feaVisible ? <Eye size={12} /> : <EyeOff size={12} />}
-                </button>
-              </div>
-              <div className="grid grid-cols-2 gap-1">
-                {([
-                  { v: "von_mises" as const, label: "Von Mises 应力" },
-                  { v: "displacement" as const, label: "位移" },
-                  { v: "safety_factor" as const, label: "安全系数" },
-                  { v: "strain_energy" as const, label: "应变能" },
-                ]).map((opt) => (
-                  <button key={opt.v} onClick={() => setFEAField(opt.v)}
-                    className={cn(
-                      "px-1.5 py-1 rounded text-[9px] transition-colors",
-                      feaField === opt.v
-                        ? "bg-accent/20 text-accent ring-1 ring-accent/30"
-                        : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
-                    )}>
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </motion.div>
+            <div className="text-[9px] text-success p-1.5 bg-success/5 rounded mt-1">
+              ✓ FEA可视化已就绪 — 在视口下方浮动栏切换显示场
+            </div>
           )}
         </div>
       </Section>
@@ -1963,9 +1720,7 @@ function CrossSectionCanvas({ data }: { data: { width: number; height: number; p
     ctx.putImageData(imageData, 0, 0);
   }, [data]);
 
-  useCallback(() => draw, [draw]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useState(() => { setTimeout(draw, 0); });
+  useEffect(() => { draw(); }, [draw]);
 
   return (
     <canvas
@@ -2127,7 +1882,7 @@ function ExportPanel() {
                 <span className="text-text-muted">支撑 / 镶件</span>
                 {insertId ? (
                   <div className="text-text-primary mt-0.5">
-                    支撑板已就绪
+                    内骨骼已就绪
                     {plates.length > 0 && (
                       <span className="text-text-muted">
                         {" "}
@@ -2251,16 +2006,16 @@ function ExportPanel() {
           {insertId && (
             <ActionButton
               icon={<Pin size={13} />}
-              label="导出支撑板 (ZIP)"
+              label="导出内骨骼 (ZIP)"
               loading={exportInsert.isPending}
               onClick={() =>
                 exportInsert.mutate(
                   { insert_id: insertId, format },
                   {
                     onSuccess: () => {
-                      toastSuccess("支撑板已导出");
+                      toastSuccess("内骨骼已导出");
                       setLastExport({
-                        label: "支撑板 (ZIP)",
+                        label: "内骨骼 (ZIP)",
                         ok: true,
                         at: Date.now(),
                       });
@@ -2268,7 +2023,7 @@ function ExportPanel() {
                     onError: (e) => {
                       toastError("导出失败", (e as Error).message);
                       setLastExport({
-                        label: "支撑板",
+                        label: "内骨骼",
                         ok: false,
                         at: Date.now(),
                         detail: (e as Error).message,
@@ -2320,7 +2075,7 @@ function ExportPanel() {
         <div className="mt-2 text-[10px] text-text-muted space-y-0.5">
           <div>
             包含:{" "}
-            {[modelId && "模型", moldId && "模具壳体", insertId && "支撑板"]
+            {[modelId && "模型", moldId && "模具壳体", insertId && "内骨骼"]
               .filter(Boolean)
               .join(" + ") || "无数据"}
           </div>
@@ -2382,11 +2137,47 @@ function ExportPanel() {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, icon, badge }: { title: string; children: React.ReactNode; icon?: React.ReactNode; badge?: React.ReactNode }) {
   return (
     <div>
-      <h4 className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-2">{title}</h4>
+      <div className="flex items-center gap-1.5 mb-2">
+        {icon && <span className="text-text-muted">{icon}</span>}
+        <h4 className="text-[10px] font-semibold text-text-muted uppercase tracking-wider flex-1">{title}</h4>
+        {badge}
+      </div>
       {children}
+    </div>
+  );
+}
+
+function CollapsibleSection({ title, children, icon, badge, defaultOpen = false }: {
+  title: string; children: React.ReactNode; icon?: React.ReactNode; badge?: React.ReactNode; defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-1.5 mb-1 group">
+        {icon && <span className="text-text-muted">{icon}</span>}
+        <h4 className="text-[10px] font-semibold text-text-muted uppercase tracking-wider flex-1 text-left group-hover:text-text-secondary transition-colors">{title}</h4>
+        {badge}
+        <motion.span animate={{ rotate: open ? 180 : 0 }} transition={{ duration: 0.2 }}>
+          <ChevronDown size={11} className="text-text-muted" />
+        </motion.span>
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            {children}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -2396,22 +2187,117 @@ function ActionButton({
   label,
   loading,
   onClick,
+  variant = "default",
+  disabled = false,
 }: {
   icon?: React.ReactNode;
   label: string;
   loading: boolean;
   onClick: () => void;
+  variant?: "default" | "primary";
+  disabled?: boolean;
 }) {
   return (
     <motion.button
       whileHover={{ scale: 1.02 }}
       whileTap={{ scale: 0.98 }}
-      disabled={loading}
+      disabled={loading || disabled}
       onClick={onClick}
-      className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md bg-bg-secondary hover:bg-bg-hover text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+      className={cn(
+        "w-full flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-xs transition-colors disabled:opacity-50",
+        variant === "primary"
+          ? "bg-accent hover:bg-accent/90 text-white"
+          : "bg-bg-secondary hover:bg-bg-hover text-text-secondary hover:text-text-primary",
+      )}
     >
       {loading ? <Loader2 size={13} className="animate-spin" /> : icon}
       {label}
     </motion.button>
+  );
+}
+
+function StepHint({ icon, text, action, actionLabel }: {
+  icon?: React.ReactNode; text: string; action?: () => void; actionLabel?: string;
+}) {
+  return (
+    <div className="p-2.5 rounded-lg border border-accent/20 bg-accent/5 text-[10px] text-text-secondary space-y-1.5">
+      <div className="flex items-start gap-1.5">
+        <span className="text-accent mt-0.5 shrink-0">{icon ?? <Lightbulb size={12} />}</span>
+        <p className="leading-relaxed">{text}</p>
+      </div>
+      {action && actionLabel && (
+        <button onClick={action}
+          className="w-full text-center py-1 rounded bg-accent/10 hover:bg-accent/20 text-accent text-[10px] font-medium transition-colors">
+          {actionLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <span className={cn(
+      "px-1.5 py-0.5 rounded text-[8px] font-medium",
+      ok ? "bg-success/10 text-success" : "bg-bg-secondary text-text-muted",
+    )}>
+      {ok ? "✓" : "○"} {label}
+    </span>
+  );
+}
+
+function ParamRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-[10px] text-text-muted">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function ParamSlider({ label, value, onChange, min, max, step, unit, width = "w-20" }: {
+  label: string; value: number; onChange: (v: number) => void; min: number; max: number; step: number; unit?: string; width?: string;
+}) {
+  return (
+    <ParamRow label={label}>
+      <div className="flex items-center gap-1">
+        <input type="range" min={min} max={max} step={step} value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value))} className={cn(width, "accent-accent")} />
+        <span className="text-[10px] text-text-muted w-12 text-right tabular-nums">
+          {value % 1 === 0 ? value : value.toFixed(1)}{unit ?? ""}
+        </span>
+      </div>
+    </ParamRow>
+  );
+}
+
+function ParamSelect({ label, value, onChange, options }: {
+  label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[];
+}) {
+  return (
+    <ParamRow label={label}>
+      <select value={value} onChange={(e) => onChange(e.target.value)}
+        className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary">
+        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </ParamRow>
+  );
+}
+
+function ResultCard({ children, className: cls }: { children: React.ReactNode; className?: string }) {
+  return (
+    <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
+      className={cn("p-2 rounded-lg bg-bg-secondary text-[10px] space-y-1", cls)}>
+      {children}
+    </motion.div>
+  );
+}
+
+function ResultRow({ label, value, color }: { label: string; value: React.ReactNode; color?: string }) {
+  return (
+    <div className="flex justify-between">
+      <span className="text-text-muted">{label}</span>
+      <span className={color ?? "text-text-primary"}>{value}</span>
+    </div>
   );
 }

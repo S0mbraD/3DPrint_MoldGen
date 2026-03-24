@@ -6,6 +6,7 @@ export interface InsertPosition {
   score: number;
   section_area: number;
   reason: string;
+  skeleton_type?: string;
 }
 
 export interface InsertPlateInfo {
@@ -13,9 +14,26 @@ export interface InsertPlateInfo {
   vertex_count: number;
   thickness: number;
   insert_type: string;
-  position: InsertPosition;
-  anchor: { type: string; count: number; feature_size: number } | null;
-  n_locating_slots: number;
+  skeleton_type?: string;
+  position?: {
+    origin: number[];
+    normal: number[];
+    score: number;
+    section_area: number;
+    reason: string;
+  };
+  anchor?: { type: string; count: number; feature_size: number } | null;
+  n_pillars: number;
+  pillars: Array<{
+    start: number[];
+    end: number[];
+    direction: number[];
+    length: number;
+    diameter: number;
+    mold_hole_center: number[];
+  }>;
+  volume: number;
+  center: number[];
 }
 
 interface InsertState {

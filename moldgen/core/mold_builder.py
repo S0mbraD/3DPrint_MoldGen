@@ -646,13 +646,90 @@ class MoldBuilder:
 
     # ═══════════════ Parting Surface Geometry ══════════════════════
 
+    def _robust_boolean_union(
+        self, mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh,
+    ) -> trimesh.Trimesh | None:
+        """Try boolean union with multiple engines."""
+        try:
+            import manifold3d
+            m_a = manifold3d.Manifold(manifold3d.Mesh(
+                vert_properties=np.asarray(mesh_a.vertices, dtype=np.float32),
+                tri_verts=np.asarray(mesh_a.faces, dtype=np.uint32),
+            ))
+            m_b = manifold3d.Manifold(manifold3d.Mesh(
+                vert_properties=np.asarray(mesh_b.vertices, dtype=np.float32),
+                tri_verts=np.asarray(mesh_b.faces, dtype=np.uint32),
+            ))
+            result_m = m_a + m_b
+            out = result_m.to_mesh()
+            result = trimesh.Trimesh(
+                vertices=np.asarray(out.vert_properties[:, :3]),
+                faces=np.asarray(out.tri_verts), process=True,
+            )
+            if len(result.faces) > 4:
+                return result
+        except Exception as e:
+            logger.debug("manifold3d union failed: %s", e)
+
+        for engine in ("manifold", "blender", None):
+            try:
+                kw = {"engine": engine} if engine else {}
+                result = mesh_a.union(mesh_b, **kw)
+                if result is not None and len(result.faces) > 4:
+                    return result
+            except Exception:
+                pass
+
+        return None
+
+    def _robust_boolean_intersect(
+        self, mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh,
+    ) -> trimesh.Trimesh | None:
+        """Try boolean intersection with multiple engines."""
+        try:
+            import manifold3d
+            m_a = manifold3d.Manifold(manifold3d.Mesh(
+                vert_properties=np.asarray(mesh_a.vertices, dtype=np.float32),
+                tri_verts=np.asarray(mesh_a.faces, dtype=np.uint32),
+            ))
+            m_b = manifold3d.Manifold(manifold3d.Mesh(
+                vert_properties=np.asarray(mesh_b.vertices, dtype=np.float32),
+                tri_verts=np.asarray(mesh_b.faces, dtype=np.uint32),
+            ))
+            result_m = m_a ^ m_b
+            out = result_m.to_mesh()
+            result = trimesh.Trimesh(
+                vertices=np.asarray(out.vert_properties[:, :3]),
+                faces=np.asarray(out.tri_verts), process=True,
+            )
+            if len(result.faces) > 4:
+                return result
+        except Exception as e:
+            logger.debug("manifold3d intersect failed: %s", e)
+
+        for engine in ("manifold", "blender", None):
+            try:
+                kw = {"engine": engine} if engine else {}
+                result = mesh_a.intersection(mesh_b, **kw)
+                if result is not None and len(result.faces) > 4:
+                    return result
+            except Exception:
+                pass
+
+        return None
+
     def _create_parting_interlock(
         self,
         solid: trimesh.Trimesh,
         center: np.ndarray,
         direction: np.ndarray,
     ) -> trimesh.Trimesh | None:
-        """Create an interlock shape along the parting plane for boolean add/subtract."""
+        """Create interlock geometry at the parting plane.
+
+        The interlock shape protrudes in the +direction (upward) from the
+        parting plane. The upper shell will contain these protrusions,
+        while the lower shell will have matching grooves.
+        """
         c = self.config
         style = c.parting_style
         if style == "flat":
@@ -666,8 +743,8 @@ class MoldBuilder:
         u = np.cross(up, arb); u /= (np.linalg.norm(u) + 1e-12)
         v = np.cross(up, u);   v /= (np.linalg.norm(v) + 1e-12)
 
-        span_u = float(np.max(extents)) * 1.5
-        span_v = float(np.max(extents)) * 1.5
+        span_u = float(np.max(extents)) + 2 * c.margin
+        span_v = float(np.max(extents)) + 2 * c.margin
         depth = c.parting_depth
         pitch = c.parting_pitch
 
@@ -682,12 +759,12 @@ class MoldBuilder:
                 bot_w = pitch * 0.2
                 h = depth
                 verts = np.array([
-                    pos - v * span_v / 2 + u * (-top_w / 2) + up * 0,
-                    pos - v * span_v / 2 + u * (top_w / 2) + up * 0,
+                    pos - v * span_v / 2 + u * (-top_w / 2),
+                    pos - v * span_v / 2 + u * (top_w / 2),
                     pos - v * span_v / 2 + u * (bot_w / 2) + up * h,
                     pos - v * span_v / 2 + u * (-bot_w / 2) + up * h,
-                    pos + v * span_v / 2 + u * (-top_w / 2) + up * 0,
-                    pos + v * span_v / 2 + u * (top_w / 2) + up * 0,
+                    pos + v * span_v / 2 + u * (-top_w / 2),
+                    pos + v * span_v / 2 + u * (top_w / 2),
                     pos + v * span_v / 2 + u * (bot_w / 2) + up * h,
                     pos + v * span_v / 2 + u * (-bot_w / 2) + up * h,
                 ])
@@ -724,24 +801,20 @@ class MoldBuilder:
         elif style == "step":
             n_steps = max(2, int(span_u / pitch))
             for i in range(n_steps):
+                if i % 2 != 0:
+                    continue
                 offset_u = -span_u / 2 + (i + 0.5) * (span_u / n_steps)
                 pos = center + u * offset_u
-                w = pitch * 0.4
-                h = depth * (1 if i % 2 == 0 else 0.5)
-                box = trimesh.primitives.Box(
-                    extents=[w, span_v, h],
-                    transform=trimesh.transformations.translation_matrix(
-                        pos + up * h / 2
-                    ),
-                ).to_mesh()
+                w = span_u / n_steps * 0.95
+                h = depth
                 T = np.eye(4)
                 T[:3, 0] = u
                 T[:3, 1] = v
                 T[:3, 2] = up
                 T[:3, 3] = pos + up * h / 2
-                box_aligned = trimesh.primitives.Box(extents=[w, span_v, h]).to_mesh()
-                box_aligned.apply_transform(T)
-                parts.append(box_aligned)
+                box = trimesh.primitives.Box(extents=[w, span_v, h]).to_mesh()
+                box.apply_transform(T)
+                parts.append(box)
 
         elif style == "tongue_groove":
             n_tongues = max(2, int(span_u / (pitch * 2)))
@@ -776,7 +849,12 @@ class MoldBuilder:
         center: np.ndarray,
         direction: np.ndarray,
     ) -> tuple[trimesh.Trimesh | None, trimesh.Trimesh | None]:
-        """Split solid with interlock: upper gets +interlock, lower gets -interlock."""
+        """Split solid with interlock profile.
+
+        Strategy: first split the solid flat, then use boolean operations
+        to transfer interlock geometry between halves. If boolean ops fail,
+        fall back to simple flat split.
+        """
         interlock = self._create_parting_interlock(solid, center, direction)
 
         upper = _safe_slice(solid, center, direction)
@@ -785,19 +863,34 @@ class MoldBuilder:
         if upper is None or lower is None:
             return upper, lower
 
-        if interlock is not None:
-            try:
-                upper_with = trimesh.util.concatenate([upper, interlock])
-                upper_with = _repair_mesh(upper_with)
-                upper = upper_with
-            except Exception:
-                pass
-            try:
-                lower_cut = self._robust_boolean_subtract(lower, interlock)
-                if lower_cut is not None and len(lower_cut.faces) > 4:
-                    lower = _repair_mesh(lower_cut)
-            except Exception:
-                pass
+        if interlock is None:
+            return upper, lower
+
+        # Clip interlock geometry to within the mold solid boundary
+        # so features don't protrude from the exterior
+        clipped = self._robust_boolean_intersect(interlock, solid)
+        if clipped is not None and len(clipped.faces) > 4:
+            interlock = _repair_mesh(clipped)
+            logger.info("Parting interlock: clipped to mold solid (%d faces)", len(interlock.faces))
+        else:
+            logger.info("Parting interlock: clip failed, using raw geometry")
+
+        # Boolean union: add interlock protrusions to upper shell
+        union_result = self._robust_boolean_union(upper, interlock)
+        if union_result is not None and len(union_result.faces) > len(upper.faces) // 2:
+            upper = _repair_mesh(union_result)
+            logger.info("Parting interlock: union OK (%d faces)", len(upper.faces))
+        else:
+            logger.warning("Parting interlock: union failed, falling back to flat split")
+            return upper, lower
+
+        # Boolean subtract: cut matching grooves from lower shell
+        sub_result = self._robust_boolean_subtract(lower, interlock)
+        if sub_result is not None and len(sub_result.faces) > 4:
+            lower = _repair_mesh(sub_result)
+            logger.info("Parting interlock: subtract OK (%d faces)", len(lower.faces))
+        else:
+            logger.warning("Parting interlock: subtract failed, upper has interlock but lower is flat")
 
         return upper, lower
 
@@ -1558,3 +1651,52 @@ class MoldBuilder:
         """Legacy interface — delegates to _compute_vent_holes."""
         holes = self._compute_vent_holes(tm_model, direction)
         return [h.position for h in holes]
+
+    # ═══════════════ Pillar Hole Cutting ══════════════════════════
+
+    def cut_pillar_holes(
+        self, shells: list["MoldShell"], pillar_positions: list[dict],
+    ) -> list["MoldShell"]:
+        """Boolean-subtract cylindrical holes through mold shells for support pillars.
+
+        Each pillar_positions entry: { mold_hole_center, direction, diameter }
+        """
+        if not pillar_positions:
+            return shells
+
+        c = self.config
+        hole_cyls: list[trimesh.Trimesh] = []
+
+        for p in pillar_positions:
+            center = np.asarray(p["mold_hole_center"], dtype=np.float64)
+            direction = np.asarray(p["direction"], dtype=np.float64)
+            direction /= np.linalg.norm(direction) + 1e-12
+            diameter = float(p.get("diameter", 2.0))
+            tolerance = 0.3
+
+            cyl = _make_cylinder(
+                center, direction,
+                radius=(diameter / 2.0) + tolerance,
+                height=(c.wall_thickness + c.margin) * 3,
+            )
+            hole_cyls.append(cyl)
+
+        updated: list[MoldShell] = []
+        for sh in shells:
+            tm_shell = sh.mesh.to_trimesh()
+            cut_count = 0
+            for hole_cyl in hole_cyls:
+                try:
+                    result = self._robust_boolean_subtract(tm_shell, hole_cyl)
+                    if result is not None and len(result.faces) > 4:
+                        tm_shell = result
+                        cut_count += 1
+                except Exception:
+                    pass
+            if cut_count > 0:
+                tm_shell = _repair_mesh(tm_shell)
+                sh.mesh = MeshData.from_trimesh(tm_shell)
+                logger.info("Cut %d pillar holes in shell %d", cut_count, sh.shell_id)
+            updated.append(sh)
+
+        return updated

@@ -477,7 +477,12 @@ class OrientationAnalyzer:
             _has_cupy() and mesh.face_count < ANALYSIS_MAX_FACES_GPU
         )
         if use_gpu:
-            result = self._analyze_gpu(mesh)
+            try:
+                result = self._analyze_gpu(mesh)
+            except Exception as e:
+                logger.warning("GPU analysis failed (%s), falling back to CPU", e)
+                use_gpu = False
+                result = self._analyze_cpu(mesh)
         else:
             result = self._analyze_cpu(mesh)
 

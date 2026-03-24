@@ -19,7 +19,8 @@ class InsertErrorBoundary extends Component<
   }
 }
 
-const INSERT_COLOR = new THREE.Color(0.2, 0.85, 0.45);
+const PLATE_COLOR = new THREE.Color(0.2, 0.85, 0.45);
+const PILLAR_COLOR = new THREE.Color(0.95, 0.65, 0.15);
 
 export function InsertPlateViewer({
   insertId,
@@ -32,26 +33,39 @@ export function InsertPlateViewer({
   opacity?: number;
   visible?: boolean;
 }) {
-  const url = useMemo(
+  const plateUrl = useMemo(
     () => `/api/v1/inserts/result/${insertId}/plate/${plateIndex}/glb`,
+    [insertId, plateIndex],
+  );
+  const pillarUrl = useMemo(
+    () => `/api/v1/inserts/result/${insertId}/plate/${plateIndex}/pillars.glb`,
     [insertId, plateIndex],
   );
 
   return (
-    <InsertErrorBoundary>
-      <Suspense fallback={null}>
-        <PlateModel url={url} opacity={opacity} visible={visible} />
-      </Suspense>
-    </InsertErrorBoundary>
+    <>
+      <InsertErrorBoundary>
+        <Suspense fallback={null}>
+          <PlateModel url={plateUrl} color={PLATE_COLOR} opacity={opacity} visible={visible} />
+        </Suspense>
+      </InsertErrorBoundary>
+      <InsertErrorBoundary>
+        <Suspense fallback={null}>
+          <PlateModel url={pillarUrl} color={PILLAR_COLOR} opacity={Math.min(1, opacity + 0.2)} visible={visible} />
+        </Suspense>
+      </InsertErrorBoundary>
+    </>
   );
 }
 
 function PlateModel({
   url,
+  color,
   opacity,
   visible,
 }: {
   url: string;
+  color: THREE.Color;
   opacity: number;
   visible: boolean;
 }) {
@@ -63,7 +77,7 @@ function PlateModel({
       if ((child as Mesh).isMesh) {
         const mesh = child as Mesh;
         mesh.material = new THREE.MeshPhysicalMaterial({
-          color: INSERT_COLOR,
+          color,
           roughness: 0.3,
           metalness: 0.05,
           transparent: true,
@@ -78,7 +92,7 @@ function PlateModel({
       }
     });
     return clone;
-  }, [scene, opacity]);
+  }, [scene, opacity, color]);
 
   return <primitive object={clonedScene} visible={visible} />;
 }

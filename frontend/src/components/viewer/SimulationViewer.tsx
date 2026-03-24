@@ -1,6 +1,7 @@
 import { useRef, useMemo, useEffect } from "react";
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useLoader } from "@react-three/fiber";
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { useSimStore, type HeatmapField } from "../../stores/simStore";
 import { useModelStore } from "../../stores/modelStore";
 
@@ -272,14 +273,22 @@ export function SimulationViewer() {
  *  StreamlineViewer — flow streamlines from fill-time gradient
  * ═══════════════════════════════════════════════════════════════════ */
 
-const STREAMLINE_COLORS = [
-  new THREE.Color(0.95, 0.3, 0.3),
-  new THREE.Color(1.0, 0.6, 0.15),
-  new THREE.Color(0.2, 0.85, 0.4),
-  new THREE.Color(0.2, 0.6, 1.0),
-  new THREE.Color(0.7, 0.3, 1.0),
-  new THREE.Color(1.0, 0.85, 0.1),
-];
+function streamHeatColor(t: number): THREE.Color {
+  t = Math.max(0, Math.min(1, t));
+  if (t < 0.25) {
+    const s = t / 0.25;
+    return new THREE.Color(0.05, 0.1 + s * 0.4, 0.6 + s * 0.3);
+  } else if (t < 0.5) {
+    const s = (t - 0.25) / 0.25;
+    return new THREE.Color(0.05 + s * 0.15, 0.5 + s * 0.4, 0.9 - s * 0.5);
+  } else if (t < 0.75) {
+    const s = (t - 0.5) / 0.25;
+    return new THREE.Color(0.2 + s * 0.75, 0.9 - s * 0.1, 0.4 - s * 0.35);
+  } else {
+    const s = (t - 0.75) / 0.25;
+    return new THREE.Color(0.95, 0.8 - s * 0.65, 0.05 + s * 0.05);
+  }
+}
 
 function buildSpatialGrid(
   pos: number[][],
@@ -332,7 +341,7 @@ export function StreamlineViewer() {
   const streamlineCount = useSimStore((s) => s.streamlineCount);
   const animProgress = useSimStore((s) => s.animationProgress);
 
-  const lines = useMemo(() => {
+  const lines = useMemo((): { points: THREE.Vector3[]; fillTimes: number[] }[] => {
     if (!visData || visData.n_points < 10) return [];
 
     const n = visData.n_points;
@@ -349,7 +358,7 @@ export function StreamlineViewer() {
     const cellSize = pitch * 3.0;
     const searchRadiusSq = cellSize * cellSize;
     const nLines = Math.min(streamlineCount, 80);
-    const result: { points: THREE.Vector3[]; color: THREE.Color }[] = [];
+    const result: { points: THREE.Vector3[]; fillTimes: number[] }[] = [];
 
     const { grid } = buildSpatialGrid(pos, cellSize);
 
@@ -369,6 +378,7 @@ export function StreamlineViewer() {
 
     for (let si = 0; si < seeds.length; si++) {
       const linePoints: THREE.Vector3[] = [];
+      const lineFillTimes: number[] = [];
       let cur = seeds[si];
       const visited = new Set<number>();
 
@@ -378,6 +388,7 @@ export function StreamlineViewer() {
 
         const cp = pos[cur];
         linePoints.push(new THREE.Vector3(cp[0], cp[1], cp[2]));
+        lineFillTimes.push(ft[cur] ?? 0);
 
         const neighbors = getNeighborIndices(grid, cp[0], cp[1], cp[2], cellSize);
         let bestNext = -1;
@@ -404,7 +415,7 @@ export function StreamlineViewer() {
       if (linePoints.length >= 3) {
         result.push({
           points: linePoints,
-          color: STREAMLINE_COLORS[si % STREAMLINE_COLORS.length],
+          fillTimes: lineFillTimes,
         });
       }
     }
@@ -417,56 +428,84 @@ export function StreamlineViewer() {
   return (
     <group>
       {lines.map((line, i) => (
-        <StreamlineCurve
+        <StreamlineTube
           key={i}
           points={line.points}
-          color={line.color}
+          fillTimes={line.fillTimes}
           animProgress={animProgress}
+          radius={(visData?.voxel_pitch || 1) * 0.25}
         />
       ))}
     </group>
   );
 }
 
-function StreamlineCurve({
+function StreamlineTube({
   points,
-  color,
+  fillTimes,
   animProgress,
+  radius,
 }: {
   points: THREE.Vector3[];
-  color: THREE.Color;
+  fillTimes: number[];
   animProgress: number;
+  radius: number;
 }) {
-  const ref = useRef<THREE.Line>(null);
-
-  const { geometry, material } = useMemo(() => {
+  const geometry = useMemo(() => {
     const curve = new THREE.CatmullRomCurve3(points, false, "centripetal", 0.5);
-    const smoothPoints = curve.getPoints(points.length * 4);
-    const geo = new THREE.BufferGeometry().setFromPoints(smoothPoints);
+    const nSegments = Math.max(points.length * 3, 20);
+    const tubeGeo = new THREE.TubeGeometry(curve, nSegments, radius, 6, false);
 
-    const colors = new Float32Array(smoothPoints.length * 3);
-    for (let i = 0; i < smoothPoints.length; i++) {
-      const t = i / (smoothPoints.length - 1);
-      const fade = t <= animProgress ? Math.min(1.0, (animProgress - t) * 5 + 0.3) : 0.0;
-      colors[i * 3] = color.r * fade;
-      colors[i * 3 + 1] = color.g * fade;
-      colors[i * 3 + 2] = color.b * fade;
+    const positions = tubeGeo.attributes.position;
+    const nVerts = positions.count;
+    const colors = new Float32Array(nVerts * 3);
+
+    // Map each vertex to its parametric position along the curve
+    for (let i = 0; i < nVerts; i++) {
+      const vx = positions.getX(i);
+      const vy = positions.getY(i);
+      const vz = positions.getZ(i);
+
+      // Find nearest point on curve to get parametric t
+      let bestT = 0;
+      let bestDist = Infinity;
+      for (let pi = 0; pi < points.length; pi++) {
+        const dx = vx - points[pi].x;
+        const dy = vy - points[pi].y;
+        const dz = vz - points[pi].z;
+        const d = dx * dx + dy * dy + dz * dz;
+        if (d < bestDist) {
+          bestDist = d;
+          bestT = pi;
+        }
+      }
+
+      const ft = fillTimes[bestT] ?? 0;
+      const visible = ft <= animProgress;
+      const c = streamHeatColor(ft);
+      const fade = visible ? Math.min(1.0, (animProgress - ft) * 8 + 0.4) : 0.0;
+
+      colors[i * 3] = c.r * fade;
+      colors[i * 3 + 1] = c.g * fade;
+      colors[i * 3 + 2] = c.b * fade;
     }
-    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
 
-    const mat = new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.85,
-      linewidth: 1,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
+    tubeGeo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    return tubeGeo;
+  }, [points, fillTimes, animProgress, radius]);
 
-    return { geometry: geo, material: mat };
-  }, [points, color, animProgress]);
-
-  return <primitive ref={ref} object={new THREE.Line(geometry, material)} />;
+  return (
+    <mesh geometry={geometry}>
+      <meshBasicMaterial
+        vertexColors
+        transparent
+        opacity={0.9}
+        side={THREE.DoubleSide}
+        blending={THREE.AdditiveBlending}
+        depthWrite={false}
+      />
+    </mesh>
+  );
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -627,7 +666,7 @@ export function FEAViewer() {
   const feaField = useSimStore((s) => s.feaField);
   const glbUrl = useModelStore((s) => s.glbUrl);
 
-  const geometry = useMemo(() => {
+  const colorData = useMemo(() => {
     if (!feaData) return null;
 
     const n = feaData.n_vertices;
@@ -659,38 +698,67 @@ export function FEAViewer() {
     return { colors, n };
   }, [feaData, feaField]);
 
-  if (!feaVisible || !geometry || !glbUrl) return null;
+  if (!feaVisible || !colorData || !glbUrl) return null;
 
-  return <FEAMeshOverlay colors={geometry.colors} />;
+  return <FEAMeshOverlay glbUrl={glbUrl} colors={colorData.colors} nVerts={colorData.n} />;
 }
 
-function FEAMeshOverlay({ colors }: { colors: Float32Array }) {
+function FEAMeshOverlay({ glbUrl, colors, nVerts }: {
+  glbUrl: string; colors: Float32Array; nVerts: number;
+}) {
+  const gltf = useLoader(GLTFLoader, glbUrl);
   const meshRef = useRef<THREE.Mesh>(null);
-  const meshInfo = useModelStore((s) => s.meshInfo);
+
+  const clonedGeometry = useMemo(() => {
+    let srcGeo: THREE.BufferGeometry | null = null;
+    gltf.scene.traverse((child) => {
+      if (!srcGeo && (child as THREE.Mesh).isMesh) {
+        srcGeo = (child as THREE.Mesh).geometry;
+      }
+    });
+    if (!srcGeo) return null;
+    const geo = (srcGeo as THREE.BufferGeometry).clone();
+    const nGeo = geo.attributes.position.count;
+
+    if (nGeo === nVerts) {
+      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    } else {
+      // Vertex count mismatch: map colors via nearest-neighbor interpolation
+      const mapped = new Float32Array(nGeo * 3);
+      const ratio = nVerts / nGeo;
+      for (let i = 0; i < nGeo; i++) {
+        const src = Math.min(Math.floor(i * ratio), nVerts - 1);
+        mapped[i * 3] = colors[src * 3];
+        mapped[i * 3 + 1] = colors[src * 3 + 1];
+        mapped[i * 3 + 2] = colors[src * 3 + 2];
+      }
+      geo.setAttribute("color", new THREE.BufferAttribute(mapped, 3));
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }, [gltf, colors, nVerts]);
 
   useEffect(() => {
-    const mesh = meshRef.current;
-    if (!mesh?.geometry) return;
-    const geo = mesh.geometry;
-    if (geo.attributes.position && colors.length / 3 === geo.attributes.position.count) {
-      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-      geo.attributes.color.needsUpdate = true;
+    if (!meshRef.current || !clonedGeometry) return;
+    const geo = meshRef.current.geometry;
+    if (geo !== clonedGeometry) {
+      meshRef.current.geometry = clonedGeometry;
     }
-  }, [colors]);
+  }, [clonedGeometry]);
 
-  if (!meshInfo) return null;
-
-  const center = meshInfo.center || [0, 0, 0];
+  if (!clonedGeometry) return null;
 
   return (
-    <mesh ref={meshRef} position={[0, 0, 0]}>
-      <sphereGeometry args={[0.01, 1, 1]} />
-      <meshStandardMaterial
+    <mesh ref={meshRef} geometry={clonedGeometry}>
+      <meshPhysicalMaterial
         vertexColors
         transparent
-        opacity={0.8}
+        opacity={0.85}
         side={THREE.DoubleSide}
-        roughness={0.5}
+        roughness={0.4}
+        metalness={0.05}
+        depthWrite={false}
+        clearcoat={0.3}
       />
     </mesh>
   );
