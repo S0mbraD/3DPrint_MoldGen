@@ -1,0 +1,78 @@
+# MoldGen Conda Environment
+# 创建: conda env create -f environment.yml
+# 激活: conda activate moldgen
+# 更新: conda env update -f environment.yml --prune
+#
+# 已验证硬件: i7 + RTX 4060 Ti 16GB VRAM + Windows 10
+# Conda 根: D:\AI\miniconda3
+# CUDA: 12.8 (Numba 0.64 + CuPy 14 已验证)
+
+name: moldgen
+channels:
+  - conda-forge
+  - nvidia
+  - defaults
+
+dependencies:
+  - python=3.11
+
+  # CUDA (conda 管理, 12.8 兼容 Numba 0.64 PTX 8.8)
+  - cuda-toolkit=12.8
+  - numba>=0.64
+
+  # 科学计算 (conda 预编译)
+  - numpy>=1.26
+  - scipy>=1.12
+  - networkx>=3.2
+  - scikit-learn>=1.4
+  - joblib>=1.3
+  - pillow>=10.0
+
+  # 3D (conda-forge)
+  - open3d>=0.18
+
+  # 构建工具
+  - cmake
+  - pkg-config
+
+  - pip
+  - pip:
+    # Web 框架
+    - fastapi>=0.110.0
+    - uvicorn[standard]>=0.29.0
+    - pydantic>=2.6.0
+    - pydantic-settings>=2.2.0
+    - python-multipart>=0.0.9
+    - websockets>=12.0
+
+    # 3D 网格处理
+    - trimesh>=4.0.0
+    - manifold3d>=2.5.0
+    - pyassimp>=5.2.0
+    - meshio>=5.3.0
+    - pyvista>=0.43.0
+
+    # GPU 加速
+    - cupy-cuda12x>=14.0.0
+    - cubvh>=0.1.0
+
+    # AI 服务 SDK
+    - openai>=1.30.0
+    - dashscope>=1.17.0
+    - httpx>=0.27.0
+
+    # 数据库
+    - sqlalchemy>=2.0.0
+    - aiosqlite>=0.20.0
+
+    # 流式响应
+    - sse-starlette>=2.0.0
+
+    # 打包
+    - pyinstaller>=6.0.0
+
+    # 开发工具
+    - ruff>=0.3.0
+    - mypy>=1.9.0
+    - pytest>=8.0.0
+    - pytest-asyncio>=0.23.0
