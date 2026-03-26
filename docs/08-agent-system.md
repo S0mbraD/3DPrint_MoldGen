@@ -355,47 +355,37 @@ class SimOptAgent:
     }
 ```
 
-### 3.6 CreativeAgent — 创意生成
+### 3.6 CreativeAgent — 创意生成 ✅ 已实现
+
+CreativeAgent 支持**云端+本地**双后端透明切换。
+
+**后端支持：**
+
+| 功能 | 云端 | 本地 |
+|------|------|------|
+| 图像生成 | 通义万相 (DashScope) | SDXL / FLUX.1-schnell / SD 1.5 / Kolors |
+| 文字→3D | Tripo3D API | ❌ (需先生成图像) |
+| 图片→3D | Tripo3D API | TripoSR / InstantMesh / TRELLIS |
+| 模型审查 | Qwen-VL | Qwen-VL (云端) |
+| 提示词优化 | DeepSeek/Qwen LLM | 规则匹配 (fallback) |
+
+**实现的工具：**
 
 ```python
-class CreativeAgent:
-    """创意生成 Agent — AI图像/3D模型生成 + 需求转化"""
-    
-    SYSTEM_PROMPT = """
-    你是 MoldGen 的创意生成专家。你能将用户的自然语言描述转化为
-    高质量的参考图像和3D器官模型。
-    
-    你的工作流程：
-    1. 理解用户需求（器官类型、尺寸、细节要求）
-    2. 优化提示词（转换为适合AI生成的英文提示词）
-    3. 生成参考图像（通义万相）供用户选择
-    4. 从选定图像生成3D模型（Tripo3D）
-    5. 模型质量审查（Qwen-VL）
-    6. 交付给 ModelAgent 进行后续处理
-    
-    自动执行规则：
-    - 收到生成请求 → 自动优化提示词 → 生成3张参考图 → 等待用户选择
-    - 用户选择图片后 → 自动生成3D模型 → 自动审查 → 报告质量
-    - 用户说"随便选一张" → 自动选择最佳图片
-    - 用户说"全自动" → 自动选择+生成+审查
-    
-    提示词优化策略：
-    - 中文需求 → 翻译为英文（AI生成模型英文效果更好）
-    - 添加质量修饰词: "highly detailed, medical grade, anatomically accurate"
-    - 添加风格修饰词: "clean background, studio lighting, 3D render style"
-    - 根据器官类型添加专业术语
-    """
-    
-    TOOLS = [
-        "optimize_prompt",          # 优化生成提示词
-        "generate_images",          # 生成参考图像(通义万相)
-        "generate_3d_from_text",    # 文字→3D(Tripo3D)
-        "generate_3d_from_image",   # 图像→3D(Tripo3D)
-        "review_model_quality",     # 模型质量审查(Qwen-VL)
-        "suggest_improvements",     # 建议改进方向
-        "load_generated_model",     # 将生成的模型加载到场景
-    ]
+TOOLS = [
+    "optimize_prompt",          # LLM 优化提示词 (fallback: 规则匹配)
+    "generate_images",          # 生成参考图像 (云端万相/本地Diffusers)
+    "generate_3d_from_text",    # 文字→3D (仅云端Tripo3D)
+    "generate_3d_from_image",   # 图像→3D (云端Tripo3D/本地TripoSR)
+    "review_model_quality",     # Qwen-VL 质量审查
+    "list_local_models",        # 列出本地可用模型
+    "switch_provider",          # 切换云端/本地后端
+]
 ```
+
+**执行流水线：** 提示词优化 → 图像生成 → (用户选择) → 图→3D → 审查 → 交付
+
+详见 `docs/10-local-models.md`。
 
 ## 4. Agent 自动执行引擎
 

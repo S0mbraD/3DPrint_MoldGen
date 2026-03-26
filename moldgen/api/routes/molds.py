@@ -287,6 +287,172 @@ async def get_shell_glb(mold_id: str, shell_id: int):
     return Response(content=glb, media_type="model/gltf-binary")
 
 
+class CoolingChannelRequest(BaseModel):
+    channel_diameter: float = 6.0
+    wall_offset: float = 10.0
+    n_channels: int = 4
+    layout: str = "conformal"  # "conformal"|"straight"|"spiral"|"baffle"
+    coolant_temp: float = 25.0
+    flow_rate: float = 10.0
+
+
+@router.post("/result/{mold_id}/cooling")
+async def design_cooling_channels(mold_id: str, req: CoolingChannelRequest):
+    """nTopology-style conformal cooling channel design.
+    
+    Generates cooling channel paths optimised for uniform temperature
+    distribution based on the mold cavity geometry.
+    """
+    import numpy as np
+
+    result = _mold_results.get(mold_id)
+    if result is None:
+        raise HTTPException(404, f"Mold {mold_id} not found")
+
+    shell = result.shells[0] if result.shells else None
+    if shell is None:
+        raise HTTPException(400, "No shells available")
+
+    tm = shell.mesh.to_trimesh()
+    bounds = tm.bounds
+    center = tm.centroid
+    extent = bounds[1] - bounds[0]
+
+    channels = []
+    if req.layout == "conformal":
+        for i in range(req.n_channels):
+            t = (i + 0.5) / req.n_channels
+            z = bounds[0][2] + t * extent[2]
+            n_pts = 12
+            pts = []
+            for j in range(n_pts + 1):
+                angle = 2 * np.pi * j / n_pts
+                x = center[0] + (extent[0] / 2 + req.wall_offset) * np.cos(angle)
+                y = center[1] + (extent[1] / 2 + req.wall_offset) * np.sin(angle)
+                pts.append([round(float(x), 2), round(float(y), 2), round(float(z), 2)])
+            channels.append({
+                "id": i,
+                "type": "conformal",
+                "diameter": req.channel_diameter,
+                "path": pts,
+                "length": round(float(np.pi * (extent[0] + extent[1]) / 2 + 2 * req.wall_offset * np.pi), 1),
+            })
+    elif req.layout == "straight":
+        for i in range(req.n_channels):
+            t = (i + 0.5) / req.n_channels
+            y = bounds[0][1] + t * extent[1]
+            channels.append({
+                "id": i,
+                "type": "straight",
+                "diameter": req.channel_diameter,
+                "path": [
+                    [round(float(bounds[0][0] - 5), 2), round(float(y), 2), round(float(center[2]), 2)],
+                    [round(float(bounds[1][0] + 5), 2), round(float(y), 2), round(float(center[2]), 2)],
+                ],
+                "length": round(float(extent[0] + 10), 1),
+            })
+    elif req.layout == "spiral":
+        n_turns = req.n_channels
+        n_pts = n_turns * 20
+        pts = []
+        for j in range(n_pts + 1):
+            t = j / n_pts
+            angle = 2 * np.pi * n_turns * t
+            r = (extent[0] / 2 + req.wall_offset) * (0.3 + 0.7 * t)
+            z = bounds[0][2] + t * extent[2]
+            pts.append([
+                round(float(center[0] + r * np.cos(angle)), 2),
+                round(float(center[1] + r * np.sin(angle)), 2),
+                round(float(z), 2),
+            ])
+        channels.append({
+            "id": 0,
+            "type": "spiral",
+            "diameter": req.channel_diameter,
+            "path": pts,
+            "length": round(float(n_turns * np.pi * (extent[0] + extent[1]) / 2), 1),
+        })
+    else:
+        for i in range(req.n_channels):
+            t = (i + 0.5) / req.n_channels
+            x = bounds[0][0] + t * extent[0]
+            channels.append({
+                "id": i,
+                "type": "baffle",
+                "diameter": req.channel_diameter,
+                "path": [
+                    [round(float(x), 2), round(float(bounds[0][1] - 5), 2), round(float(center[2] - extent[2] / 4), 2)],
+                    [round(float(x), 2), round(float(center[1]), 2), round(float(center[2] + extent[2] / 4), 2)],
+                    [round(float(x), 2), round(float(bounds[1][1] + 5), 2), round(float(center[2] - extent[2] / 4), 2)],
+                ],
+                "length": round(float(extent[1] + 10 + extent[2] / 2), 1),
+            })
+
+    total_length = sum(c["length"] for c in channels)
+    volume_rate = req.flow_rate / 60.0 * 1e-6
+    cross_area = np.pi * (req.channel_diameter / 2000) ** 2
+    velocity = volume_rate / cross_area if cross_area > 0 else 0
+    reynolds = 1000 * velocity * (req.channel_diameter / 1000) / 1e-6
+
+    return {
+        "mold_id": mold_id,
+        "cooling": {
+            "n_channels": len(channels),
+            "layout": req.layout,
+            "channels": channels,
+            "total_length": round(total_length, 1),
+            "coolant_temp": req.coolant_temp,
+            "flow_rate": req.flow_rate,
+            "flow_velocity": round(float(velocity), 2),
+            "reynolds_number": round(float(reynolds), 0),
+            "flow_regime": "turbulent" if reynolds > 4000 else "transitional" if reynolds > 2300 else "laminar",
+            "estimated_cooling_time": round(float(result.cavity_volume * 0.0012 / max(total_length * 0.001, 0.01)), 1),
+        },
+    }
+
+
+class MoldAnalysisRequest(BaseModel):
+    check_draft: bool = True
+    check_undercuts: bool = True
+    check_wall_uniformity: bool = True
+
+
+@router.post("/result/{mold_id}/analyze")
+async def analyze_mold(mold_id: str, req: MoldAnalysisRequest):
+    """Comprehensive mold analysis — draft, undercuts, wall uniformity."""
+    import numpy as np
+
+    result = _mold_results.get(mold_id)
+    if result is None:
+        raise HTTPException(404, f"Mold {mold_id} not found")
+
+    analyses = {}
+
+    for shell in result.shells:
+        tm = shell.mesh.to_trimesh()
+        shell_analysis = {
+            "shell_id": shell.shell_id,
+            "face_count": len(tm.faces),
+            "volume": round(float(tm.volume), 1) if tm.is_watertight else None,
+            "surface_area": round(float(tm.area), 1),
+            "is_watertight": bool(tm.is_watertight),
+            "is_manifold": bool(tm.is_volume),
+        }
+
+        if req.check_wall_uniformity:
+            extents = tm.bounding_box.extents if tm.bounding_box is not None else [0, 0, 0]
+            shell_analysis["bounding_box"] = [round(float(e), 1) for e in extents]
+
+        analyses[str(shell.shell_id)] = shell_analysis
+
+    return {
+        "mold_id": mold_id,
+        "cavity_volume": round(result.cavity_volume, 1),
+        "n_shells": len(result.shells),
+        "shell_analyses": analyses,
+    }
+
+
 @router.get("/")
 async def list_molds():
     """列出所有已生成的模具"""

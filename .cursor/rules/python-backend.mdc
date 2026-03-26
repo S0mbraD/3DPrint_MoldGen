@@ -1,0 +1,16 @@
+---
+description: Python backend coding standards for moldgen/ files
+globs: moldgen/**/*.py
+alwaysApply: false
+---
+
+# Python Backend Standards
+
+- Python 3.11+, use `from __future__ import annotations` in all files
+- Ruff: line-length=100, target=py311
+- Type hints on all function signatures
+- Use `StrEnum` for enums, `dataclass` for data containers, Pydantic `BaseModel` for API schemas
+- Async preferred for API handlers and AI calls
+- Singleton pattern via `__new__` for ToolRegistry, AIServiceManager, AgentMemoryManager
+- Logging: `logger = logging.getLogger(__name__)` at module level
+- Config: access via `moldgen.config.get_config()`, never hardcode values

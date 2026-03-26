@@ -1,14 +1,17 @@
-"""Agent 自动执行引擎 — 调度 Agent 完成复杂多步任务"""
+"""Agent 自动执行引擎 — 调度 Agent 完成复杂多步任务，支持事件流和回滚"""
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from moldgen.ai.agent_base import (
+    AgentConfig,
     AgentContext,
+    AgentEvent,
     AgentRole,
     BaseAgent,
     StepResult,
@@ -102,11 +105,20 @@ PIPELINE_TEMPLATES: dict[str, list[PlanStep]] = {
 
 
 class AgentExecutionEngine:
-    """Agent 执行引擎 — 管理多 Agent 协作"""
+    """Agent 执行引擎 — 管理多 Agent 协作，支持事件流、回滚和配置"""
 
     def __init__(self) -> None:
         self._agents: dict[AgentRole, BaseAgent] = {}
         self._current_plan: ExecutionPlan | None = None
+        self._event_listeners: list[Callable[[AgentEvent], Any]] = []
+        self._global_config: dict[str, Any] = {
+            "default_mode": "semi_auto",
+            "thinking_style": "balanced",
+            "enable_memory": True,
+            "enable_self_reflection": True,
+            "max_retries": 2,
+            "auto_confirm_threshold": 0.85,
+        }
 
     def register_agent(self, agent: BaseAgent) -> None:
         self._agents[agent.role] = agent
@@ -116,15 +128,62 @@ class AgentExecutionEngine:
         return self._agents.get(role)
 
     def list_agents(self) -> list[dict]:
-        return [
-            {
-                "role": agent.role.value,
-                "name": agent.name,
-                "description": agent.description,
-                "tools": agent.get_available_tools(),
-            }
-            for agent in self._agents.values()
-        ]
+        return [agent.get_full_info() for agent in self._agents.values()]
+
+    def add_event_listener(self, listener: Callable[[AgentEvent], Any]) -> None:
+        self._event_listeners.append(listener)
+
+    def remove_event_listener(self, listener: Callable[[AgentEvent], Any]) -> None:
+        self._event_listeners.discard(listener) if hasattr(self._event_listeners, 'discard') else None
+        if listener in self._event_listeners:
+            self._event_listeners.remove(listener)
+
+    async def _emit(self, event: AgentEvent) -> None:
+        for listener in self._event_listeners:
+            try:
+                await _maybe_await(listener(event))
+            except Exception:
+                logger.debug("Event listener error", exc_info=True)
+
+    # ── Configuration ──────────────────────────────────────────────────
+
+    def get_global_config(self) -> dict[str, Any]:
+        return dict(self._global_config)
+
+    def update_global_config(self, updates: dict[str, Any]) -> dict[str, Any]:
+        for key, value in updates.items():
+            if key in self._global_config:
+                self._global_config[key] = value
+        self._apply_config_to_agents()
+        return self.get_global_config()
+
+    def get_agent_config(self, role: AgentRole) -> AgentConfig | None:
+        agent = self._agents.get(role)
+        return agent.config if agent else None
+
+    def update_agent_config(self, role: AgentRole, updates: dict) -> AgentConfig | None:
+        agent = self._agents.get(role)
+        if not agent:
+            return None
+        agent.config = AgentConfig.from_dict({**agent.config.to_dict(), **updates})
+        return agent.config
+
+    def _apply_config_to_agents(self) -> None:
+        from moldgen.ai.agent_base import ExecutionMode, ThinkingStyle
+        for agent in self._agents.values():
+            if "thinking_style" in self._global_config:
+                try:
+                    agent.config.thinking_style = ThinkingStyle(self._global_config["thinking_style"])
+                except ValueError:
+                    pass
+            if "enable_memory" in self._global_config:
+                agent.config.enable_memory = bool(self._global_config["enable_memory"])
+            if "enable_self_reflection" in self._global_config:
+                agent.config.enable_self_reflection = bool(self._global_config["enable_self_reflection"])
+            if "max_retries" in self._global_config:
+                agent.config.max_retries = int(self._global_config["max_retries"])
+
+    # ── Plan Management ────────────────────────────────────────────────
 
     def create_plan(self, template_name: str) -> ExecutionPlan | None:
         template = PIPELINE_TEMPLATES.get(template_name)
@@ -151,6 +210,8 @@ class AgentExecutionEngine:
             ))
         return ExecutionPlan(name=name, steps=plan_steps)
 
+    # ── Execution ──────────────────────────────────────────────────────
+
     async def execute_plan(
         self,
         plan: ExecutionPlan,
@@ -162,6 +223,11 @@ class AgentExecutionEngine:
         self._current_plan = plan
         logger.info("Executing plan: %s (%d steps)", plan.name, len(plan.steps))
 
+        await self._emit(AgentEvent(
+            event_type="plan_start", agent_role="engine",
+            data={"plan": plan.name, "steps": len(plan.steps)},
+        ))
+
         result = ExecutionResult(
             plan_name=plan.name,
             success=True,
@@ -169,12 +235,18 @@ class AgentExecutionEngine:
         )
 
         for i, step in enumerate(plan.steps):
-            # Check dependencies
-            for dep_idx in step.depends_on:
-                if dep_idx < len(plan.steps) and plan.steps[dep_idx].status == "failed":
-                    step.status = "skipped"
-                    result.steps.append(step.to_dict())
-                    continue
+            deps_failed = any(
+                dep_idx < len(plan.steps) and plan.steps[dep_idx].status == "failed"
+                for dep_idx in step.depends_on
+            )
+            if deps_failed:
+                step.status = "skipped"
+                result.steps.append(step.to_dict())
+                await self._emit(AgentEvent(
+                    event_type="step_skipped", agent_role=step.agent.value,
+                    data={"step": i, "task": step.task, "reason": "dependency_failed"},
+                ))
+                continue
 
             agent = self._agents.get(step.agent)
             if not agent:
@@ -187,7 +259,16 @@ class AgentExecutionEngine:
                 result.steps.append(step.to_dict())
                 continue
 
+            if not agent.config.enabled:
+                step.status = "skipped"
+                result.steps.append(step.to_dict())
+                continue
+
             step.status = "running"
+            await self._emit(AgentEvent(
+                event_type="step_start", agent_role=step.agent.value,
+                data={"step": i, "task": step.task, "total": len(plan.steps)},
+            ))
             if on_step_start:
                 await _maybe_await(on_step_start(i, step))
 
@@ -210,11 +291,21 @@ class AgentExecutionEngine:
                 result.success = False
 
             result.steps.append(step.to_dict())
+
+            await self._emit(AgentEvent(
+                event_type="step_complete", agent_role=step.agent.value,
+                data={"step": i, "task": step.task, "success": step.status == "done"},
+            ))
             if on_step_complete:
                 await _maybe_await(on_step_complete(i, step))
 
         result.elapsed_seconds = time.time() - start_time
         self._current_plan = None
+
+        await self._emit(AgentEvent(
+            event_type="plan_complete", agent_role="engine",
+            data={"plan": plan.name, "success": result.success, "elapsed": result.elapsed_seconds},
+        ))
 
         logger.info(
             "Plan '%s' finished: %d/%d steps, success=%s, %.1fs",
@@ -233,7 +324,25 @@ class AgentExecutionEngine:
                 step_name=task, success=False,
                 error=f"Agent {role.value} not registered",
             )
-        return await agent.execute(task, context)
+        if not agent.config.enabled:
+            return StepResult(
+                step_name=task, success=False,
+                error=f"Agent {role.value} is disabled",
+            )
+
+        await self._emit(AgentEvent(
+            event_type="single_start", agent_role=role.value,
+            data={"task": task[:80]},
+        ))
+
+        result = await agent.execute(task, context)
+
+        await self._emit(AgentEvent(
+            event_type="single_complete", agent_role=role.value,
+            data={"task": task[:80], "success": result.success},
+        ))
+
+        return result
 
     @property
     def current_plan(self) -> ExecutionPlan | None:

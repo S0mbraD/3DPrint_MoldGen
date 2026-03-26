@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-interface MeshInfo {
+export interface MeshInfo {
   vertex_count: number;
   face_count: number;
   bounds_min: number[];
@@ -38,7 +38,7 @@ export const useModelStore = create<ModelState>((set) => ({
   glbRevision: 0,
   isLoading: false,
 
-  setModel: (id, filename, info) =>
+  setModel: (id, filename, info) => {
     set({
       modelId: id,
       filename,
@@ -46,17 +46,32 @@ export const useModelStore = create<ModelState>((set) => ({
       glbUrl: `/api/v1/models/${id}/glb`,
       glbRevision: 0,
       isLoading: false,
-    }),
-  updateMeshInfo: (info) => set({ meshInfo: info }),
+    });
+    _syncToApp(filename, info.face_count);
+  },
+  updateMeshInfo: (info) => {
+    set({ meshInfo: info });
+    const state = useModelStore.getState();
+    if (state.filename) _syncToApp(state.filename, info.face_count);
+  },
   setGlbUrl: (url) => set({ glbUrl: url }),
-  bumpGlbRevision: () => set((s) => ({ glbRevision: s.glbRevision + 1, glbUrl: `/api/v1/models/${s.modelId}/glb?v=${s.glbRevision + 1}` })),
+  bumpGlbRevision: () => set((s) => ({
+    glbRevision: s.glbRevision + 1,
+    glbUrl: `/api/v1/models/${s.modelId}/glb?v=${s.glbRevision + 1}`,
+  })),
   setLoading: (v) => set({ isLoading: v }),
-  clearModel: () =>
+  clearModel: () => {
     set({
       modelId: null,
       filename: null,
       meshInfo: null,
       glbUrl: null,
       glbRevision: 0,
-    }),
+    });
+    import("./appStore").then(({ useAppStore }) => useAppStore.getState().clearModelInfo());
+  },
 }));
+
+function _syncToApp(filename: string, faceCount: number) {
+  import("./appStore").then(({ useAppStore }) => useAppStore.getState().setModelInfo(filename, faceCount));
+}

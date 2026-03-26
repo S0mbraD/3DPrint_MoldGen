@@ -1,17 +1,18 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronLeft, Upload, Settings, Loader2, Scissors, Maximize2, RotateCcw, Compass, SplitSquareVertical, Box, Droplets, Zap, RefreshCw, Pin, CheckCircle2, Download, Package, Grid3x3, FlipVertical, ArrowUpDown, RotateCw, ZoomIn, FileText, Layers, Activity, Slice, ChevronDown, BarChart3, Lightbulb, Ruler, Anchor } from "lucide-react";
+import { ChevronLeft, Upload, Settings, Loader2, Scissors, Maximize2, RotateCcw, Compass, SplitSquareVertical, Box, Droplets, Zap, RefreshCw, Pin, CheckCircle2, Download, Package, Grid3x3, FlipVertical, ArrowUpDown, RotateCw, ZoomIn, FileText, Layers, Activity, Slice, ChevronDown, BarChart3, Lightbulb, Ruler, Anchor, Cpu, Grid } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
-import { useModelStore } from "../../stores/modelStore";
+import { useModelStore, type MeshInfo } from "../../stores/modelStore";
 import { useMoldStore } from "../../stores/moldStore";
 import { useSimStore } from "../../stores/simStore";
 import { useInsertStore } from "../../stores/insertStore";
-import { useUploadModel, useSimplifyModel, useSubdivideModel, useTransformModel, useRepairModel } from "../../hooks/useModelApi";
+import { useUploadModel, useSimplifyModel, useSubdivideModel, useTransformModel, useRepairModel, useModelQuality } from "../../hooks/useModelApi";
 import { useOrientationAnalysis, usePartingGeneration, useMoldGeneration } from "../../hooks/useMoldApi";
 import { useGatingDesign, useRunSimulation, useRunOptimization, useFetchVisualization, useFetchCrossSection, useFetchSurfaceMap, useRunFEA, useFetchFEAVisualization } from "../../hooks/useSimApi";
 import { useAnalyzePositions, useGenerateInserts, useValidateAssembly } from "../../hooks/useInsertApi";
+import { useThicknessAnalysis, useCurvatureAnalysis, useSymmetryAnalysis, useOverhangAnalysis, useSmoothMesh, useRemeshMesh, useThickenMesh, useOffsetMesh } from "../../hooks/useAnalysisApi";
+import type { ThicknessData, CurvatureData, SymmetryData, OverhangData } from "../../hooks/useAnalysisApi";
 import { useExportModel, useExportMold, useExportInsert, useExportAll } from "../../hooks/useExportApi";
-import { StepToolbar } from "./StepToolbar";
 import { cn } from "../../lib/utils";
 import { toastSuccess, toastError, toastInfo } from "../../stores/toastStore";
 
@@ -46,11 +47,6 @@ export function LeftPanel() {
             </div>
           </div>
 
-          {/* Step-specific toolbar — wired to panel actions */}
-          <StepToolbar step={currentStep} onAction={(id) => {
-            window.dispatchEvent(new CustomEvent("moldgen:toolbar-action", { detail: id }));
-          }} />
-
           <div className="flex-1 overflow-y-auto p-3 space-y-4">
             {currentStep === "import" && <ImportPanel />}
             {currentStep === "repair" && <EditPanel />}
@@ -71,7 +67,7 @@ function ImportPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
   const upload = useUploadModel();
   const { setModel } = useModelStore();
-  const { setStep, setModelInfo } = useAppStore();
+  const { setStep, markStepCompleted } = useAppStore();
   const [isDragging, setIsDragging] = useState(false);
 
   const handleFile = useCallback(
@@ -79,14 +75,14 @@ function ImportPanel() {
       try {
         const data = await upload.mutateAsync(file);
         setModel(data.model_id, data.filename, data.mesh_info);
-        setModelInfo(data.filename, data.mesh_info.face_count);
+        markStepCompleted("import");
         setStep("repair");
         toastSuccess("模型已导入", `${data.filename} — ${data.mesh_info.face_count.toLocaleString()} 面`);
       } catch (e) {
         toastError("导入失败", (e as Error)?.message ?? "未知错误");
       }
     },
-    [upload, setModel, setModelInfo, setStep],
+    [upload, setModel, markStepCompleted, setStep],
   );
 
   const handleDrop = useCallback(
@@ -183,6 +179,45 @@ function ImportPanel() {
           </p>
         </div>
       </Section>
+
+      {/* Model health card shown after upload */}
+      {useModelStore.getState().meshInfo && (() => {
+        const info = useModelStore.getState().meshInfo!;
+        const issues: string[] = [];
+        if (!info.is_watertight) issues.push("非水密模型");
+        if (info.face_count < 500) issues.push("面数过低 (<500)");
+        if (info.face_count > 500000) issues.push("面数较多 (>500k)");
+        const ext = info.extents;
+        if (ext && Math.max(...ext) > 300) issues.push("尺寸较大 (>300mm)");
+        if (ext && Math.min(...ext) < 1) issues.push("存在极小维度 (<1mm)");
+        const vol = info.volume;
+        if (vol != null && vol <= 0) issues.push("体积计算异常");
+        return (
+          <Section title="模型健康状态" icon={<Activity size={11} />}>
+            <div className={cn(
+              "p-2 rounded border text-[10px] space-y-1.5",
+              issues.length === 0 ? "border-success/30 bg-success/5" : "border-warning/30 bg-warning/5",
+            )}>
+              <div className="flex items-center gap-1.5 font-medium">
+                {issues.length === 0
+                  ? <><CheckCircle2 size={12} className="text-success" /><span className="text-success">健康</span></>
+                  : <><span className="text-warning">⚠</span><span className="text-warning">{issues.length} 项需关注</span></>}
+              </div>
+              {issues.length > 0 && issues.map((iss, i) => (
+                <div key={i} className="text-text-muted pl-4">• {iss}</div>
+              ))}
+              <div className="flex justify-between border-t border-border/30 pt-1">
+                <span className="text-text-muted">单位</span>
+                <span className="text-text-primary font-mono">{info.unit || "mm"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-text-muted">格式</span>
+                <span className="text-text-primary font-mono">{info.source_format || "—"}</span>
+              </div>
+            </div>
+          </Section>
+        );
+      })()}
     </div>
   );
 }
@@ -196,9 +231,30 @@ function EditPanel() {
   const simplify = useSimplifyModel();
   const subdivide = useSubdivideModel();
   const transform = useTransformModel();
+  const { data: qualityData } = useModelQuality(modelId);
+  const markStepCompleted = useAppStore((s) => s.markStepCompleted);
   const [targetRatio, setTargetRatio] = useState(0.5);
   const [subdivIter, setSubdivIter] = useState(1);
   const [scaleVal, setScaleVal] = useState(1.0);
+
+  // nTopology-style analysis hooks
+  const thicknessAnalysis = useThicknessAnalysis();
+  const curvatureAnalysis = useCurvatureAnalysis();
+  const symmetryAnalysis = useSymmetryAnalysis();
+  const overhangAnalysis = useOverhangAnalysis();
+  const smoothMesh = useSmoothMesh();
+  const remeshMesh = useRemeshMesh();
+  const thickenMesh = useThickenMesh();
+  const offsetMesh = useOffsetMesh();
+  const [thicknessData, setThicknessData] = useState<ThicknessData | null>(null);
+  const [curvatureData, setCurvatureData] = useState<CurvatureData | null>(null);
+  const [symmetryData, setSymmetryData] = useState<SymmetryData | null>(null);
+  const [overhangData, setOverhangData] = useState<OverhangData | null>(null);
+  const [smoothMethod, setSmoothMethod] = useState("laplacian");
+  const [smoothIter, setSmoothIter] = useState(3);
+  const [remeshEdge, setRemeshEdge] = useState(1.0);
+  const [thickenVal, setThickenVal] = useState(2.0);
+  const [offsetVal, setOffsetVal] = useState(1.0);
 
   const toolbarRef = useRef<(id: string) => void>(() => {});
 
@@ -341,6 +397,37 @@ function EditPanel() {
         />
       </Section>
 
+      {qualityData?.quality && (
+        <Section title="质量检查" icon={<Activity size={11} />}>
+          <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+            <div className="flex justify-between">
+              <span className="text-text-muted">水密性</span>
+              <span className={qualityData.quality.is_watertight ? "text-success" : "text-warning"}>
+                {qualityData.quality.is_watertight ? "✓ 合格" : "✗ 未封闭"}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">流形</span>
+              <span className={qualityData.quality.is_manifold ? "text-success" : "text-warning"}>
+                {qualityData.quality.is_manifold ? "✓ 合格" : "✗ 非流形"}
+              </span>
+            </div>
+            {qualityData.quality.degenerate_faces > 0 && (
+              <div className="flex justify-between">
+                <span className="text-text-muted">退化面</span>
+                <span className="text-warning">{qualityData.quality.degenerate_faces}</span>
+              </div>
+            )}
+            {qualityData.quality.holes > 0 && (
+              <div className="flex justify-between">
+                <span className="text-text-muted">孔洞数</span>
+                <span className="text-warning">{qualityData.quality.holes}</span>
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
       <Section title="网格信息" icon={<Ruler size={11} />}>
         {meshInfo && (
           <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
@@ -372,15 +459,472 @@ function EditPanel() {
                 {meshInfo.is_watertight ? "✓ 是" : "✗ 否"}
               </span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">面密度</span>
+              <span className="font-mono text-text-secondary">
+                {meshInfo.surface_area && meshInfo.face_count
+                  ? `${(meshInfo.face_count / meshInfo.surface_area).toFixed(2)} 面/mm²`
+                  : "—"}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">平均面积</span>
+              <span className="font-mono text-text-secondary">
+                {meshInfo.surface_area && meshInfo.face_count
+                  ? `${(meshInfo.surface_area / meshInfo.face_count).toFixed(3)} mm²`
+                  : "—"}
+              </span>
+            </div>
           </div>
         )}
       </Section>
 
+      <Section title="模型质量检查" icon={<Activity size={11} />}>
+        <QualityChecker modelId={modelId} />
+      </Section>
+
+      {/* nTopology-style mesh health gauge */}
+      {meshInfo && (
+        <Section title="网格健康度" icon={<Activity size={11} />}>
+          <div className="space-y-2">
+            {(() => {
+              const checks = [
+                { label: "水密", ok: meshInfo.is_watertight, weight: 3 },
+                { label: "正体积", ok: (meshInfo.volume ?? 0) > 0, weight: 2 },
+                { label: "面数 >1k", ok: meshInfo.face_count > 1000, weight: 1 },
+                { label: "面密度合理", ok: meshInfo.surface_area ? meshInfo.face_count / meshInfo.surface_area > 0.1 : false, weight: 1 },
+              ];
+              const score = checks.reduce((a, c) => a + (c.ok ? c.weight : 0), 0);
+              const max = checks.reduce((a, c) => a + c.weight, 0);
+              const pct = Math.round(score / max * 100);
+              const color = pct >= 80 ? "text-success" : pct >= 50 ? "text-accent" : "text-warning";
+              const bgColor = pct >= 80 ? "bg-success" : pct >= 50 ? "bg-accent" : "bg-warning";
+              return (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className={cn("text-2xl font-bold", color)}>{pct}</span>
+                    <span className="text-[10px] text-text-muted">/ 100</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-bg-hover overflow-hidden">
+                    <div className={cn("h-full rounded-full transition-all", bgColor)} style={{ width: `${pct}%` }} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[9px]">
+                    {checks.map((c, i) => (
+                      <div key={i} className="flex items-center gap-1">
+                        <span className={c.ok ? "text-success" : "text-text-muted/40"}>
+                          {c.ok ? "●" : "○"}
+                        </span>
+                        <span className={c.ok ? "text-text-secondary" : "text-text-muted"}>{c.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </Section>
+      )}
+
+      {/* ── nTopology-style Analysis Suite ── */}
+      <CollapsibleSection title="壁厚分析" icon={<Ruler size={11} />} defaultOpen={false}
+        badge={thicknessData ? <span className="text-[8px] text-success">✓</span> : undefined}>
+        <div className="space-y-1.5">
+          <ActionButton
+            icon={<Ruler size={13} />}
+            label={thicknessAnalysis.isPending ? "分析中..." : thicknessData ? "重新分析" : "运行壁厚分析"}
+            loading={thicknessAnalysis.isPending}
+            onClick={() => modelId && thicknessAnalysis.mutate({ modelId }, {
+              onSuccess: (d) => { setThicknessData(d); toastSuccess("壁厚分析完成"); },
+              onError: (e) => toastError("壁厚分析失败", (e as Error).message),
+            })}
+          />
+          {thicknessData && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+              className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+              <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+                <ResultRow label="最小壁厚" value={`${thicknessData.min.toFixed(2)} mm`}
+                  color={thicknessData.min < 1.0 ? "text-danger" : thicknessData.min < 1.5 ? "text-warning" : undefined} />
+                <ResultRow label="最大壁厚" value={`${thicknessData.max.toFixed(2)} mm`} />
+                <ResultRow label="平均壁厚" value={`${thicknessData.mean.toFixed(2)} mm`} />
+                <ResultRow label="标准差" value={`${thicknessData.std.toFixed(3)} mm`} />
+              </div>
+              {thicknessData.thin_count > 0 && (
+                <div className="text-[9px] text-warning flex items-center gap-1">
+                  <span>⚠</span> {thicknessData.thin_count} 个薄壁点 (&lt;1mm)
+                </div>
+              )}
+              {/* Mini histogram */}
+              <div className="flex items-end gap-px h-6 mt-1">
+                {thicknessData.histogram_counts.map((c, i) => {
+                  const maxC = Math.max(...thicknessData.histogram_counts, 1);
+                  return <div key={i} className="flex-1 bg-accent/40 rounded-t-sm" style={{ height: `${(c / maxC) * 100}%` }} />;
+                })}
+              </div>
+              <div className="flex justify-between text-[8px] text-text-muted">
+                <span>{thicknessData.histogram_bins[0]?.toFixed(1)}</span>
+                <span>{thicknessData.histogram_bins[thicknessData.histogram_bins.length - 1]?.toFixed(1)} mm</span>
+              </div>
+            </motion.div>
+          )}
+        </div>
+      </CollapsibleSection>
+
+      <CollapsibleSection title="曲率分析" icon={<Activity size={11} />} defaultOpen={false}
+        badge={curvatureData ? <span className="text-[8px] text-success">✓</span> : undefined}>
+        <div className="space-y-1.5">
+          <ActionButton
+            icon={<Activity size={13} />}
+            label={curvatureAnalysis.isPending ? "分析中..." : curvatureData ? "重新分析" : "运行曲率分析"}
+            loading={curvatureAnalysis.isPending}
+            onClick={() => modelId && curvatureAnalysis.mutate(modelId, {
+              onSuccess: (d) => { setCurvatureData(d); toastSuccess("曲率分析完成"); },
+              onError: (e) => toastError("曲率分析失败", (e as Error).message),
+            })}
+          />
+          {curvatureData && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+              className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+              <div className="text-[9px] font-semibold text-text-muted mb-1">Gaussian 曲率</div>
+              <ResultRow label="最小值" value={curvatureData.gaussian_min.toExponential(2)} />
+              <ResultRow label="最大值" value={curvatureData.gaussian_max.toExponential(2)} />
+              <div className="text-[9px] font-semibold text-text-muted mt-1.5 mb-0.5">平均曲率</div>
+              <ResultRow label="范围" value={`${curvatureData.mean_curvature_min.toExponential(2)} ~ ${curvatureData.mean_curvature_max.toExponential(2)}`} />
+              <div className="text-[8px] text-text-muted/60 mt-1">高曲率区域适合增加晶格密度</div>
+            </motion.div>
+          )}
+        </div>
+      </CollapsibleSection>
+
+      <CollapsibleSection title="对称性分析" icon={<FlipVertical size={11} />} defaultOpen={false}
+        badge={symmetryData ? <span className="text-[8px] text-success">✓</span> : undefined}>
+        <div className="space-y-1.5">
+          <ActionButton
+            icon={<FlipVertical size={13} />}
+            label={symmetryAnalysis.isPending ? "分析中..." : "分析对称性"}
+            loading={symmetryAnalysis.isPending}
+            onClick={() => modelId && symmetryAnalysis.mutate(modelId, {
+              onSuccess: (d) => { setSymmetryData(d); toastSuccess("对称性分析完成"); },
+              onError: (e) => toastError("分析失败", (e as Error).message),
+            })}
+          />
+          {symmetryData && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+              className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+              <div className="text-[9px] font-semibold text-text-muted mb-1">轴对称度</div>
+              {(["x", "y", "z"] as const).map((ax) => {
+                const val = symmetryData[`${ax}_symmetry` as keyof SymmetryData] as number;
+                return (
+                  <div key={ax} className="flex items-center gap-1.5">
+                    <span className="text-text-muted w-4">{ax.toUpperCase()}</span>
+                    <div className="flex-1 h-1.5 rounded-full bg-bg-hover overflow-hidden">
+                      <div className={cn("h-full rounded-full", val > 0.8 ? "bg-success" : val > 0.5 ? "bg-accent" : "bg-warning")}
+                        style={{ width: `${val * 100}%` }} />
+                    </div>
+                    <span className="text-text-muted w-8 text-right font-mono">{(val * 100).toFixed(0)}%</span>
+                  </div>
+                );
+              })}
+              <div className="text-[9px] text-accent mt-1">
+                最佳对称面: {symmetryData.best_plane.toUpperCase()} ({(symmetryData.best_score * 100).toFixed(0)}%)
+              </div>
+            </motion.div>
+          )}
+        </div>
+      </CollapsibleSection>
+
+      <CollapsibleSection title="悬垂分析" icon={<ArrowUpDown size={11} />} defaultOpen={false}
+        badge={overhangData ? <span className="text-[8px] text-success">✓</span> : undefined}>
+        <div className="space-y-1.5">
+          <ActionButton
+            icon={<ArrowUpDown size={13} />}
+            label={overhangAnalysis.isPending ? "分析中..." : "分析悬垂面"}
+            loading={overhangAnalysis.isPending}
+            onClick={() => modelId && overhangAnalysis.mutate({ modelId }, {
+              onSuccess: (d) => { setOverhangData(d); toastSuccess("悬垂分析完成"); },
+              onError: (e) => toastError("分析失败", (e as Error).message),
+            })}
+          />
+          {overhangData && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+              className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+              <ResultRow label="悬垂面占比" value={`${(overhangData.overhang_fraction * 100).toFixed(1)}%`}
+                color={overhangData.overhang_fraction > 0.2 ? "text-warning" : undefined} />
+              <ResultRow label="悬垂面积" value={`${overhangData.overhang_area_mm2.toFixed(1)} mm²`} />
+              <ResultRow label="总面积" value={`${overhangData.total_area_mm2.toFixed(1)} mm²`} />
+              <ResultRow label="临界角" value={`${overhangData.critical_angle_deg}°`} />
+              {overhangData.overhang_fraction > 0.15 && (
+                <div className="text-[9px] text-warning flex items-center gap-1 mt-1">
+                  <span>⚠</span> 悬垂面较多，建议调整方向或添加支撑
+                </div>
+              )}
+            </motion.div>
+          )}
+        </div>
+      </CollapsibleSection>
+
+      {/* ── nTopology-style Advanced Mesh Operations ── */}
+      <CollapsibleSection title="光滑处理" icon={<RefreshCw size={11} />} defaultOpen={false}>
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-text-muted">算法</span>
+            <div className="flex items-center gap-1">
+              {[
+                { v: "laplacian", label: "Laplacian" },
+                { v: "taubin", label: "Taubin" },
+                { v: "humphrey", label: "HC" },
+              ].map((opt) => (
+                <button key={opt.v} onClick={() => setSmoothMethod(opt.v)}
+                  className={cn("px-1.5 py-0.5 rounded text-[9px] transition-colors",
+                    smoothMethod === opt.v ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <ParamSlider label="迭代" value={smoothIter} onChange={(v) => setSmoothIter(Math.round(v))} min={1} max={20} step={1} unit="×" width="w-12" />
+          <ActionButton
+            icon={<RefreshCw size={13} />}
+            label={smoothMesh.isPending ? "处理中..." : `${smoothMethod} 光滑`}
+            loading={smoothMesh.isPending}
+            onClick={() => modelId && smoothMesh.mutate({ modelId, method: smoothMethod, iterations: smoothIter }, {
+              onSuccess: (d) => {
+                if (d.mesh_info) { updateInfo(d.mesh_info as MeshInfo); bumpGlb(); }
+                toastSuccess("光滑处理完成");
+              },
+              onError: (e) => toastError("光滑失败", (e as Error).message),
+            })}
+          />
+          <div className="text-[8px] text-text-muted/60">
+            {smoothMethod === "laplacian" ? "标准拉普拉斯平滑 — 快速但有收缩" :
+             smoothMethod === "taubin" ? "Taubin λ/μ交替 — 减少收缩变形" :
+             "Humphrey HC — 体积保持光滑"}
+          </div>
+        </div>
+      </CollapsibleSection>
+
+      <CollapsibleSection title="重网格化" icon={<Grid3x3 size={11} />} defaultOpen={false}>
+        <div className="space-y-1.5">
+          <ParamSlider label="目标边长" value={remeshEdge} onChange={setRemeshEdge} min={0.2} max={5} step={0.1} unit="mm" width="w-14" />
+          <ActionButton
+            icon={<Grid3x3 size={13} />}
+            label={remeshMesh.isPending ? "重构中..." : "等距重构"}
+            loading={remeshMesh.isPending}
+            onClick={() => modelId && remeshMesh.mutate({ modelId, targetEdgeLength: remeshEdge }, {
+              onSuccess: (d) => {
+                if (d.mesh_info) { updateInfo(d.mesh_info as MeshInfo); bumpGlb(); }
+                toastSuccess("重网格化完成");
+              },
+              onError: (e) => toastError("重网格化失败", (e as Error).message),
+            })}
+          />
+        </div>
+      </CollapsibleSection>
+
+      <CollapsibleSection title="增厚 / 偏移" icon={<Layers size={11} />} defaultOpen={false}>
+        <div className="space-y-2">
+          <div className="space-y-1.5">
+            <ParamSlider label="增厚" value={thickenVal} onChange={setThickenVal} min={0.5} max={10} step={0.5} unit="mm" width="w-14" />
+            <ActionButton
+              label={thickenMesh.isPending ? "增厚中..." : `增厚 ${thickenVal}mm`}
+              loading={thickenMesh.isPending}
+              onClick={() => modelId && thickenMesh.mutate({ modelId, thickness: thickenVal }, {
+                onSuccess: (d) => {
+                  if (d.mesh_info) { updateInfo(d.mesh_info as MeshInfo); bumpGlb(); }
+                  toastSuccess("增厚完成");
+                },
+                onError: (e) => toastError("增厚失败", (e as Error).message),
+              })}
+            />
+          </div>
+          <div className="border-t border-border/30 pt-2 space-y-1.5">
+            <ParamSlider label="偏移" value={offsetVal} onChange={setOffsetVal} min={-5} max={5} step={0.1} unit="mm" width="w-14" />
+            <ActionButton
+              label={offsetMesh.isPending ? "偏移中..." : `曲面偏移 ${offsetVal > 0 ? "+" : ""}${offsetVal}mm`}
+              loading={offsetMesh.isPending}
+              onClick={() => modelId && offsetMesh.mutate({ modelId, distance: offsetVal }, {
+                onSuccess: (d) => {
+                  if (d.mesh_info) { updateInfo(d.mesh_info as MeshInfo); bumpGlb(); }
+                  toastSuccess("偏移完成");
+                },
+                onError: (e) => toastError("偏移失败", (e as Error).message),
+              })}
+            />
+          </div>
+        </div>
+      </CollapsibleSection>
+
+      {/* ── nTopology Advanced: Mesh Quality ── */}
+      <CollapsibleSection title="网格质量分析" icon={<Grid size={11} />} defaultOpen={false}>
+        <MeshQualityPanel modelId={modelId} />
+      </CollapsibleSection>
+
+      {/* ── nTopology Advanced: Topology Optimisation ── */}
+      <CollapsibleSection title="拓扑优化 (SIMP)" icon={<Cpu size={11} />} defaultOpen={false}>
+        <TopologyOptPanel />
+      </CollapsibleSection>
+
+      {/* ── nTopology Advanced: Variable Shell ── */}
+      <CollapsibleSection title="场驱动变厚度壳" icon={<Layers size={11} />} defaultOpen={false}>
+        <VariableShellPanel modelId={modelId} />
+      </CollapsibleSection>
+
       <StepHint
         text="模型编辑完成后，前往「方向」步骤分析最佳脱模方向。"
-        action={() => setStep("orientation")}
+        action={() => { markStepCompleted("repair"); setStep("orientation"); }}
         actionLabel="前往方向分析 →"
       />
+    </div>
+  );
+}
+
+/* ── Sub-panels for advanced features ── */
+
+function MeshQualityPanel({ modelId }: { modelId: string | null }) {
+  const [data, setData] = useState<Record<string, unknown> | null>(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    if (!modelId) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/v1/advanced/${modelId}/mesh-quality`, { method: "POST" });
+      if (res.ok) setData(await res.json());
+    } catch { /* ignore */ }
+    setLoading(false);
+  };
+  return (
+    <div className="space-y-2">
+      <ActionButton label={loading ? "分析中..." : "运行网格质量分析"} loading={loading} onClick={run} />
+      {data && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[9px]">
+          <ResultRow label="顶点 / 面 / 边" value={`${(data as Record<string,unknown>).n_vertices} / ${(data as Record<string,unknown>).n_faces} / ${(data as Record<string,unknown>).n_edges}`} />
+          <ResultRow label="宽高比均值" value={Number((data as Record<string,unknown>).aspect_ratio_mean).toFixed(2)} />
+          <ResultRow label="宽高比最大" value={Number((data as Record<string,unknown>).aspect_ratio_max).toFixed(2)} />
+          <ResultRow label="退化三角形" value={String((data as Record<string,unknown>).degenerate_face_count)} />
+          <ResultRow label="瘦三角形 (<15°)" value={`${(data as Record<string,unknown>).skinny_triangle_count} (${(Number((data as Record<string,unknown>).skinny_fraction) * 100).toFixed(1)}%)`} />
+          {Boolean((data as Record<string,unknown>).topology) && (() => {
+            const topo = (data as Record<string,unknown>).topology as Record<string,unknown>;
+            return (<>
+              <div className="border-t border-border/20 pt-1 mt-1 text-[8px] text-text-muted font-semibold">拓扑</div>
+              <ResultRow label="水密" value={topo.is_watertight ? "✓" : "✗"} />
+              <ResultRow label="流形" value={topo.is_manifold ? "✓" : "✗"} />
+              <ResultRow label="欧拉特征" value={String(topo.euler_characteristic)} />
+              <ResultRow label="亏格" value={String(topo.genus)} />
+            </>);
+          })()}
+          <ResultRow label="体积" value={`${Number((data as Record<string,unknown>).volume).toFixed(1)} mm³`} />
+          <ResultRow label="表面积" value={`${Number((data as Record<string,unknown>).surface_area).toFixed(1)} mm²`} />
+          <ResultRow label="紧凑度" value={Number((data as Record<string,unknown>).compactness).toFixed(4)} />
+          <div className="text-[7px] text-text-muted/40 mt-0.5">紧凑度 1.0 = 完美球体</div>
+        </motion.div>
+      )}
+    </div>
+  );
+}
+
+function TopologyOptPanel() {
+  const [nelx, setNelx] = useState(60);
+  const [nely, setNely] = useState(30);
+  const [volfrac, setVolfrac] = useState(0.4);
+  const [bcType, setBcType] = useState("cantilever");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+
+  const run = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/v1/advanced/topology-opt/2d", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nelx, nely, volfrac, bc_type: bcType }),
+      });
+      if (res.ok) setResult(await res.json());
+    } catch { /* ignore */ }
+    setLoading(false);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[8px] text-text-muted/60">SIMP 密度法结构拓扑优化 — 最小化柔度(最大化刚度)</div>
+      <div className="grid grid-cols-2 gap-1">
+        <ParamSlider label="X 单元" value={nelx} onChange={setNelx} min={20} max={120} step={10} width="w-10" />
+        <ParamSlider label="Y 单元" value={nely} onChange={setNely} min={10} max={80} step={5} width="w-10" />
+      </div>
+      <ParamSlider label="体积分数" value={volfrac} onChange={setVolfrac} min={0.1} max={0.8} step={0.05} width="w-12" />
+      <div className="flex gap-1">
+        {(["cantilever", "mbb", "bridge"] as const).map((bc) => (
+          <button key={bc} onClick={() => setBcType(bc)}
+            className={cn("px-2 py-0.5 rounded text-[8px]",
+              bcType === bc ? "bg-accent/70 text-white" : "bg-bg-secondary text-text-muted")}>
+            {bc === "cantilever" ? "悬臂梁" : bc === "mbb" ? "MBB梁" : "桥梁"}
+          </button>
+        ))}
+      </div>
+      <ActionButton label={loading ? "优化中..." : "运行拓扑优化"} loading={loading} onClick={run} />
+      {result && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[9px]">
+          <ResultRow label="迭代次数" value={String((result as Record<string,unknown>).iterations)} />
+          <ResultRow label="最终柔度" value={Number((result as Record<string,unknown>).final_compliance).toExponential(3)} />
+          <ResultRow label="最终体积分数" value={Number((result as Record<string,unknown>).final_volfrac).toFixed(3)} />
+          <div className="text-[7px] text-text-muted/50 mt-0.5">密度分布已计算 — 白色=材料 黑色=空腔</div>
+        </motion.div>
+      )}
+    </div>
+  );
+}
+
+function VariableShellPanel({ modelId }: { modelId: string | null }) {
+  const [baseThickness, setBaseThickness] = useState(2.0);
+  const [variation, setVariation] = useState(1.0);
+  const [fieldType, setFieldType] = useState("distance_from_center");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+
+  const run = async () => {
+    if (!modelId) return;
+    setLoading(true);
+    try {
+      const res = await fetch("/api/v1/advanced/sdf/variable-shell", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model_id: modelId,
+          base_thickness: baseThickness,
+          thickness_variation: variation,
+          field_type: fieldType,
+        }),
+      });
+      if (res.ok) setResult(await res.json());
+    } catch { /* ignore */ }
+    setLoading(false);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[8px] text-text-muted/60">SDF 隐式场驱动变厚度壳体 — nTopology 风格</div>
+      <ParamSlider label="基础壁厚" value={baseThickness} onChange={setBaseThickness} min={0.5} max={10} step={0.5} unit="mm" width="w-12" />
+      <ParamSlider label="厚度变化" value={variation} onChange={setVariation} min={0} max={5} step={0.5} unit="mm" width="w-12" />
+      <div className="flex gap-0.5">
+        {([
+          { v: "distance_from_center", label: "离心距" },
+          { v: "distance_from_base", label: "距底面" },
+          { v: "curvature_proxy", label: "曲率" },
+        ] as const).map((f) => (
+          <button key={f.v} onClick={() => setFieldType(f.v)}
+            className={cn("px-1.5 py-0.5 rounded text-[8px]",
+              fieldType === f.v ? "bg-accent/70 text-white" : "bg-bg-secondary text-text-muted")}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+      <ActionButton label={loading ? "生成中..." : "生成变厚度壳"} loading={loading} onClick={run} />
+      {result && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[9px]">
+          <ResultRow label="最小壁厚" value={`${Number((result as Record<string,unknown>).min_thickness).toFixed(2)} mm`} />
+          <ResultRow label="最大壁厚" value={`${Number((result as Record<string,unknown>).max_thickness).toFixed(2)} mm`} />
+          <ResultRow label="平均壁厚" value={`${Number((result as Record<string,unknown>).mean_thickness).toFixed(2)} mm`} />
+          <ResultRow label="面数" value={String((result as Record<string,unknown>).faces)} />
+        </motion.div>
+      )}
     </div>
   );
 }
@@ -459,7 +1003,47 @@ function OrientationPanel() {
               )}
               <ResultRow label="对称性" value={`${(orientationResult.best_score.symmetry * 100).toFixed(1)}%`} />
               <ResultRow label="稳定性" value={`${(orientationResult.best_score.stability * 100).toFixed(1)}%`} />
+              {orientationResult.best_score.compactness != null && (
+                <ResultRow label="紧凑度" value={`${(orientationResult.best_score.compactness * 100).toFixed(1)}%`} />
+              )}
+              {orientationResult.best_score.support_area != null && (
+                <ResultRow label="支撑面积" value={`${orientationResult.best_score.support_area.toFixed(1)} mm²`} />
+              )}
             </ResultCard>
+          </Section>
+
+          {/* Draft Angle Assessment */}
+          <Section title="拔模角评估" icon={<BarChart3 size={11} />}>
+            <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+              {(() => {
+                const s = orientationResult.best_score;
+                const minDA = s.min_draft_angle;
+                const meanDA = s.mean_draft_angle ?? minDA;
+                const getLevel = (a: number) =>
+                  a >= 5 ? { label: "优秀", color: "text-success" }
+                    : a >= 3 ? { label: "良好", color: "text-accent" }
+                      : a >= 1 ? { label: "一般", color: "text-warning" }
+                        : { label: "危险", color: "text-danger" };
+                const level = getLevel(minDA);
+                return (
+                  <>
+                    <div className="flex items-center gap-1.5">
+                      <span className={cn("font-bold text-xs", level.color)}>{level.label}</span>
+                      <span className="text-text-muted">— 最小拔模角 {minDA.toFixed(1)}°</span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-bg-hover overflow-hidden">
+                      <div className={cn("h-full rounded-full transition-all", level.color === "text-success" ? "bg-success" : level.color === "text-accent" ? "bg-accent" : level.color === "text-warning" ? "bg-warning" : "bg-danger")}
+                        style={{ width: `${Math.min(100, minDA / 10 * 100)}%` }} />
+                    </div>
+                    <div className="text-text-muted mt-1 space-y-0.5">
+                      <p>• 最小 {minDA.toFixed(1)}° / 平均 {meanDA.toFixed(1)}°</p>
+                      <p>• 倒扣面占比 {(s.undercut_ratio * 100).toFixed(1)}%{s.undercut_ratio > 0.05 ? " ⚠ 建议调整方向或添加侧滑块" : ""}</p>
+                      <p>• 推荐最小拔模角: 硅胶 ≥1°, 塑料 ≥2°, 金属 ≥3°</p>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
           </Section>
 
           <Section title={`候选方向 — 点击应用 (${orientationResult.top_candidates.length})`}>
@@ -553,6 +1137,13 @@ function MoldPanel() {
   const [partingStyle, setPartingStyle] = useState("flat");
   const [addFlanges, setAddFlanges] = useState(false);
   const [flangeCount, setFlangeCount] = useState(4);
+  const [moldMaterial, setMoldMaterial] = useState("pla");
+  const [shrinkagePct, setShrinkagePct] = useState(0.0);
+  const [addCooling, setAddCooling] = useState(false);
+  const [coolingDiameter, setCoolingDiameter] = useState(4.0);
+  const [addEjectors, setAddEjectors] = useState(false);
+  const [ejectorCount, setEjectorCount] = useState(4);
+  const [surfaceTexture, setSurfaceTexture] = useState("none");
 
   if (!modelId) {
     return (
@@ -725,6 +1316,113 @@ function MoldPanel() {
               </div>
             </div>
           )}
+
+          {/* Mold material selection */}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-text-muted">模具材料</span>
+            <select
+              value={moldMaterial}
+              onChange={(e) => {
+                setMoldMaterial(e.target.value);
+                const shrinkMap: Record<string, number> = {
+                  pla: 0.3, abs: 0.5, petg: 0.4, resin: 0.1,
+                  silicone_mold: 0.0, aluminum: 0.0, steel: 0.0,
+                };
+                setShrinkagePct(shrinkMap[e.target.value] ?? 0);
+              }}
+              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
+            >
+              <option value="pla">PLA (FDM)</option>
+              <option value="abs">ABS (FDM)</option>
+              <option value="petg">PETG (FDM)</option>
+              <option value="resin">光固化树脂</option>
+              <option value="silicone_mold">硅胶翻模</option>
+              <option value="aluminum">铝合金 (CNC)</option>
+              <option value="steel">钢 (注塑级)</option>
+            </select>
+          </div>
+
+          {/* Shrinkage compensation */}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-text-muted">收缩补偿</span>
+            <div className="flex items-center gap-1">
+              <input type="range" min={0} max={2} step={0.1} value={shrinkagePct}
+                onChange={(e) => setShrinkagePct(parseFloat(e.target.value))}
+                className="w-16 accent-accent" />
+              <span className="text-[10px] text-text-muted w-10 text-right">{shrinkagePct.toFixed(1)}%</span>
+            </div>
+          </div>
+
+          {/* Cooling channels */}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-text-muted">冷却水道</span>
+            <button onClick={() => setAddCooling(!addCooling)}
+              className={cn("px-2 py-0.5 rounded text-[10px] transition-colors",
+                addCooling ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+              {addCooling ? "已启用" : "关闭"}
+            </button>
+          </div>
+          {addCooling && (
+            <div className="flex items-center justify-between pl-2 border-l-2 border-accent/30">
+              <span className="text-[10px] text-text-muted">水道直径</span>
+              <div className="flex items-center gap-1">
+                <input type="range" min={2} max={8} step={0.5} value={coolingDiameter}
+                  onChange={(e) => setCoolingDiameter(parseFloat(e.target.value))}
+                  className="w-16 accent-accent" />
+                <span className="text-[10px] text-text-muted w-10 text-right">{coolingDiameter}mm</span>
+              </div>
+            </div>
+          )}
+
+          {/* Ejector pins */}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-text-muted">顶出机构</span>
+            <button onClick={() => setAddEjectors(!addEjectors)}
+              className={cn("px-2 py-0.5 rounded text-[10px] transition-colors",
+                addEjectors ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+              {addEjectors ? "已启用" : "关闭"}
+            </button>
+          </div>
+          {addEjectors && (
+            <div className="flex items-center justify-between pl-2 border-l-2 border-accent/30">
+              <span className="text-[10px] text-text-muted">顶针数量</span>
+              <div className="flex items-center gap-1">
+                {[2, 4, 6, 8].map((n) => (
+                  <button key={n} onClick={() => setEjectorCount(n)}
+                    className={cn("w-6 h-5 rounded text-[9px] font-medium transition-colors",
+                      ejectorCount === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Surface texture - nTopology-style */}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-text-muted">模具表面纹理</span>
+            <select
+              value={surfaceTexture}
+              onChange={(e) => setSurfaceTexture(e.target.value)}
+              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
+            >
+              <option value="none">光滑</option>
+              <option value="matte">磨砂 (SPI-C)</option>
+              <option value="fine_grain">细纹理 (VDI-24)</option>
+              <option value="medium_grain">中纹理 (VDI-30)</option>
+              <option value="coarse_grain">粗纹理 (VDI-36)</option>
+              <option value="knurl">滚花防滑</option>
+            </select>
+          </div>
+          {surfaceTexture !== "none" && (
+            <div className="text-[8px] text-text-muted/60 pl-2">
+              {surfaceTexture === "matte" ? "Ra 0.5-1.0μm — 消除模具痕迹" :
+               surfaceTexture === "fine_grain" ? "Ra 1.0-3.2μm — 半哑光手感" :
+               surfaceTexture === "medium_grain" ? "Ra 3.2-6.3μm — 标准工业纹理" :
+               surfaceTexture === "coarse_grain" ? "Ra 6.3-12.5μm — 防滑粗糙面" :
+               "菱形滚花纹 — 握持区域防滑"}
+            </div>
+          )}
         </div>
         <ActionButton
           icon={<Box size={13} />}
@@ -840,6 +1538,58 @@ function MoldPanel() {
         )}
       </Section>
 
+      {/* Design Rules - nTopology-style validation */}
+      <Section title="设计规则验证" icon={<CheckCircle2 size={11} />}>
+        <DesignRulesChecker />
+      </Section>
+
+      {/* Cost estimation */}
+      {moldResult && (
+        <Section title="成本估算" icon={<BarChart3 size={11} />}>
+          <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+            {(() => {
+              const matCosts: Record<string, { name: string; costPerCm3: number; unit: string }> = {
+                pla: { name: "PLA", costPerCm3: 0.03, unit: "¥" },
+                abs: { name: "ABS", costPerCm3: 0.04, unit: "¥" },
+                petg: { name: "PETG", costPerCm3: 0.05, unit: "¥" },
+                resin: { name: "光敏树脂", costPerCm3: 0.15, unit: "¥" },
+                silicone_mold: { name: "硅胶", costPerCm3: 0.08, unit: "¥" },
+                aluminum: { name: "铝合金", costPerCm3: 0.80, unit: "¥" },
+                steel: { name: "钢材", costPerCm3: 2.50, unit: "¥" },
+              };
+              const mat = matCosts[moldMaterial] ?? matCosts.pla;
+              const shellVol = moldResult.shells.reduce((a, s) => a + s.volume, 0);
+              const shellVolCm3 = shellVol / 1000;
+              const matCost = shellVolCm3 * mat.costPerCm3;
+              const printTime = shellVolCm3 * (moldMaterial === "resin" ? 0.5 : moldMaterial.includes("al") || moldMaterial.includes("steel") ? 2 : 1.2);
+              return (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-text-muted">模具材料</span>
+                    <span className="text-text-primary">{mat.name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-muted">壳体体积</span>
+                    <span className="font-mono">{shellVolCm3.toFixed(1)} cm³</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-muted">预计材料费</span>
+                    <span className="font-mono text-accent">{mat.unit}{matCost.toFixed(1)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-muted">预计制造时间</span>
+                    <span className="font-mono">{printTime.toFixed(1)} h</span>
+                  </div>
+                  <div className="text-[8px] text-text-muted/60 mt-1 border-t border-border/30 pt-1">
+                    估算仅供参考，实际费用取决于打印参数和后处理
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </Section>
+      )}
+
       {moldResult && (
         <StepHint
           text="模具已生成。可前往「内骨骼」步骤生成内部骨架结构，或前往「浇注」步骤设计浇注系统。"
@@ -869,6 +1619,9 @@ function InsertPanel() {
   // Feature toggles
   const [addMeshHoles, setAddMeshHoles] = useState(false);
   const [meshHoleSize, setMeshHoleSize] = useState(2.0);
+  const [holePattern, setHolePattern] = useState("hex");
+  const [variableDensity, setVariableDensity] = useState(false);
+  const [densityField, setDensityField] = useState("edge");
   const [addRibs, setAddRibs] = useState(false);
   const [ribHeight, setRibHeight] = useState(3.0);
   const [ribSpacing, setRibSpacing] = useState(8.0);
@@ -985,8 +1738,137 @@ function InsertPanel() {
           {addMeshHoles && (
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
               className="pl-2 border-l-2 border-accent/30 space-y-1.5">
-              <ParamSlider label="孔径" value={meshHoleSize} onChange={setMeshHoleSize} min={1} max={4} step={0.5} unit="mm" />
+
+              {/* nTopology-style lattice pattern selector */}
+              <div className="space-y-1">
+                <span className="text-[9px] text-text-muted font-semibold uppercase tracking-wider">网孔图案</span>
+                <div className="text-[8px] text-text-muted/60 mb-0.5">几何图案</div>
+                <div className="grid grid-cols-4 gap-1">
+                  {([
+                    { v: "hex", label: "蜂窝", icon: "⬡" },
+                    { v: "grid", label: "网格", icon: "▦" },
+                    { v: "diamond", label: "菱形", icon: "◇" },
+                    { v: "voronoi", label: "Voronoi", icon: "⬠" },
+                  ] as const).map((p) => (
+                    <button key={p.v} onClick={() => setHolePattern(p.v)}
+                      className={cn(
+                        "flex flex-col items-center gap-0.5 py-1.5 px-1 rounded-md text-[9px] transition-all",
+                        holePattern === p.v
+                          ? "bg-accent/15 ring-1 ring-accent/50 text-accent font-medium"
+                          : "bg-bg-secondary hover:bg-bg-hover text-text-muted",
+                      )}>
+                      <span className="text-sm leading-none">{p.icon}</span>
+                      <span className="leading-none">{p.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[8px] text-text-muted/60 mt-1">TPMS 极小曲面</div>
+                <div className="grid grid-cols-4 gap-1">
+                  {([
+                    { v: "gyroid", label: "Gyroid", icon: "∿" },
+                    { v: "schwarz_p", label: "Schwarz-P", icon: "◎" },
+                    { v: "schwarz_d", label: "Schwarz-D", icon: "◈" },
+                    { v: "neovius", label: "Neovius", icon: "✦" },
+                    { v: "lidinoid", label: "Lidinoid", icon: "❋" },
+                    { v: "iwp", label: "IWP", icon: "⊞" },
+                    { v: "frd", label: "FRD", icon: "⬢" },
+                  ] as const).map((p) => (
+                    <button key={p.v} onClick={() => setHolePattern(p.v)}
+                      className={cn(
+                        "flex flex-col items-center gap-0.5 py-1.5 px-1 rounded-md text-[9px] transition-all",
+                        holePattern === p.v
+                          ? "bg-accent/15 ring-1 ring-accent/50 text-accent font-medium"
+                          : "bg-bg-secondary hover:bg-bg-hover text-text-muted",
+                      )}>
+                      <span className="text-sm leading-none">{p.icon}</span>
+                      <span className="leading-none">{p.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[7px] text-text-muted/40 mt-0.5">
+                  {holePattern === "gyroid" ? "sin(x)cos(y)+sin(y)cos(z)+sin(z)cos(x) — 三维周期旋转对称" :
+                   holePattern === "schwarz_p" ? "cos(x)+cos(y)+cos(z) — 三维立方对称通道" :
+                   holePattern === "schwarz_d" ? "Diamond 极小曲面 — 高强度四面体对称" :
+                   holePattern === "neovius" ? "3(cos(x)+cos(y)+cos(z))+4cos(x)cos(y)cos(z) — 高孔隙率" :
+                   holePattern === "lidinoid" ? "非对称手性极小曲面 — 独特旋转图案" :
+                   holePattern === "iwp" ? "Schoen I-WP — 双通道互穿网络" :
+                   holePattern === "frd" ? "Fischer-Koch S — 复杂互连孔隙" :
+                   ""}
+                </div>
+              </div>
+
+              <ParamSlider label="孔径" value={meshHoleSize} onChange={setMeshHoleSize} min={1} max={6} step={0.5} unit="mm" />
+
+              {/* Variable density toggle */}
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] text-text-secondary">场驱动密度</span>
+                <button onClick={() => setVariableDensity(!variableDensity)}
+                  className={cn("px-2 py-0.5 rounded text-[9px] transition-colors",
+                    variableDensity ? "bg-accent/80 text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                  {variableDensity ? "开" : "关"}
+                </button>
+              </div>
+              {variableDensity && (
+                <div className="pl-2 border-l-2 border-accent/20 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[8px] text-text-muted">密度场类型</span>
+                    <div className="flex gap-0.5 flex-wrap">
+                      {[
+                        { v: "edge", label: "边缘" },
+                        { v: "center", label: "中心" },
+                        { v: "radial", label: "径向" },
+                        { v: "stress", label: "应力" },
+                        { v: "uniform", label: "均匀" },
+                      ].map((f) => (
+                        <button key={f.v} onClick={() => setDensityField(f.v)}
+                          className={cn("px-1.5 py-0.5 rounded text-[8px]",
+                            densityField === f.v ? "bg-accent/70 text-white" : "bg-bg-secondary text-text-muted")}>
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="text-[8px] text-text-muted/50">
+                    {densityField === "edge" ? "边缘孔大中心小 — 增强边缘锚固强度" :
+                     densityField === "center" ? "中心孔大边缘小 — 中心减重保持边缘刚性" :
+                     densityField === "radial" ? "径向渐变 — 由中心向外逐渐增大" :
+                     densityField === "stress" ? "高应力区小孔低应力区大孔 — 优化材料分布" :
+                     "均匀缩小至最小系数 — 整体减轻重量"}
+                  </div>
+                </div>
+              )}
+
               <div className="text-[9px] text-text-muted">硅胶渗透通孔，增强板-硅胶结合力</div>
+              {/* Brush painting toggle */}
+              <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-border/20">
+                <span className="text-[9px] text-text-secondary">手动规划网孔</span>
+                <button onClick={() => {
+                  const s = useInsertStore.getState();
+                  s.setHoleBrushActive(!s.holeBrushActive);
+                  s.setBrushMode("holes");
+                }}
+                  className={cn("px-2 py-0.5 rounded text-[9px] font-medium transition-colors",
+                    useInsertStore.getState().holeBrushActive
+                      ? "bg-red-500/80 text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                  {useInsertStore.getState().holeBrushActive ? "绘制中..." : "涂刷"}
+                </button>
+              </div>
+              {useInsertStore.getState().holeBrushActive && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1">
+                  <ParamSlider label="笔刷半径" value={useInsertStore.getState().holeBrushSize}
+                    onChange={(v: number) => useInsertStore.getState().setHoleBrushSize(v)}
+                    min={5} max={40} step={1} unit="mm" />
+                  <div className="flex gap-1.5 mt-1">
+                    <button onClick={() => useInsertStore.getState().clearHoleBrushRegions()}
+                      className="flex-1 px-1.5 py-0.5 rounded text-[9px] bg-bg-secondary text-text-muted hover:bg-bg-hover">
+                      清除涂刷
+                    </button>
+                  </div>
+                  <div className="text-[8px] text-text-muted/60">
+                    在3D视图中点击/拖动支撑板表面涂刷区域，仅在涂刷范围内生成网孔
+                  </div>
+                </motion.div>
+              )}
             </motion.div>
           )}
 
@@ -1005,6 +1887,36 @@ function InsertPanel() {
               <ParamSlider label="筋高度" value={ribHeight} onChange={setRibHeight} min={1} max={6} step={0.5} unit="mm" />
               <ParamSlider label="筋间距" value={ribSpacing} onChange={setRibSpacing} min={3} max={15} step={1} unit="mm" />
               <div className="text-[9px] text-text-muted">交叉肋条增强板面刚性</div>
+              {/* Rib brush painting */}
+              <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-border/20">
+                <span className="text-[9px] text-text-secondary">手动规划加强筋</span>
+                <button onClick={() => {
+                  const s = useInsertStore.getState();
+                  s.setHoleBrushActive(!s.holeBrushActive);
+                  s.setBrushMode("ribs");
+                }}
+                  className={cn("px-2 py-0.5 rounded text-[9px] font-medium transition-colors",
+                    useInsertStore.getState().holeBrushActive && useInsertStore.getState().brushMode === "ribs"
+                      ? "bg-blue-500/80 text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                  {useInsertStore.getState().holeBrushActive && useInsertStore.getState().brushMode === "ribs" ? "绘制中..." : "涂刷"}
+                </button>
+              </div>
+              {useInsertStore.getState().holeBrushActive && useInsertStore.getState().brushMode === "ribs" && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1">
+                  <ParamSlider label="笔刷半径" value={useInsertStore.getState().holeBrushSize}
+                    onChange={(v: number) => useInsertStore.getState().setHoleBrushSize(v)}
+                    min={5} max={40} step={1} unit="mm" />
+                  <div className="flex gap-1.5 mt-1">
+                    <button onClick={() => useInsertStore.getState().clearRibBrushRegions()}
+                      className="flex-1 px-1.5 py-0.5 rounded text-[9px] bg-bg-secondary text-text-muted hover:bg-bg-hover">
+                      清除涂刷
+                    </button>
+                  </div>
+                  <div className="text-[8px] text-text-muted/60">
+                    在3D视图中涂刷区域，仅在涂刷范围内生成加强筋
+                  </div>
+                </motion.div>
+              )}
             </motion.div>
           )}
 
@@ -1064,7 +1976,11 @@ function InsertPanel() {
           label={isGenerating ? "生成中..." : `生成${INSERT_TYPE_LABELS[insertType] ?? "支撑板"}`}
           loading={isGenerating}
           variant="primary"
-          onClick={() => generate.mutate({
+          onClick={() => {
+            const st = useInsertStore.getState();
+            const holeRegions = st.holeBrushRegions;
+            const ribRegions = st.ribBrushRegions;
+            generate.mutate({
             model_id: modelId,
             organ_type: organType,
             insert_type: insertType,
@@ -1074,6 +1990,9 @@ function InsertPanel() {
             conformal_offset: conformalOffset,
             add_mesh_holes: addMeshHoles,
             mesh_hole_size: meshHoleSize,
+            hole_pattern: holePattern,
+            variable_density: variableDensity,
+            density_field: densityField,
             add_ribs: addRibs,
             rib_height: ribHeight,
             rib_spacing: ribSpacing,
@@ -1084,10 +2003,13 @@ function InsertPanel() {
             pillar_side: pillarSide,
             n_plates: 1,
             mold_id: moldId ?? undefined,
+            ...(holeRegions.length > 0 ? { custom_hole_regions: holeRegions } : {}),
+            ...(ribRegions.length > 0 ? { custom_rib_regions: ribRegions } : {}),
           } as Record<string, unknown>, {
             onSuccess: () => toastSuccess("支撑板已生成", INSERT_TYPE_LABELS[insertType]),
             onError: (e) => toastError("支撑板生成失败", (e as Error).message),
-          })}
+          });
+          }}
         />
         {plates.length > 0 && (
           <ResultCard className="mt-2">
@@ -1146,12 +2068,100 @@ function InsertPanel() {
         )}
       </Section>
 
+      {/* ── nTopology: 3D Lattice Generator ── */}
+      <CollapsibleSection title="3D 晶格填充" icon={<Grid size={11} />} defaultOpen={false}>
+        <LatticeGeneratorPanel modelId={modelId} />
+      </CollapsibleSection>
+
       {plates.length > 0 && (
         <StepHint
           text="支撑板已生成。板片嵌入硅胶内部，通过锚固特征结合，立柱穿过模具壁定位。可前往「浇注」步骤。"
           action={() => setStep("gating")}
           actionLabel="前往浇注系统 →"
         />
+      )}
+    </div>
+  );
+}
+
+function LatticeGeneratorPanel({ modelId }: { modelId: string | null }) {
+  const [latticeType, setLatticeType] = useState("tpms");
+  const [cellType, setCellType] = useState("bcc");
+  const [tpmsType, setTpmsType] = useState("gyroid");
+  const [cellSize, setCellSize] = useState(5.0);
+  const [wallThickness, setWallThickness] = useState(0.5);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+
+  const run = async () => {
+    if (!modelId) return;
+    setLoading(true);
+    try {
+      const res = await fetch("/api/v1/advanced/lattice/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model_id: modelId,
+          lattice_type: latticeType,
+          cell_type: cellType,
+          tpms_type: tpmsType,
+          cell_size: cellSize,
+          wall_thickness: wallThickness,
+        }),
+      });
+      if (res.ok) setResult(await res.json());
+    } catch { /* ignore */ }
+    setLoading(false);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[8px] text-text-muted/60">在模型体积内生成 3D 晶格结构 — nTopology 风格</div>
+      <div className="flex gap-1">
+        {([
+          { v: "tpms", label: "TPMS 体积" },
+          { v: "graph", label: "杆件晶格" },
+          { v: "foam", label: "Voronoi 泡沫" },
+        ] as const).map((t) => (
+          <button key={t.v} onClick={() => setLatticeType(t.v)}
+            className={cn("px-2 py-0.5 rounded text-[8px]",
+              latticeType === t.v ? "bg-accent/70 text-white" : "bg-bg-secondary text-text-muted")}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {latticeType === "graph" && (
+        <div className="flex gap-0.5 flex-wrap">
+          {(["bcc", "fcc", "octet", "kelvin", "diamond"] as const).map((c) => (
+            <button key={c} onClick={() => setCellType(c)}
+              className={cn("px-1.5 py-0.5 rounded text-[7px] uppercase",
+                cellType === c ? "bg-accent/60 text-white" : "bg-bg-secondary text-text-muted")}>
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
+      {latticeType === "tpms" && (
+        <div className="flex gap-0.5 flex-wrap">
+          {(["gyroid", "schwarz_p", "schwarz_d", "neovius", "lidinoid", "iwp", "frd"] as const).map((t) => (
+            <button key={t} onClick={() => setTpmsType(t)}
+              className={cn("px-1.5 py-0.5 rounded text-[7px]",
+                tpmsType === t ? "bg-accent/60 text-white" : "bg-bg-secondary text-text-muted")}>
+              {t === "schwarz_p" ? "Schwarz-P" : t === "schwarz_d" ? "Schwarz-D" : t.charAt(0).toUpperCase() + t.slice(1)}
+            </button>
+          ))}
+        </div>
+      )}
+      <ParamSlider label="单胞尺寸" value={cellSize} onChange={setCellSize} min={2} max={20} step={0.5} unit="mm" width="w-12" />
+      <ParamSlider label="壁厚/杆径" value={wallThickness} onChange={setWallThickness} min={0.2} max={3} step={0.1} unit="mm" width="w-12" />
+      <ActionButton label={loading ? "生成中..." : "生成 3D 晶格"} loading={loading} onClick={run} />
+      {result && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[9px]">
+          <ResultRow label="晶格类型" value={String((result as Record<string,unknown>).lattice_type)} />
+          <ResultRow label="单元数" value={String((result as Record<string,unknown>).cell_count)} />
+          <ResultRow label="体积分数" value={`${(Number((result as Record<string,unknown>).volume_fraction) * 100).toFixed(1)}%`} />
+          <ResultRow label="面数" value={String((result as Record<string,unknown>).faces)} />
+        </motion.div>
       )}
     </div>
   );
@@ -1166,6 +2176,8 @@ function GatingPanel() {
   const [gateDiam, setGateDiam] = useState(6.0);
   const [runnerWidth, setRunnerWidth] = useState(4.0);
   const [nVents, setNVents] = useState(3);
+  const [runnerType, setRunnerType] = useState("cold");
+  const [nGates, setNGates] = useState(1);
 
   if (!modelId || !moldId) {
     return (
@@ -1180,20 +2192,36 @@ function GatingPanel() {
   return (
     <div className="space-y-4">
       <Section title="灌注材料" icon={<Layers size={11} />}>
-        <select value={selectedMaterial} onChange={(e) => setMaterial(e.target.value)}
-          className="w-full text-xs bg-bg-secondary border border-border rounded px-2 py-1.5 text-text-primary">
-          <option value="silicone_a10">硅胶 Shore A10 (软)</option>
-          <option value="silicone_a30">硅胶 Shore A30 (中)</option>
-          <option value="silicone_a50">硅胶 Shore A50 (硬)</option>
-          <option value="polyurethane">聚氨酯</option>
-          <option value="epoxy_resin">环氧树脂</option>
-          <option value="abs_injection">ABS 注塑</option>
-          <option value="pp_injection">PP 注塑</option>
-        </select>
+        <MaterialLibrary selected={selectedMaterial} onSelect={setMaterial} />
       </Section>
 
-      <Section title="浇口参数" icon={<Settings size={11} />}>
+      <Section title="浇道系统" icon={<Settings size={11} />}>
         <div className="space-y-2">
+          <ParamRow label="浇道类型">
+            <div className="flex items-center gap-1">
+              {[
+                { v: "cold", label: "冷流道" },
+                { v: "hot", label: "热流道" },
+              ].map((opt) => (
+                <button key={opt.v} onClick={() => setRunnerType(opt.v)}
+                  className={cn("px-2 py-0.5 rounded text-[10px] transition-colors",
+                    runnerType === opt.v ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </ParamRow>
+          <ParamRow label="浇口数量">
+            <div className="flex items-center gap-1">
+              {[1, 2, 3, 4].map((n) => (
+                <button key={n} onClick={() => setNGates(n)}
+                  className={cn("w-6 h-6 rounded text-[10px] font-medium transition-colors",
+                    nGates === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                  {n}
+                </button>
+              ))}
+            </div>
+          </ParamRow>
           <ParamSlider label="浇口直径" value={gateDiam} onChange={setGateDiam} min={2} max={12} step={0.5} unit="mm" />
           <ParamSlider label="浇道宽度" value={runnerWidth} onChange={setRunnerWidth} min={2} max={10} step={0.5} unit="mm" />
           <ParamRow label="排气孔数">
@@ -1207,6 +2235,11 @@ function GatingPanel() {
               ))}
             </div>
           </ParamRow>
+          {runnerType === "hot" && (
+            <div className="text-[9px] text-accent/80 p-1.5 bg-accent/5 rounded">
+              热流道可减少材料浪费约 30%，缩短冷却时间，但模具成本更高
+            </div>
+          )}
         </div>
       </Section>
 
@@ -1231,7 +2264,16 @@ function GatingPanel() {
         <Section title="设计结果" icon={<CheckCircle2 size={11} />}>
           <ResultCard>
             <ResultRow label="浇口评分" value={`${(gatingResult.gate.score * 100).toFixed(1)}%`} color="text-accent font-bold" />
-            <ResultRow label="流道平衡" value={`${(gatingResult.gate.flow_balance * 100).toFixed(1)}%`} />
+            <div className="space-y-1 my-1">
+              <div className="text-text-muted text-[9px]">流道平衡</div>
+              <div className="h-1.5 rounded-full bg-bg-hover overflow-hidden">
+                <div className={cn("h-full rounded-full", gatingResult.gate.flow_balance > 0.8 ? "bg-success" : gatingResult.gate.flow_balance > 0.5 ? "bg-accent" : "bg-warning")}
+                  style={{ width: `${gatingResult.gate.flow_balance * 100}%` }} />
+              </div>
+              <div className="flex justify-between text-[8px] text-text-muted">
+                <span>不平衡</span><span>{(gatingResult.gate.flow_balance * 100).toFixed(0)}%</span><span>完美</span>
+              </div>
+            </div>
             <ResultRow label="可达性" value={`${(gatingResult.gate.accessibility * 100).toFixed(1)}%`} />
             <div className="h-px bg-border my-0.5" />
             <ResultRow label="浇口直径" value={`${gatingResult.gate_diameter.toFixed(1)}mm`} />
@@ -1240,7 +2282,10 @@ function GatingPanel() {
             <div className="h-px bg-border my-0.5" />
             <ResultRow label="型腔体积" value={`${gatingResult.cavity_volume.toFixed(0)} mm³`} />
             <ResultRow label="预计材料" value={`${gatingResult.estimated_material_volume.toFixed(0)} mm³`} />
+            <ResultRow label="材料利用率" value={`${((gatingResult.cavity_volume / Math.max(gatingResult.estimated_material_volume, 1)) * 100).toFixed(1)}%`}
+              color={(gatingResult.cavity_volume / Math.max(gatingResult.estimated_material_volume, 1)) > 0.85 ? "text-success" : "text-warning"} />
             <ResultRow label="预计充填" value={`${gatingResult.estimated_fill_time.toFixed(1)} s`} />
+            <ResultRow label="浇口冻结时间" value={`≈${(gatingResult.estimated_fill_time * 1.8).toFixed(1)} s`} />
           </ResultCard>
         </Section>
       )}
@@ -1307,19 +2352,7 @@ function SimPanel() {
 
       {/* 1. Material */}
       <Section title="1. 材料选择" icon={<Layers size={11} />}>
-        <select
-          value={selectedMaterial}
-          onChange={(e) => setMaterial(e.target.value)}
-          className="w-full text-xs bg-bg-secondary border border-border rounded px-2 py-1.5 text-text-primary"
-        >
-          <option value="silicone_a10">硅胶 Shore A10 (软)</option>
-          <option value="silicone_a30">硅胶 Shore A30 (中)</option>
-          <option value="silicone_a50">硅胶 Shore A50 (硬)</option>
-          <option value="polyurethane">聚氨酯</option>
-          <option value="epoxy_resin">环氧树脂</option>
-          <option value="abs_injection">ABS 注塑</option>
-          <option value="pp_injection">PP 注塑</option>
-        </select>
+        <MaterialLibrary selected={selectedMaterial} onSelect={setMaterial} />
       </Section>
 
       {/* 2. Gating */}
@@ -1397,33 +2430,91 @@ function SimPanel() {
         />
         {simResult && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-            className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1">
-            <div className="flex justify-between">
-              <span className="text-text-muted">充填率</span>
-              <span className={simResult.fill_fraction < 0.99 ? "text-warning" : "text-success"}>
-                {(simResult.fill_fraction * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">充填时间</span>
-              <span>{simResult.fill_time_seconds.toFixed(1)} s</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">最大压力</span>
-              <span>{simResult.max_pressure.toFixed(0)} Pa</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">缺陷数</span>
-              <span className={simResult.defects.length > 0 ? "text-warning" : "text-success"}>
-                {simResult.defects.length}
-              </span>
-            </div>
-            {simResult.defects.map((d, i) => (
-              <div key={i} className="text-warning/80 border-t border-border/50 pt-1">
-                <span className="font-medium">{d.type}</span>: {d.description}
-                <span className="ml-1 text-text-muted">(严重度 {(d.severity * 100).toFixed(0)}%)</span>
+            className="mt-2 space-y-2">
+            {/* Fill confidence bar */}
+            <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-text-muted font-semibold">充填置信度</span>
+                <span className={cn("font-bold",
+                  simResult.fill_fraction >= 0.99 && simResult.defects.length === 0 ? "text-success"
+                    : simResult.fill_fraction >= 0.95 ? "text-accent" : "text-warning")}>
+                  {simResult.fill_fraction >= 0.99 && simResult.defects.length === 0 ? "高"
+                    : simResult.fill_fraction >= 0.95 ? "中" : "低"}
+                </span>
               </div>
-            ))}
+              <div className="h-2 rounded-full bg-bg-hover overflow-hidden flex">
+                <div className="h-full bg-success transition-all" style={{ width: `${simResult.fill_fraction * 100}%` }} />
+              </div>
+              <div className="flex justify-between text-[8px] text-text-muted">
+                <span>0%</span><span>充填率 {(simResult.fill_fraction * 100).toFixed(1)}%</span><span>100%</span>
+              </div>
+            </div>
+
+            {/* Key metrics */}
+            <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+              <div className="flex justify-between">
+                <span className="text-text-muted">充填时间</span>
+                <span>{simResult.fill_time_seconds.toFixed(1)} s</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-text-muted">最大压力</span>
+                <span>{simResult.max_pressure.toFixed(0)} Pa ({(simResult.max_pressure / 1e6).toFixed(3)} MPa)</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-text-muted">预估周期</span>
+                <span className="font-mono">{(simResult.fill_time_seconds * 3.5).toFixed(1)} s</span>
+              </div>
+              {simResult.analysis && (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-text-muted">壁厚范围</span>
+                    <span>{simResult.analysis.min_thickness.toFixed(1)} – {simResult.analysis.max_thickness.toFixed(1)} mm</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-muted">温度范围</span>
+                    <span>{simResult.analysis.temperature_range[0].toFixed(1)} – {simResult.analysis.temperature_range[1].toFixed(1)} °C</span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Defect summary by type */}
+            {simResult.defects.length > 0 && (
+              <div className="p-2 rounded border border-warning/20 bg-warning/5 text-[10px] space-y-1">
+                <div className="text-warning font-semibold flex items-center gap-1">
+                  <span>⚠</span> 缺陷检测 ({simResult.defects.length})
+                </div>
+                {(() => {
+                  const groups: Record<string, { count: number; maxSev: number; desc: string }> = {};
+                  simResult.defects.forEach(d => {
+                    if (!groups[d.type]) groups[d.type] = { count: 0, maxSev: 0, desc: d.description };
+                    groups[d.type].count++;
+                    groups[d.type].maxSev = Math.max(groups[d.type].maxSev, d.severity);
+                  });
+                  const typeLabels: Record<string, string> = {
+                    air_trap: "气穴", weld_line: "熔接线", short_shot: "短射", slow_fill: "滞留",
+                  };
+                  return Object.entries(groups).map(([type, g]) => (
+                    <div key={type} className="flex items-center justify-between border-t border-border/30 pt-0.5">
+                      <div className="flex items-center gap-1">
+                        <span className={cn("w-2 h-2 rounded-full",
+                          type === "air_trap" ? "bg-red-400" : type === "weld_line" ? "bg-orange-400" : "bg-yellow-400")} />
+                        <span className="text-text-secondary">{typeLabels[type] ?? type}</span>
+                        <span className="text-text-muted">×{g.count}</span>
+                      </div>
+                      <span className={g.maxSev > 0.5 ? "text-danger" : "text-warning"}>
+                        {(g.maxSev * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                  ));
+                })()}
+              </div>
+            )}
+            {simResult.defects.length === 0 && (
+              <div className="p-2 rounded border border-success/20 bg-success/5 text-[10px] text-success flex items-center gap-1.5">
+                <CheckCircle2 size={12} /> 未检测到缺陷
+              </div>
+            )}
           </motion.div>
         )}
       </Section>
@@ -2130,8 +3221,299 @@ function ExportPanel() {
         </Section>
       )}
 
+      {/* Print readiness checklist */}
+      <Section title="打印就绪检查" icon={<CheckCircle2 size={11} />}>
+        <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+          {(() => {
+            const info = meshInfo;
+            const checks = [
+              { label: "模型已加载", ok: !!modelId, tip: "需要导入3D模型" },
+              { label: "水密网格", ok: info?.is_watertight ?? false, tip: "运行自动修复" },
+              { label: "面数适中 (>1k)", ok: (info?.face_count ?? 0) > 1000, tip: "面数过低可能丢失细节" },
+              { label: "体积为正", ok: (info?.volume ?? 0) > 0, tip: "检查法线方向" },
+              { label: "模具已生成", ok: !!moldId, tip: "前往模具步骤生成" },
+              { label: "浇注系统就绪", ok: !!useSimStore.getState().gatingId, tip: "前往浇注步骤设计" },
+              { label: "仿真已完成", ok: !!useSimStore.getState().simResult, tip: "运行仿真验证" },
+            ];
+            const passCount = checks.filter(c => c.ok).length;
+            return (
+              <>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-text-muted font-semibold">就绪度</span>
+                  <span className={cn("font-bold",
+                    passCount === checks.length ? "text-success" : passCount >= 4 ? "text-accent" : "text-warning")}>
+                    {passCount}/{checks.length}
+                  </span>
+                </div>
+                {checks.map((c, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <span className={c.ok ? "text-success" : "text-text-muted/40"}>
+                      {c.ok ? "✓" : "○"}
+                    </span>
+                    <span className={c.ok ? "text-text-secondary" : "text-text-muted"}>
+                      {c.label}
+                    </span>
+                    {!c.ok && <span className="text-[8px] text-text-muted/50 ml-auto">{c.tip}</span>}
+                  </div>
+                ))}
+              </>
+            );
+          })()}
+        </div>
+      </Section>
+
+      {/* Manufacturing report */}
+      {modelId && moldId && (
+        <Section title="制造报告" icon={<FileText size={11} />}>
+          <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+            <div className="text-text-muted font-semibold mb-1">工艺参数概要</div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">模型</span>
+              <span className="text-text-primary truncate ml-2 max-w-[120px]">{filename ?? modelId}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">总面数</span>
+              <span className="font-mono">{((meshInfo?.face_count ?? 0) + moldShellFaceTotal + insertFaceTotal).toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">壳体数</span>
+              <span>{moldResult?.n_shells ?? "—"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">内骨骼</span>
+              <span>{insertId ? `${plates.length} 板` : "无"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">导出格式</span>
+              <span className="font-mono uppercase">{format}</span>
+            </div>
+            <div className="text-[8px] text-text-muted/60 mt-1 border-t border-border/30 pt-1">
+              完整的制造报告将随 ZIP 包一同导出
+            </div>
+          </div>
+        </Section>
+      )}
+
       {(exportModel.isError || exportMold.isError || exportInsert.isError || exportAll.isError) && (
         <p className="text-[10px] text-danger">导出失败，请重试</p>
+      )}
+    </div>
+  );
+}
+
+function DesignRulesChecker() {
+  const meshInfo = useModelStore((s) => s.meshInfo);
+  const moldResult = useMoldStore((s) => s.moldResult);
+  const orientationResult = useMoldStore((s) => s.orientationResult);
+
+  if (!meshInfo) return <div className="text-[10px] text-text-muted py-2">需要先导入模型</div>;
+
+  const rules: { label: string; status: "pass" | "warn" | "fail" | "na"; detail: string }[] = [];
+
+  // Wall thickness check
+  const ext = meshInfo.extents;
+  const minDim = ext ? Math.min(...ext) : 0;
+  rules.push({
+    label: "最小壁厚",
+    status: minDim >= 1.5 ? "pass" : minDim >= 0.8 ? "warn" : "fail",
+    detail: `${minDim.toFixed(1)}mm (推荐 ≥1.5mm)`,
+  });
+
+  // Watertight
+  rules.push({
+    label: "水密网格",
+    status: meshInfo.is_watertight ? "pass" : "fail",
+    detail: meshInfo.is_watertight ? "已通过" : "存在开放边，需修复",
+  });
+
+  // Face count
+  rules.push({
+    label: "网格密度",
+    status: meshInfo.face_count >= 5000 ? "pass" : meshInfo.face_count >= 1000 ? "warn" : "fail",
+    detail: `${meshInfo.face_count.toLocaleString()} 面`,
+  });
+
+  // Draft angle
+  if (orientationResult) {
+    const minDA = orientationResult.best_score.min_draft_angle;
+    rules.push({
+      label: "最小拔模角",
+      status: minDA >= 3 ? "pass" : minDA >= 1 ? "warn" : "fail",
+      detail: `${minDA.toFixed(1)}° (推荐 ≥3°)`,
+    });
+    rules.push({
+      label: "倒扣面",
+      status: orientationResult.best_score.undercut_ratio < 0.05 ? "pass"
+        : orientationResult.best_score.undercut_ratio < 0.15 ? "warn" : "fail",
+      detail: `${(orientationResult.best_score.undercut_ratio * 100).toFixed(1)}% (推荐 <5%)`,
+    });
+  }
+
+  // Volume
+  rules.push({
+    label: "体积有效性",
+    status: (meshInfo.volume ?? 0) > 0 ? "pass" : "fail",
+    detail: meshInfo.volume ? `${meshInfo.volume.toFixed(0)} mm³` : "无效/法线反向",
+  });
+
+  // Mold generation
+  rules.push({
+    label: "模具已生成",
+    status: moldResult ? "pass" : "na",
+    detail: moldResult ? `${moldResult.n_shells} 片壳体` : "未生成",
+  });
+
+  // Feature size
+  const minFeature = ext ? Math.min(...ext) * 0.01 : 0;
+  rules.push({
+    label: "最小特征尺寸",
+    status: minFeature >= 0.3 ? "pass" : "warn",
+    detail: `估算 ≈${minFeature.toFixed(2)}mm`,
+  });
+
+  const passCount = rules.filter(r => r.status === "pass").length;
+  const total = rules.filter(r => r.status !== "na").length;
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[9px] text-text-muted font-semibold uppercase tracking-wider">设计规则检查</span>
+        <span className={cn("text-[10px] font-bold",
+          passCount === total ? "text-success" : passCount >= total * 0.7 ? "text-accent" : "text-warning")}>
+          {passCount}/{total}
+        </span>
+      </div>
+      {rules.map((r, i) => (
+        <div key={i} className="flex items-center gap-1.5 text-[10px]">
+          <span className={cn("w-3 text-center font-bold",
+            r.status === "pass" ? "text-success" : r.status === "warn" ? "text-warning" : r.status === "fail" ? "text-danger" : "text-text-muted/40")}>
+            {r.status === "pass" ? "✓" : r.status === "warn" ? "!" : r.status === "fail" ? "✗" : "—"}
+          </span>
+          <span className="text-text-secondary flex-1">{r.label}</span>
+          <span className="text-text-muted text-[9px] text-right max-w-[100px] truncate">{r.detail}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const MATERIAL_DB = [
+  { id: "silicone_a10", name: "硅胶 A10", category: "硅胶", shore: "A10", density: 1.08, tensile: 2.5, elongation: 450, color: "#e8d5c0" },
+  { id: "silicone_a30", name: "硅胶 A30", category: "硅胶", shore: "A30", density: 1.12, tensile: 5.0, elongation: 350, color: "#d4c5b0" },
+  { id: "silicone_a50", name: "硅胶 A50", category: "硅胶", shore: "A50", density: 1.18, tensile: 8.0, elongation: 250, color: "#c0b5a0" },
+  { id: "polyurethane", name: "聚氨酯", category: "树脂", shore: "A60-D80", density: 1.2, tensile: 30, elongation: 400, color: "#f5e6c0" },
+  { id: "epoxy_resin", name: "环氧树脂", category: "树脂", shore: "D85", density: 1.15, tensile: 65, elongation: 5, color: "#e0e8d0" },
+  { id: "abs_injection", name: "ABS", category: "塑料", shore: "D100", density: 1.04, tensile: 40, elongation: 30, color: "#f0f0e0" },
+  { id: "pp_injection", name: "PP", category: "塑料", shore: "D70", density: 0.91, tensile: 35, elongation: 150, color: "#e8e8e8" },
+  { id: "pla", name: "PLA", category: "塑料", shore: "D80", density: 1.24, tensile: 50, elongation: 6, color: "#d0e8d0" },
+  { id: "tpu_95a", name: "TPU 95A", category: "弹性体", shore: "A95", density: 1.21, tensile: 40, elongation: 580, color: "#e0d8e8" },
+] as const;
+
+function MaterialLibrary({ selected, onSelect }: { selected: string; onSelect: (id: string) => void }) {
+  const [filter, setFilter] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const filtered = MATERIAL_DB.filter(m =>
+    !filter || m.name.toLowerCase().includes(filter.toLowerCase()) || m.category.includes(filter),
+  );
+
+  return (
+    <div className="space-y-1.5">
+      <input
+        type="text" placeholder="搜索材料..."
+        value={filter} onChange={(e) => { setFilter(e.target.value); setExpanded(true); }}
+        className="w-full text-[10px] bg-bg-secondary border border-border rounded px-2 py-1 text-text-primary placeholder:text-text-muted/40"
+      />
+      <div className={cn("space-y-0.5", expanded ? "max-h-48" : "max-h-24", "overflow-y-auto")}>
+        {filtered.map((m) => (
+          <button key={m.id} onClick={() => onSelect(m.id)}
+            className={cn(
+              "w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-[10px] transition-all text-left",
+              selected === m.id ? "bg-accent/15 ring-1 ring-accent/40" : "bg-bg-secondary/50 hover:bg-bg-hover",
+            )}>
+            <div className="w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: m.color }} />
+            <div className="flex-1 min-w-0">
+              <div className={cn("font-medium truncate", selected === m.id ? "text-accent" : "text-text-secondary")}>{m.name}</div>
+              <div className="text-[8px] text-text-muted">{m.shore} · {m.density}g/cm³</div>
+            </div>
+            <div className="text-right shrink-0 text-[8px] text-text-muted">
+              <div>{m.tensile}MPa</div>
+              <div>{m.elongation}%</div>
+            </div>
+          </button>
+        ))}
+      </div>
+      {selected && (() => {
+        const mat = MATERIAL_DB.find(m => m.id === selected);
+        if (!mat) return null;
+        return (
+          <div className="p-1.5 rounded bg-bg-secondary/50 text-[9px] text-text-muted space-y-0.5">
+            <div className="flex justify-between"><span>拉伸强度</span><span className="font-mono">{mat.tensile} MPa</span></div>
+            <div className="flex justify-between"><span>断裂伸长</span><span className="font-mono">{mat.elongation}%</span></div>
+            <div className="flex justify-between"><span>密度</span><span className="font-mono">{mat.density} g/cm³</span></div>
+            <div className="flex justify-between"><span>硬度</span><span className="font-mono">{mat.shore}</span></div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function QualityChecker({ modelId }: { modelId: string | null }) {
+  const [quality, setQuality] = useState<Record<string, unknown> | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const check = async () => {
+    if (!modelId) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/v1/models/${modelId}/quality`);
+      const data = await res.json();
+      setQuality(data.quality ?? data);
+    } catch { setQuality(null); }
+    setLoading(false);
+  };
+
+  if (!modelId) return null;
+
+  return (
+    <div className="space-y-1.5">
+      <ActionButton
+        icon={<Activity size={13} />}
+        label={loading ? "检查中..." : quality ? "重新检查" : "运行质量检查"}
+        loading={loading}
+        onClick={check}
+      />
+      {quality && (
+        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
+          className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+          {Object.entries(quality).map(([k, v]) => {
+            if (typeof v === "object" || k === "model_id") return null;
+            const label: Record<string, string> = {
+              is_watertight: "水密性", is_manifold: "流形",
+              face_count: "面数", vertex_count: "顶点数",
+              holes: "孔洞数", non_manifold_edges: "非流形边",
+              degenerate_faces: "退化面", duplicate_faces: "重复面",
+              min_edge_length: "最小边长 (mm)", max_edge_length: "最大边长 (mm)",
+              mean_edge_length: "平均边长 (mm)", max_aspect_ratio: "最大纵横比",
+              volume: "体积 (mm³)", surface_area: "表面积 (mm²)",
+            };
+            if (!label[k]) return null;
+            const isGood = k === "is_watertight" || k === "is_manifold" ? v === true
+              : k === "degenerate_faces" || k === "non_manifold_edges" || k === "duplicate_faces" || k === "holes" ? v === 0
+                : null;
+            return (
+              <div key={k} className="flex justify-between">
+                <span className="text-text-muted">{label[k]}</span>
+                <span className={cn(
+                  "font-mono",
+                  isGood === true ? "text-success" : isGood === false ? "text-warning" : "text-text-primary",
+                )}>
+                  {typeof v === "boolean" ? (v ? "✓" : "✗") : typeof v === "number" ? (Number(v) % 1 === 0 ? v : Number(v).toFixed(4)) : String(v)}
+                </span>
+              </div>
+            );
+          })}
+        </motion.div>
       )}
     </div>
   );

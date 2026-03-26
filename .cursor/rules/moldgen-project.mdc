@@ -1,0 +1,32 @@
+---
+description: MoldGen project conventions and architecture overview. Core rules for all development.
+alwaysApply: true
+---
+
+# MoldGen Project Rules
+
+## Project Identity
+
+MoldGen is an AI-driven medical teaching mold generation desktop workstation.
+Stack: Tauri 2 + React 19 + Three.js (frontend) / FastAPI + trimesh + CUDA (backend).
+
+## Language
+
+- Code: English (variables, functions, comments)
+- UI text: Chinese (labels, messages, tooltips)
+- Documentation: Chinese (docs/) with English code examples
+
+## Architecture Boundaries
+
+- `moldgen/core/`: Pure geometry algorithms. No API, no AI, no side effects.
+- `moldgen/gpu/`: CUDA kernels with CPU fallback. Always check GPU availability.
+- `moldgen/ai/`: Agent system. Follows BaseAgent pattern with ToolRegistry.
+- `moldgen/api/`: FastAPI routes. Thin layer calling core/ai modules.
+- `frontend/src/stores/`: Zustand flat stores. One store per domain.
+- `frontend/src/hooks/`: TanStack Query hooks. One file per API domain.
+
+## Error Handling
+
+- Backend: `HTTPException` for API errors, `logging.exception()` for unexpected errors.
+- GPU: Always provide CPU fallback path. Never crash on GPU OOM.
+- Agents: Retry with `AgentConfig.max_retries`. Log and degrade gracefully.

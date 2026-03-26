@@ -13,15 +13,43 @@ import {
   Wifi,
   WifiOff,
   Network,
+  Bot,
+  Brain,
+  Zap,
+  Trash2,
+  BarChart3,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
+import { useAIStore, type AgentInfo } from "../../stores/aiStore";
+import {
+  useGlobalAgentConfig,
+  useUpdateGlobalConfig,
+  useUpdateAgentConfig,
+  useMemoryStatus,
+  useClearShortTermMemory,
+  useUsageStats,
+  useAgentList,
+} from "../../hooks/useAgentApi";
+import { UpdateChecker } from "./UpdateChecker";
+import {
+  useLocalModels,
+  useLocalModelVram,
+  useProviderConfig,
+  useUpdateProvider,
+  useLoadModel,
+  useUnloadModel,
+  useDownloadModel,
+  useDeleteModel,
+} from "../../hooks/useGenerateApi";
 import { cn } from "../../lib/utils";
 
-type SettingsTab = "api" | "mold" | "simulation" | "insert" | "gpu" | "ui" | "about";
+type SettingsTab = "api" | "agent" | "models" | "mold" | "simulation" | "insert" | "gpu" | "ui" | "about";
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Key }[] = [
   { id: "api", label: "AI API", icon: Key },
+  { id: "agent", label: "Agent 系统", icon: Bot },
+  { id: "models", label: "本地模型", icon: Box },
   { id: "mold", label: "模具参数", icon: Box },
   { id: "simulation", label: "仿真参数", icon: FlaskConical },
   { id: "insert", label: "支撑板", icon: Layers },
@@ -106,6 +134,8 @@ export function SettingsDialog() {
                 </div>
                 <div className="flex-1 overflow-y-auto p-5 space-y-5">
                   {tab === "api" && <ApiSettings />}
+                  {tab === "agent" && <AgentSettings />}
+                  {tab === "models" && <LocalModelSettings />}
                   {tab === "mold" && <MoldSettings />}
                   {tab === "simulation" && <SimSettings />}
                   {tab === "insert" && <InsertSettings />}
@@ -514,6 +544,258 @@ function TopologyDiagram({
   );
 }
 
+// ── Agent Settings Tab ───────────────────────────────────────────────
+
+function AgentSettings() {
+  useGlobalAgentConfig();
+  useAgentList(true);
+  const { data: memory } = useMemoryStatus();
+  const { data: usageStats } = useUsageStats();
+  const globalConfig = useAIStore((s) => s.globalConfig);
+  const agents = useAIStore((s) => s.agents);
+  const updateGlobal = useUpdateGlobalConfig();
+  const updateAgent = useUpdateAgentConfig();
+  const clearMemory = useClearShortTermMemory();
+
+  const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
+  const [subTab, setSubTab] = useState<"global" | "agents" | "memory" | "stats">("global");
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1">
+        {(["global", "agents", "memory", "stats"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setSubTab(t)}
+            className={cn(
+              "px-3 py-1 rounded text-[11px] transition-colors",
+              subTab === t
+                ? "bg-accent/20 text-accent"
+                : "text-text-muted hover:text-text-primary hover:bg-bg-secondary",
+            )}
+          >
+            {t === "global" && "全局配置"}
+            {t === "agents" && "Agent 管理"}
+            {t === "memory" && "记忆系统"}
+            {t === "stats" && "使用统计"}
+          </button>
+        ))}
+      </div>
+
+      {subTab === "global" && globalConfig && (
+        <div className="space-y-4">
+          <p className="text-[11px] text-text-muted">Agent 系统全局参数，影响所有 Agent 的默认行为</p>
+          <SettingSelect
+            label="思考模式"
+            value={globalConfig.thinking_style}
+            options={[
+              { value: "fast", label: "快速 — 关键字匹配，无LLM" },
+              { value: "balanced", label: "均衡 — LLM分析+关键字兜底" },
+              { value: "deep", label: "深度 — CoT推理+自省+备选方案" },
+            ]}
+            onChange={(v) => updateGlobal.mutate({ thinking_style: v })}
+          />
+          <SettingSelect
+            label="默认执行模式"
+            value={globalConfig.default_mode}
+            options={[
+              { value: "auto", label: "全自动" },
+              { value: "semi_auto", label: "半自动（关键节点确认）" },
+              { value: "step", label: "逐步确认" },
+            ]}
+            onChange={(v) => updateGlobal.mutate({ default_mode: v })}
+          />
+          <SettingSlider
+            label="最大重试次数"
+            min={0} max={5} step={1}
+            value={globalConfig.max_retries}
+            onChange={(v) => updateGlobal.mutate({ max_retries: v })}
+          />
+          <SettingSlider
+            label="自动确认置信度阈值"
+            min={0.5} max={1.0} step={0.05}
+            value={globalConfig.auto_confirm_threshold}
+            onChange={(v) => updateGlobal.mutate({ auto_confirm_threshold: v })}
+          />
+          <SettingToggle
+            label="启用记忆系统"
+            checked={globalConfig.enable_memory}
+            onChange={(v) => updateGlobal.mutate({ enable_memory: v })}
+          />
+          <SettingToggle
+            label="启用自省优化"
+            checked={globalConfig.enable_self_reflection}
+            onChange={(v) => updateGlobal.mutate({ enable_self_reflection: v })}
+          />
+        </div>
+      )}
+      {subTab === "global" && !globalConfig && (
+        <div className="text-center text-[11px] text-text-muted py-6">
+          <Loader2 size={14} className="animate-spin mx-auto mb-2" />
+          加载配置中...
+        </div>
+      )}
+
+      {subTab === "agents" && (
+        <div className="space-y-2">
+          <p className="text-[11px] text-text-muted">管理各个 Agent 的独立配置</p>
+          {agents.map((agent: AgentInfo) => {
+            const isExpanded = expandedAgent === agent.role;
+            const cfg = agent.config;
+            return (
+              <div key={agent.role} className="border border-border rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setExpandedAgent(isExpanded ? null : agent.role)}
+                  className="w-full flex items-center gap-3 px-3 py-2 hover:bg-bg-secondary transition-colors text-left"
+                >
+                  <div className={cn("w-2 h-2 rounded-full", cfg?.enabled ? "bg-green-400" : "bg-red-400")} />
+                  <span className="text-[11px] font-semibold text-text-primary flex-1">{agent.name}</span>
+                  <span className="text-[10px] text-text-muted">{agent.tools.length} 工具</span>
+                  <span className={cn("text-[10px] transition-transform", isExpanded && "rotate-90")}>▶</span>
+                </button>
+
+                {isExpanded && cfg && (
+                  <div className="px-3 pb-3 pt-1 space-y-2 border-t border-border bg-bg-secondary/50">
+                    <SettingToggle
+                      label="启用此 Agent"
+                      checked={cfg.enabled}
+                      onChange={(v) => updateAgent.mutate({ role: agent.role, updates: { enabled: v } })}
+                    />
+                    <SettingSelect
+                      label="思考模式"
+                      value={cfg.thinking_style}
+                      options={[
+                        { value: "fast", label: "快速" },
+                        { value: "balanced", label: "均衡" },
+                        { value: "deep", label: "深度" },
+                      ]}
+                      onChange={(v) => updateAgent.mutate({ role: agent.role, updates: { thinking_style: v } })}
+                    />
+                    <SettingSlider
+                      label="温度 (创造性)"
+                      min={0} max={1.5} step={0.1}
+                      value={cfg.temperature}
+                      onChange={(v) => updateAgent.mutate({ role: agent.role, updates: { temperature: v } })}
+                    />
+                    <SettingSlider
+                      label="最大token数"
+                      min={256} max={8192} step={256}
+                      value={cfg.max_tokens}
+                      onChange={(v) => updateAgent.mutate({ role: agent.role, updates: { max_tokens: v } })}
+                    />
+                    <SettingSlider
+                      label="超时 (秒)"
+                      min={10} max={300} step={10}
+                      value={cfg.timeout_seconds}
+                      onChange={(v) => updateAgent.mutate({ role: agent.role, updates: { timeout_seconds: v } })}
+                    />
+                    <SettingToggle
+                      label="详细日志"
+                      checked={cfg.verbose_logging}
+                      onChange={(v) => updateAgent.mutate({ role: agent.role, updates: { verbose_logging: v } })}
+                    />
+                    <div className="pt-1">
+                      <p className="text-[10px] text-text-muted">
+                        可用工具: {agent.tools.join(", ") || "无"}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {subTab === "memory" && (
+        <div className="space-y-4">
+          <p className="text-[11px] text-text-muted">Agent 记忆系统管理</p>
+
+          <div className="p-3 rounded-lg bg-bg-secondary space-y-2">
+            <div className="flex items-center gap-2 mb-2">
+              <Brain size={13} className="text-accent" />
+              <span className="text-[11px] font-semibold text-text-secondary">短期记忆（会话级）</span>
+            </div>
+            <InfoRow
+              label="记忆条目数"
+              value={String(memory?.short_term?.size ?? 0)}
+            />
+            <InfoRow
+              label="对话摘要"
+              value={memory?.short_term?.summary || "无"}
+            />
+            <div className="flex justify-end pt-1">
+              <button
+                onClick={() => clearMemory.mutate()}
+                disabled={clearMemory.isPending}
+                className="flex items-center gap-1 text-[10px] text-red-400 hover:text-red-300 transition-colors"
+              >
+                <Trash2 size={10} />
+                {clearMemory.isPending ? "清除中..." : "清空短期记忆"}
+              </button>
+            </div>
+          </div>
+
+          <div className="p-3 rounded-lg bg-bg-secondary space-y-2">
+            <div className="flex items-center gap-2 mb-2">
+              <Zap size={13} className="text-yellow-400" />
+              <span className="text-[11px] font-semibold text-text-secondary">长期记忆（持久化）</span>
+            </div>
+            <InfoRow
+              label="用户默认参数"
+              value={`${Object.keys(memory?.long_term?.user_defaults ?? {}).length} 项`}
+            />
+            <InfoRow
+              label="常用器官"
+              value={memory?.long_term?.frequent_organs?.join(", ") || "无"}
+            />
+            <InfoRow
+              label="偏好材料"
+              value={memory?.long_term?.preferred_materials?.join(", ") || "无"}
+            />
+            <InfoRow
+              label="历史成功配置"
+              value={`${memory?.long_term?.n_successful_configs ?? 0} 条`}
+            />
+          </div>
+        </div>
+      )}
+
+      {subTab === "stats" && (
+        <div className="space-y-4">
+          <p className="text-[11px] text-text-muted">Agent 工具使用统计</p>
+
+          {usageStats && Object.keys(usageStats).length > 0 ? (
+            Object.entries(usageStats as Record<string, Record<string, { total: number; success: number; fail: number }>>).map(
+              ([agentRole, tools]) => (
+                <div key={agentRole} className="p-3 rounded-lg bg-bg-secondary space-y-1.5">
+                  <div className="flex items-center gap-2 mb-1">
+                    <BarChart3 size={12} className="text-text-muted" />
+                    <span className="text-[11px] font-semibold text-text-primary">{agentRole}</span>
+                  </div>
+                  {Object.entries(tools).map(([toolName, stats]) => (
+                    <div key={toolName} className="flex items-center justify-between text-[10px]">
+                      <span className="text-text-secondary font-mono">{toolName}</span>
+                      <span className="text-text-muted">
+                        {stats.total}次 ({stats.success}成功 / {stats.fail}失败)
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ),
+            )
+          ) : (
+            <div className="text-center text-[11px] text-text-muted py-8">
+              <BarChart3 size={20} className="mx-auto mb-2 opacity-30" />
+              暂无使用统计
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Other Settings Tabs ──────────────────────────────────────────────
 
 function MoldSettings() {
@@ -705,6 +987,182 @@ function UiSettings() {
   );
 }
 
+function LocalModelSettings() {
+  const { data } = useLocalModels();
+  const { data: vram } = useLocalModelVram();
+  const { data: providerCfg } = useProviderConfig();
+  const updateProvider = useUpdateProvider();
+  const loadModel = useLoadModel();
+  const unloadModel = useUnloadModel();
+  const downloadModel = useDownloadModel();
+  const deleteModel = useDeleteModel();
+
+  const models = data?.models ?? [];
+  const recommendation = data?.recommendation;
+
+  const STATUS_LABEL: Record<string, { text: string; color: string }> = {
+    not_downloaded: { text: "未下载", color: "text-text-muted" },
+    downloading: { text: "下载中", color: "text-yellow-400" },
+    downloaded: { text: "已下载", color: "text-blue-400" },
+    loading: { text: "加载中", color: "text-yellow-400" },
+    loaded: { text: "已加载", color: "text-green-400" },
+    error: { text: "错误", color: "text-red-400" },
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Provider Switch */}
+      <div className="space-y-3">
+        <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider">生成后端切换</h4>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-[11px] text-text-secondary">图像生成</label>
+            <select
+              value={providerCfg?.image_provider ?? "cloud"}
+              onChange={(e) => updateProvider.mutate({ image_provider: e.target.value })}
+              className="w-full bg-bg-secondary rounded px-2 py-1.5 text-[11px] text-text-primary outline-none"
+            >
+              <option value="cloud">云端 (通义万相)</option>
+              <option value="local">本地 (Diffusers)</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] text-text-secondary">3D 重建</label>
+            <select
+              value={providerCfg?.mesh_provider ?? "cloud"}
+              onChange={(e) => updateProvider.mutate({ mesh_provider: e.target.value })}
+              className="w-full bg-bg-secondary rounded px-2 py-1.5 text-[11px] text-text-primary outline-none"
+            >
+              <option value="cloud">云端 (Tripo3D)</option>
+              <option value="local">本地 (TripoSR)</option>
+            </select>
+          </div>
+        </div>
+        {providerCfg?.image_provider === "local" && (
+          <div className="space-y-1">
+            <label className="text-[11px] text-text-secondary">本地图像模型</label>
+            <select
+              value={providerCfg?.image_local_model ?? "sdxl-base"}
+              onChange={(e) => updateProvider.mutate({ image_local_model: e.target.value })}
+              className="w-full bg-bg-secondary rounded px-2 py-1.5 text-[11px] text-text-primary outline-none"
+            >
+              {models.filter(m => m.category === "image_gen").map(m => (
+                <option key={m.model_id} value={m.model_id}>
+                  {m.name} ({m.vram_required_mb}MB VRAM)
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
+
+      {/* VRAM */}
+      {vram && (
+        <div className="space-y-2">
+          <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider">GPU 显存</h4>
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-2 rounded-full bg-bg-secondary overflow-hidden">
+              <div
+                className="h-full rounded-full bg-accent"
+                style={{ width: `${vram.gpu_vram_total_mb > 0 ? Math.round((vram.gpu_vram_total_mb - vram.gpu_vram_free_mb) / vram.gpu_vram_total_mb * 100) : 0}%` }}
+              />
+            </div>
+            <span className="text-[10px] text-text-muted shrink-0">
+              {vram.gpu_vram_free_mb}MB 可用 / {vram.gpu_vram_total_mb}MB 总计
+            </span>
+          </div>
+          {vram.loaded_models?.length > 0 && (
+            <div className="text-[10px] text-text-muted">
+              已加载模型占用: {vram.total_loaded_vram_mb}MB
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Recommendation */}
+      {recommendation && (
+        <div className="p-2.5 rounded-lg bg-accent/5 border border-accent/20 text-[10px]">
+          <div className="font-semibold text-accent mb-1">推荐配置: {recommendation.tier}</div>
+          <p className="text-text-muted leading-relaxed">{recommendation.note}</p>
+        </div>
+      )}
+
+      {/* Model List */}
+      <div className="space-y-3">
+        <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider">可用模型</h4>
+        {["image_gen", "mesh_gen"].map(cat => {
+          const catModels = models.filter(m => m.category === cat);
+          if (!catModels.length) return null;
+          return (
+            <div key={cat} className="space-y-1.5">
+              <span className="text-[10px] font-semibold text-text-secondary">
+                {cat === "image_gen" ? "图像生成" : "三维重建"}
+              </span>
+              {catModels.map(m => {
+                const st = STATUS_LABEL[m.status] ?? STATUS_LABEL.error;
+                return (
+                  <div key={m.model_id} className="flex items-center gap-2 p-2 rounded-lg bg-bg-secondary">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-semibold text-text-primary">{m.name}</span>
+                        {m.tags.map(t => (
+                          <span key={t} className="text-[8px] px-1 rounded bg-accent/10 text-accent">{t}</span>
+                        ))}
+                      </div>
+                      <p className="text-[9px] text-text-muted truncate">{m.description}</p>
+                      <div className="flex items-center gap-2 mt-0.5 text-[9px] text-text-muted">
+                        <span>{m.vram_required_mb}MB VRAM</span>
+                        <span>{m.disk_size_gb}GB 磁盘</span>
+                        <span className={st.color}>{st.text}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {m.status === "not_downloaded" && (
+                        <button
+                          onClick={() => downloadModel.mutate(m.model_id)}
+                          disabled={downloadModel.isPending}
+                          className="px-2 py-0.5 text-[10px] rounded bg-accent/20 text-accent hover:bg-accent/30"
+                        >
+                          下载
+                        </button>
+                      )}
+                      {m.status === "downloaded" && !m.is_loaded && (
+                        <>
+                          <button
+                            onClick={() => loadModel.mutate(m.model_id)}
+                            disabled={loadModel.isPending}
+                            className="px-2 py-0.5 text-[10px] rounded bg-green-500/20 text-green-400 hover:bg-green-500/30"
+                          >
+                            加载
+                          </button>
+                          <button
+                            onClick={() => deleteModel.mutate(m.model_id)}
+                            className="px-2 py-0.5 text-[10px] rounded bg-red-500/10 text-red-400 hover:bg-red-500/20"
+                          >
+                            删除
+                          </button>
+                        </>
+                      )}
+                      {m.is_loaded && (
+                        <button
+                          onClick={() => unloadModel.mutate(m.model_id)}
+                          className="px-2 py-0.5 text-[10px] rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30"
+                        >
+                          卸载
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AboutSection() {
   return (
     <div className="space-y-4">
@@ -719,11 +1177,16 @@ function AboutSection() {
         <InfoRow label="AI" value="DeepSeek / Qwen / Kimi / 万相 / Tripo3D" />
         <InfoRow label="加速" value="CUDA / Numba / CuPy" />
       </div>
+      <UpdateCheckerSection />
       <div className="text-center">
         <p className="text-[10px] text-text-muted">面向临床教学与手术教具开发</p>
       </div>
     </div>
   );
+}
+
+function UpdateCheckerSection() {
+  return <UpdateChecker />;
 }
 
 // ── Reusable Setting Controls ────────────────────────────────────────

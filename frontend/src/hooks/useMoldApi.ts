@@ -150,3 +150,42 @@ export function useMoldGeneration() {
     onError: () => store.setGeneratingMold(false),
   });
 }
+
+export function useCoolingChannelDesign() {
+  return useMutation({
+    mutationFn: async (params: {
+      moldId: string;
+      layout?: string;
+      nChannels?: number;
+      channelDiameter?: number;
+      wallOffset?: number;
+    }) => {
+      const resp = await fetch(`/api/v1/molds/result/${params.moldId}/cooling`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          layout: params.layout ?? "conformal",
+          n_channels: params.nChannels ?? 4,
+          channel_diameter: params.channelDiameter ?? 6.0,
+          wall_offset: params.wallOffset ?? 10.0,
+        }),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    },
+  });
+}
+
+export function useMoldAnalysis() {
+  return useMutation({
+    mutationFn: async (params: { moldId: string }) => {
+      const resp = await fetch(`/api/v1/molds/result/${params.moldId}/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    },
+  });
+}

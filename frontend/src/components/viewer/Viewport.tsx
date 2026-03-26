@@ -14,6 +14,7 @@ import {
 import { ModelViewer } from "./ModelViewer";
 import { MoldShellViewer } from "./MoldShellViewer";
 import { InsertPlateViewer } from "./InsertPlateViewer";
+import { HoleBrushPainter } from "./HoleBrushPainter";
 import { SimulationViewer, StreamlineViewer, DefectMarkers, SurfaceOverlayViewer, FEAViewer } from "./SimulationViewer";
 import { SimFloatingBar } from "./SimFloatingBar";
 import { useInsertStore } from "../../stores/insertStore";
@@ -93,7 +94,7 @@ export function Viewport() {
             ))}
 
           {hasInserts && insertVisible && insertId &&
-            insertPlates.map((_, idx) => (
+            insertPlates.map((_p, idx) => (
               <InsertPlateViewer
                 key={`insert-${insertId}-${idx}`}
                 insertId={insertId}
@@ -102,6 +103,13 @@ export function Viewport() {
                 visible={insertVisible}
               />
             ))}
+
+          {hasInserts && insertPlates[0]?.position && (
+            <HoleBrushPainter
+              plateNormal={(insertPlates[0].position?.normal ?? [0,0,1]) as [number,number,number]}
+              plateCentre={(insertPlates[0].position?.origin ?? [0,0,0]) as [number,number,number]}
+            />
+          )}
 
           {hasVisualization && <SimulationViewer />}
           {hasVisualization && <StreamlineViewer />}

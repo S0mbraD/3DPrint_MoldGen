@@ -9,19 +9,24 @@ import {
   XCircle,
   ChevronRight,
   Loader2,
+  Radio,
+  Brain,
+  Clock,
 } from "lucide-react";
-import { useState } from "react";
-import { useAIStore, type AgentInfo } from "../../stores/aiStore";
+import { useEffect, useRef, useState } from "react";
+import { useAIStore, type AgentInfo, type AgentEventData } from "../../stores/aiStore";
 import { useModelStore } from "../../stores/modelStore";
 import {
   useAgentList,
   useAgentExecuteSingle,
   usePipelineList,
   useToolList,
+  useExecutionHistory,
 } from "../../hooks/useAgentApi";
+import { useAgentEvents } from "../../hooks/useAgentEvents";
 import { cn } from "../../lib/utils";
 
-type TabId = "agents" | "pipelines" | "tools" | "history";
+type TabId = "agents" | "pipelines" | "tools" | "events" | "history";
 
 export function AgentWorkstation() {
   const { agentWorkstationOpen, toggleAgentWorkstation, executionResult, isExecuting } =
@@ -29,6 +34,7 @@ export function AgentWorkstation() {
   const [tab, setTab] = useState<TabId>("agents");
 
   useAgentList(agentWorkstationOpen);
+  const { status: wsStatus } = useAgentEvents(agentWorkstationOpen);
 
   return (
     <AnimatePresence>
@@ -46,7 +52,7 @@ export function AgentWorkstation() {
             <span className="text-sm font-semibold">Agent 工作站</span>
 
             <div className="flex gap-0.5 ml-4">
-              {(["agents", "pipelines", "tools", "history"] as TabId[]).map((t) => (
+              {(["agents", "pipelines", "tools", "events", "history"] as TabId[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
@@ -60,21 +66,41 @@ export function AgentWorkstation() {
                   {t === "agents" && "Agents"}
                   {t === "pipelines" && "流水线"}
                   {t === "tools" && "工具"}
-                  {t === "history" && "执行记录"}
+                  {t === "events" && "实时事件"}
+                  {t === "history" && "历史"}
                 </button>
               ))}
             </div>
 
-            {isExecuting && (
-              <div className="flex items-center gap-1 ml-auto mr-2 text-xs text-accent">
-                <Loader2 size={12} className="animate-spin" />
-                执行中
+            <div className="flex items-center gap-2 ml-auto mr-2">
+              {/* WebSocket status */}
+              <div className="flex items-center gap-1 text-[10px]">
+                <div
+                  className={cn(
+                    "w-1.5 h-1.5 rounded-full",
+                    wsStatus === "connected"
+                      ? "bg-green-400"
+                      : wsStatus === "connecting" || wsStatus === "reconnecting"
+                        ? "bg-yellow-400 animate-pulse"
+                        : "bg-red-400",
+                  )}
+                />
+                <span className="text-text-muted">
+                  {wsStatus === "connected" ? "实时" : wsStatus === "reconnecting" ? "重连中" : "离线"}
+                </span>
               </div>
-            )}
+
+              {isExecuting && (
+                <div className="flex items-center gap-1 text-xs text-accent">
+                  <Loader2 size={12} className="animate-spin" />
+                  执行中
+                </div>
+              )}
+            </div>
 
             <button
               onClick={toggleAgentWorkstation}
-              className="ml-auto p-1 rounded hover:bg-bg-secondary text-text-muted"
+              className="p-1 rounded hover:bg-bg-secondary text-text-muted"
             >
               <X size={16} />
             </button>
@@ -85,6 +111,7 @@ export function AgentWorkstation() {
             {tab === "agents" && <AgentsTab />}
             {tab === "pipelines" && <PipelinesTab />}
             {tab === "tools" && <ToolsTab />}
+            {tab === "events" && <LiveEventsTab />}
             {tab === "history" && <HistoryTab result={executionResult} />}
           </div>
         </motion.div>
@@ -135,8 +162,16 @@ function AgentsTab() {
               <span className="text-xs font-semibold text-text-primary">{a.name}</span>
             </div>
             <p className="text-[10px] text-text-muted leading-tight">{a.description}</p>
-            <div className="mt-1.5 text-[9px] text-text-muted">
-              {a.tools.length} 工具可用
+            <div className="mt-1.5 flex items-center gap-2">
+              <span className="text-[9px] text-text-muted">{a.tools.length} 工具</span>
+              {a.config && (
+                <span className={cn(
+                  "text-[9px] px-1 rounded",
+                  a.config.enabled ? "text-green-400 bg-green-400/10" : "text-red-400 bg-red-400/10",
+                )}>
+                  {a.config.enabled ? "启用" : "禁用"}
+                </span>
+              )}
             </div>
           </motion.button>
         ))}
@@ -171,6 +206,82 @@ function AgentsTab() {
           </motion.button>
         </motion.div>
       )}
+    </div>
+  );
+}
+
+function LiveEventsTab() {
+  const events = useAIStore((s) => s.liveEvents);
+  const clearEvents = useAIStore((s) => s.clearLiveEvents);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [events.length]);
+
+  const EVENT_ICONS: Record<string, { icon: typeof Brain; color: string }> = {
+    thinking: { icon: Brain, color: "text-blue-400" },
+    decision: { icon: Radio, color: "text-accent" },
+    tool_call: { icon: Wrench, color: "text-yellow-400" },
+    tool_result: { icon: CheckCircle2, color: "text-green-400" },
+    error: { icon: XCircle, color: "text-red-400" },
+    step_start: { icon: Play, color: "text-blue-400" },
+    step_complete: { icon: CheckCircle2, color: "text-green-400" },
+    plan_start: { icon: Cpu, color: "text-accent" },
+    plan_complete: { icon: CheckCircle2, color: "text-green-400" },
+  };
+
+  if (events.length === 0) {
+    return (
+      <div className="text-center text-text-muted text-xs py-8">
+        <Radio size={24} className="mx-auto mb-2 opacity-30" />
+        <p>等待 Agent 事件...</p>
+        <p className="text-[10px] mt-1">执行任务时这里将实时显示 Agent 思考和操作过程</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] text-text-muted">{events.length} 条事件</span>
+        <button
+          onClick={clearEvents}
+          className="text-[10px] text-text-muted hover:text-red-400 transition-colors"
+        >
+          清空
+        </button>
+      </div>
+      <div ref={scrollRef} className="space-y-1 max-h-[300px] overflow-y-auto">
+        {events.map((ev: AgentEventData, i: number) => {
+          const info = EVENT_ICONS[ev.event_type] ?? { icon: Radio, color: "text-text-muted" };
+          const Icon = info.icon;
+          const ts = new Date(ev.timestamp * 1000);
+          const timeStr = `${ts.getHours().toString().padStart(2, "0")}:${ts.getMinutes().toString().padStart(2, "0")}:${ts.getSeconds().toString().padStart(2, "0")}`;
+          return (
+            <div
+              key={i}
+              className="flex items-start gap-2 p-1.5 rounded bg-bg-secondary text-[10px]"
+            >
+              <Icon size={11} className={cn("mt-0.5 shrink-0", info.color)} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-text-muted">{timeStr}</span>
+                  <span className="font-semibold text-text-secondary">{ev.agent_role}</span>
+                  <span className={cn("px-1 rounded", info.color, "bg-current/10")}>
+                    {ev.event_type}
+                  </span>
+                </div>
+                {ev.data && Object.keys(ev.data).length > 0 && (
+                  <p className="text-text-muted truncate mt-0.5">
+                    {ev.data.message as string ?? ev.data.task as string ?? JSON.stringify(ev.data).slice(0, 120)}
+                  </p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -283,33 +394,75 @@ function ToolsTab() {
 }
 
 function HistoryTab({ result }: { result: unknown }) {
-  if (!result) {
-    return (
-      <div className="text-center text-text-muted text-xs py-8">
-        <Bot size={24} className="mx-auto mb-2 opacity-30" />
-        <p>暂无执行记录</p>
-      </div>
-    );
-  }
-
-  const r = result as Record<string, unknown>;
+  const { data: history } = useExecutionHistory();
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        {r.success ? (
-          <CheckCircle2 size={14} className="text-green-400" />
-        ) : (
-          <XCircle size={14} className="text-red-400" />
-        )}
-        <span className="text-sm font-semibold text-text-primary">
-          {(r.step_name as string) ?? "执行结果"}
-        </span>
-      </div>
+    <div className="space-y-3">
+      {/* Latest result */}
+      {Boolean(result) && (() => {
+        const r = result as Record<string, unknown>;
+        return (
+          <div className="space-y-2">
+            <span className="text-[11px] font-semibold text-text-secondary">最新执行结果</span>
+            <div className="flex items-center gap-2">
+              {r.success ? (
+                <CheckCircle2 size={14} className="text-green-400" />
+              ) : (
+                <XCircle size={14} className="text-red-400" />
+              )}
+              <span className="text-sm font-semibold text-text-primary">
+                {String(r.step_name ?? "执行结果")}
+              </span>
+              {Boolean(r.elapsed_seconds) && (
+                <span className="text-[10px] text-text-muted flex items-center gap-0.5">
+                  <Clock size={9} />
+                  {Number(r.elapsed_seconds).toFixed(1)}s
+                </span>
+              )}
+            </div>
+            {Boolean(r.thinking) && (
+              <div className="text-[10px] text-text-muted bg-bg-secondary p-2 rounded italic">
+                {String(r.thinking).slice(0, 200)}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
-      <pre className="text-[11px] text-text-secondary bg-bg-secondary p-3 rounded-lg overflow-auto max-h-[280px] font-mono">
-        {JSON.stringify(r, null, 2)}
-      </pre>
+      {/* History list */}
+      {history && history.length > 0 ? (
+        <div className="space-y-1">
+          <span className="text-[11px] font-semibold text-text-secondary">执行历史</span>
+          {(history as { task: string; step_name: string; success: boolean; elapsed: number; timestamp: number }[])
+            .slice()
+            .reverse()
+            .slice(0, 20)
+            .map((item, i) => {
+              const ts = new Date(item.timestamp * 1000);
+              return (
+                <div key={i} className="flex items-center gap-2 p-1.5 rounded bg-bg-secondary text-[10px]">
+                  {item.success ? (
+                    <CheckCircle2 size={10} className="text-green-400 shrink-0" />
+                  ) : (
+                    <XCircle size={10} className="text-red-400 shrink-0" />
+                  )}
+                  <span className="text-text-primary flex-1 truncate">{item.task}</span>
+                  <span className="text-text-muted shrink-0">{item.elapsed.toFixed(1)}s</span>
+                  <span className="text-text-muted shrink-0 font-mono">
+                    {ts.getHours().toString().padStart(2, "0")}:{ts.getMinutes().toString().padStart(2, "0")}
+                  </span>
+                </div>
+              );
+            })}
+        </div>
+      ) : (
+        !result && (
+          <div className="text-center text-text-muted text-xs py-8">
+            <Bot size={24} className="mx-auto mb-2 opacity-30" />
+            <p>暂无执行记录</p>
+          </div>
+        )
+      )}
     </div>
   );
 }

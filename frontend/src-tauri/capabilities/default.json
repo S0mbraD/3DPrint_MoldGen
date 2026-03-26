@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for MoldGen desktop",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "shell:allow-execute",
+    "updater:default",
+    "process:allow-restart",
+    "process:allow-exit"
+  ]
+}

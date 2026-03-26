@@ -27,10 +27,21 @@ Thumbs.db
 
 # Tauri
 src-tauri/target/
+**/src-tauri/target/
 
 # Frontend
 frontend/node_modules/
 frontend/dist/
+
+# Logs
+*.log
+logs/
+data/logs/
+
+# Build artifacts
+build_tmp/
+dist_backend/
+frontend/src-tauri/binaries/
 
 # Test
 .pytest_cache/

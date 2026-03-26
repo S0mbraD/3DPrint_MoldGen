@@ -362,10 +362,42 @@ export function StreamlineViewer() {
 
     const { grid } = buildSpatialGrid(pos, cellSize);
 
+    // Seed streamlines from the gate position (pour hole) if available,
+    // otherwise fall back to points with earliest fill times.
     const seeds: number[] = [];
-    const seedStep = Math.max(1, Math.floor(sorted.length / (nLines * 3)));
-    for (let i = 0; i < sorted.length && seeds.length < nLines; i += seedStep) {
-      if (ft[sorted[i]] < 0.15) seeds.push(sorted[i]);
+    const gatePos = (visData as unknown as Record<string, unknown>).gate_position as
+      | number[]
+      | null
+      | undefined;
+
+    if (gatePos && gatePos.length === 3) {
+      // Find points closest to the gate and use them as seeds
+      const gx = gatePos[0], gy = gatePos[1], gz = gatePos[2];
+      const distToGate = sorted.map((idx) => {
+        const p = pos[idx];
+        const dx = p[0] - gx, dy = p[1] - gy, dz = p[2] - gz;
+        return { idx, d2: dx * dx + dy * dy + dz * dz };
+      });
+      distToGate.sort((a, b) => a.d2 - b.d2);
+      const gateRadius = pitch * 8;
+      const gateR2 = gateRadius * gateRadius;
+      const gateSeeds = distToGate
+        .filter((d) => d.d2 < gateR2)
+        .map((d) => d.idx);
+
+      // Pick evenly spaced seeds around the gate
+      const step = Math.max(1, Math.floor(gateSeeds.length / nLines));
+      for (let i = 0; i < gateSeeds.length && seeds.length < nLines; i += step) {
+        seeds.push(gateSeeds[i]);
+      }
+    }
+
+    // Fall back: use earliest fill-time points
+    if (seeds.length < nLines) {
+      const extraStep = Math.max(1, Math.floor(sorted.length / nLines));
+      for (let i = 0; i < sorted.length && seeds.length < nLines; i += extraStep) {
+        if (ft[sorted[i]] < 0.2) seeds.push(sorted[i]);
+      }
     }
     if (seeds.length < nLines) {
       const extraStep = Math.max(1, Math.floor(sorted.length / nLines));

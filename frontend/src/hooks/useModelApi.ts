@@ -44,10 +44,19 @@ export function useUploadModel() {
     mutationFn: async (file: File): Promise<UploadResult> => {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch("/api/v1/models/upload", { method: "POST", body: form });
+      let res: Response;
+      try {
+        res = await fetch("/api/v1/models/upload", { method: "POST", body: form });
+      } catch {
+        throw new Error("无法连接后端服务，请检查后端是否正在运行");
+      }
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Upload failed");
+        const ct = res.headers.get("content-type") ?? "";
+        if (ct.includes("application/json")) {
+          const err = await res.json();
+          throw new Error(err.detail || `上传失败 (${res.status})`);
+        }
+        throw new Error(`上传失败: 后端返回 ${res.status}`);
       }
       return res.json();
     },
@@ -149,6 +158,74 @@ export function useTransformModel() {
     onSuccess: (_data, { modelId }) => {
       queryClient.invalidateQueries({ queryKey: ["model-info", modelId] });
       queryClient.invalidateQueries({ queryKey: ["model-glb", modelId] });
+    },
+  });
+}
+
+export function useThicknessAnalysis() {
+  return useMutation({
+    mutationFn: async ({ modelId, nSamples }: { modelId: string; nSamples?: number }) => {
+      const res = await fetch(`/api/v1/models/${modelId}/thickness`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ n_samples: nSamples ?? 3000 }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Thickness analysis failed");
+      }
+      return res.json();
+    },
+  });
+}
+
+export function useCurvatureAnalysis() {
+  return useMutation({
+    mutationFn: async ({ modelId, nSamples }: { modelId: string; nSamples?: number }) => {
+      const res = await fetch(`/api/v1/models/${modelId}/curvature`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ n_samples: nSamples ?? 3000 }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Curvature analysis failed");
+      }
+      return res.json();
+    },
+  });
+}
+
+export function useDesignRulesCheck() {
+  return useMutation({
+    mutationFn: async ({ modelId, ...params }: { modelId: string; [key: string]: unknown }) => {
+      const res = await fetch(`/api/v1/models/${modelId}/design-rules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Design rules check failed");
+      }
+      return res.json();
+    },
+  });
+}
+
+export function useDeviationAnalysis() {
+  return useMutation({
+    mutationFn: async ({ modelId, referenceId, nSamples }: { modelId: string; referenceId: string; nSamples?: number }) => {
+      const res = await fetch(`/api/v1/models/${modelId}/deviation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reference_model_id: referenceId, n_samples: nSamples ?? 5000 }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Deviation analysis failed");
+      }
+      return res.json();
     },
   });
 }

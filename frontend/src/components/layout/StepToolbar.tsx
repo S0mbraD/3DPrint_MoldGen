@@ -1,41 +1,14 @@
 import { motion } from "framer-motion";
 import {
-  Upload,
-  FolderOpen,
-  RotateCcw,
-  Scissors,
-  Maximize2,
-  Ruler,
-  FlipVertical,
-  Grid3x3,
-  ArrowUpDown,
-  Compass,
-  RefreshCw,
-  SplitSquareVertical,
-  Box,
-  LayoutGrid,
-  Droplets,
-  Pin,
-  Eye,
-  Layers,
-  Wrench,
-  FlaskConical,
-  Zap,
-  BarChart3,
-  Download,
-  FileArchive,
-  FileBox,
-  Package,
-  Scan,
-  Move,
-  RotateCw,
-  ZoomIn,
-  ZoomOut,
-  Copy,
-  Trash2,
+  Upload, FolderOpen, RotateCcw, Scissors, Maximize2, Ruler, FlipVertical,
+  Grid3x3, ArrowUpDown, Compass, RefreshCw, SplitSquareVertical, Box,
+  LayoutGrid, Droplets, Pin, Eye, Layers, Wrench, FlaskConical, Zap,
+  BarChart3, Download, FileArchive, FileBox, Package, Scan, Move,
+  RotateCw, ZoomIn, ZoomOut, Copy, Trash2,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { WorkflowStep } from "../../stores/appStore";
+import { useAppStore } from "../../stores/appStore";
 import { cn } from "../../lib/utils";
 
 interface ToolItem {
@@ -111,25 +84,23 @@ const STEP_TOOLS: Record<WorkflowStep, ToolItem[]> = {
   ],
 };
 
-interface StepToolbarProps {
-  step: WorkflowStep;
-  onAction?: (actionId: string) => void;
-}
-
-export function StepToolbar({ step, onAction }: StepToolbarProps) {
+export function StepToolbar() {
+  const step = useAppStore((s) => s.currentStep);
   const tools = STEP_TOOLS[step] ?? [];
 
   if (tools.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-border bg-bg-secondary/50 flex-wrap min-h-[32px]">
+    <div className="flex items-center gap-0.5 px-2 py-1 border-b border-border/50 bg-bg-secondary/80 backdrop-blur-sm flex-wrap min-h-[28px] shrink-0">
       {tools.map((tool) => (
         <div key={tool.id} className="flex items-center">
           {tool.divider && <div className="w-px h-4 bg-border mx-1" />}
           <motion.button
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
-            onClick={() => onAction?.(tool.id)}
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent("moldgen:toolbar-action", { detail: tool.id }));
+            }}
             className={cn(
               "flex items-center gap-1 px-1.5 py-1 rounded text-text-secondary",
               "hover:bg-bg-hover hover:text-text-primary transition-colors",
@@ -138,7 +109,6 @@ export function StepToolbar({ step, onAction }: StepToolbarProps) {
             title={`${tool.label}${tool.shortcut ? ` (${tool.shortcut})` : ""}`}
           >
             {tool.icon}
-            {/* Tooltip */}
             <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-0.5 rounded bg-bg-primary border border-border text-[9px] text-text-secondary whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-lg z-10">
               {tool.label}
               {tool.shortcut && <kbd className="ml-1 text-text-muted">{tool.shortcut}</kbd>}

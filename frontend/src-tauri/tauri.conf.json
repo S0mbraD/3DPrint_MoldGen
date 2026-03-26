@@ -19,7 +19,8 @@
         "minHeight": 700,
         "resizable": true,
         "decorations": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "center": true
       }
     ],
     "security": {
@@ -28,13 +29,54 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
+    "createUpdaterArtifacts": false,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "externalBin": [
+      "binaries/moldgen-server"
+    ],
+    "resources": [
+      "binaries/*"
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "displayLanguageSelector": true,
+        "languages": ["SimpChinese", "English"],
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "icons/nsis-header.bmp",
+        "sidebarImage": "icons/nsis-sidebar.bmp",
+        "installMode": "both"
+      }
+    },
+    "publisher": "MoldGen Team",
+    "copyright": "Copyright © 2024-2026 MoldGen Team",
+    "category": "Medical",
+    "shortDescription": "AI 驱动的医学教具智能模具生成工作站",
+    "longDescription": "MoldGen 是一款面向医学教学的 AI 驱动桌面应用，支持从自然语言描述到 3D 教具模具的全流程自动化设计、仿真优化和导出。"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://releases.moldgen.app/{{target}}/{{arch}}/{{current_version}}",
+        "https://github.com/moldgen/moldgen/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

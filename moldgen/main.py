@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from moldgen import __version__
 from moldgen.api.routes import api_router
-from moldgen.api.websocket import ws_ai_agent, ws_ai_chat, ws_task_progress
+from moldgen.api.websocket import ws_ai_agent, ws_ai_chat, ws_global_events, ws_task_progress
 from moldgen.config import get_config
 from moldgen.utils.logger import setup_logging
 
@@ -49,6 +49,11 @@ async def lifespan(app: FastAPI):
         logger.info("AI services configured: %s", ", ".join(configured))
     else:
         logger.warning("No AI API keys configured")
+
+    from moldgen.ai.tool_handlers import wire_handlers
+
+    n_wired = wire_handlers()
+    logger.info("Tool handlers wired: %d", n_wired)
 
     logger.info("API docs: http://%s:%d/docs", config.host, config.port)
 
@@ -92,6 +97,10 @@ def create_app() -> FastAPI:
     @app.websocket("/ws/ai/agent/{task_id}")
     async def ws_agent(websocket: WebSocket, task_id: str):
         await ws_ai_agent(websocket, task_id)
+
+    @app.websocket("/ws/events")
+    async def ws_events(websocket: WebSocket):
+        await ws_global_events(websocket)
 
     app.mount("/static/uploads", StaticFiles(directory=str(config.upload_dir)), name="uploads")
 

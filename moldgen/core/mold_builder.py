@@ -186,6 +186,31 @@ class MoldResult:
 
 # ═══════════════════════ Helpers ════════════════════════════════════════
 
+def _ensure_min_faces(
+    tm: trimesh.Trimesh, min_faces: int = 4000,
+) -> trimesh.Trimesh:
+    """Subdivide a mesh until it has at least *min_faces* faces.
+
+    Low-poly models produce low-resolution mold shells. Subdivision
+    increases surface resolution so that mold walls, cavities, and
+    parting features have enough geometry for clean boolean operations.
+    """
+    iters = 0
+    while len(tm.faces) < min_faces and iters < 4:
+        try:
+            new_v, new_f = trimesh.remesh.subdivide(tm.vertices, tm.faces)
+            tm = trimesh.Trimesh(vertices=new_v, faces=new_f, process=True)
+            iters += 1
+        except Exception:
+            break
+    if iters > 0:
+        logger.info(
+            "Subdivided model %dx -> %d faces (target >= %d)",
+            iters, len(tm.faces), min_faces,
+        )
+    return tm
+
+
 def _repair_mesh(tm: trimesh.Trimesh) -> trimesh.Trimesh:
     """Aggressive mesh repair: remove degenerates, fix normals, fill holes."""
     try:
@@ -320,6 +345,10 @@ class MoldBuilder:
 
         tm_model = build_mesh.to_trimesh()
         tm_model = _repair_mesh(tm_model)
+
+        # Subdivide low-poly models so mold shells have enough resolution
+        tm_model = _ensure_min_faces(tm_model, min_faces=4000)
+
         logger.info(
             "Repaired: %d faces, watertight=%s",
             len(tm_model.faces), tm_model.is_watertight,
@@ -443,6 +472,7 @@ class MoldBuilder:
         build_mesh, _ = _auto_decimate(model, MOLD_MAX_FACES)
         tm_model = build_mesh.to_trimesh()
         tm_model = _repair_mesh(tm_model)
+        tm_model = _ensure_min_faces(tm_model, min_faces=4000)
         cavity = self._create_cavity(tm_model)
         center = np.asarray(tm_model.centroid, dtype=np.float64)
 
@@ -726,111 +756,42 @@ class MoldBuilder:
     ) -> trimesh.Trimesh | None:
         """Create interlock geometry at the parting plane.
 
-        The interlock shape protrudes in the +direction (upward) from the
-        parting plane. The upper shell will contain these protrusions,
-        while the lower shell will have matching grooves.
+        Uses the mold cross-section outline at the parting plane to place
+        features precisely along the wall boundary. This ensures features
+        only exist in the mold wall region and never protrude through the cavity.
         """
         c = self.config
         style = c.parting_style
         if style == "flat":
             return None
 
-        bounds = solid.bounds
-        extents = bounds[1] - bounds[0]
-
         up = direction / (np.linalg.norm(direction) + 1e-12)
-        arb = np.array([1.0, 0, 0]) if abs(up[0]) < 0.9 else np.array([0.0, 1, 0])
-        u = np.cross(up, arb); u /= (np.linalg.norm(u) + 1e-12)
-        v = np.cross(up, u);   v /= (np.linalg.norm(v) + 1e-12)
-
-        span_u = float(np.max(extents)) + 2 * c.margin
-        span_v = float(np.max(extents)) + 2 * c.margin
         depth = c.parting_depth
         pitch = c.parting_pitch
 
+        outline_pts = self._get_parting_outline(solid, center, up)
+        if outline_pts is None or len(outline_pts) < 6:
+            logger.warning("Cannot extract parting outline; skipping interlock")
+            return None
+
+        feature_pts, tangents = self._sample_outline_at_pitch(outline_pts, pitch)
+        if len(feature_pts) < 2:
+            logger.warning("Too few outline points for interlock features")
+            return None
+
         parts: list[trimesh.Trimesh] = []
+        for i, (pt, tan) in enumerate(zip(feature_pts, tangents)):
+            normal_in_plane = np.cross(up, tan)
+            nrm = np.linalg.norm(normal_in_plane)
+            if nrm < 1e-10:
+                continue
+            normal_in_plane /= nrm
 
-        if style == "dovetail":
-            n_teeth = max(2, int(span_u / pitch))
-            for i in range(n_teeth):
-                offset_u = -span_u / 2 + (i + 0.5) * (span_u / n_teeth)
-                pos = center + u * offset_u
-                top_w = pitch * 0.35
-                bot_w = pitch * 0.2
-                h = depth
-                verts = np.array([
-                    pos - v * span_v / 2 + u * (-top_w / 2),
-                    pos - v * span_v / 2 + u * (top_w / 2),
-                    pos - v * span_v / 2 + u * (bot_w / 2) + up * h,
-                    pos - v * span_v / 2 + u * (-bot_w / 2) + up * h,
-                    pos + v * span_v / 2 + u * (-top_w / 2),
-                    pos + v * span_v / 2 + u * (top_w / 2),
-                    pos + v * span_v / 2 + u * (bot_w / 2) + up * h,
-                    pos + v * span_v / 2 + u * (-bot_w / 2) + up * h,
-                ])
-                faces = np.array([
-                    [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
-                    [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
-                    [0, 3, 2], [0, 2, 1], [4, 5, 6], [4, 6, 7],
-                ])
-                parts.append(trimesh.Trimesh(vertices=verts, faces=faces, process=True))
-
-        elif style == "zigzag":
-            n_teeth = max(3, int(span_u / pitch))
-            for i in range(n_teeth):
-                offset_u = -span_u / 2 + (i + 0.5) * (span_u / n_teeth)
-                pos = center + u * offset_u
-                w = pitch * 0.3
-                h = depth
-                verts = np.array([
-                    pos - v * span_v / 2 + u * (-w / 2),
-                    pos - v * span_v / 2 + u * (w / 2),
-                    pos - v * span_v / 2 + u * 0 + up * h,
-                    pos + v * span_v / 2 + u * (-w / 2),
-                    pos + v * span_v / 2 + u * (w / 2),
-                    pos + v * span_v / 2 + u * 0 + up * h,
-                ])
-                faces = np.array([
-                    [0, 1, 2], [3, 5, 4],
-                    [0, 3, 4], [0, 4, 1],
-                    [1, 4, 5], [1, 5, 2],
-                    [2, 5, 3], [2, 3, 0],
-                ])
-                parts.append(trimesh.Trimesh(vertices=verts, faces=faces, process=True))
-
-        elif style == "step":
-            n_steps = max(2, int(span_u / pitch))
-            for i in range(n_steps):
-                if i % 2 != 0:
-                    continue
-                offset_u = -span_u / 2 + (i + 0.5) * (span_u / n_steps)
-                pos = center + u * offset_u
-                w = span_u / n_steps * 0.95
-                h = depth
-                T = np.eye(4)
-                T[:3, 0] = u
-                T[:3, 1] = v
-                T[:3, 2] = up
-                T[:3, 3] = pos + up * h / 2
-                box = trimesh.primitives.Box(extents=[w, span_v, h]).to_mesh()
-                box.apply_transform(T)
-                parts.append(box)
-
-        elif style == "tongue_groove":
-            n_tongues = max(2, int(span_u / (pitch * 2)))
-            for i in range(n_tongues):
-                offset_u = -span_u / 2 + (i + 0.5) * (span_u / n_tongues)
-                pos = center + u * offset_u
-                w = pitch * 0.3
-                h = depth
-                T = np.eye(4)
-                T[:3, 0] = u
-                T[:3, 1] = v
-                T[:3, 2] = up
-                T[:3, 3] = pos + up * h / 2
-                tongue = trimesh.primitives.Box(extents=[w, span_v, h]).to_mesh()
-                tongue.apply_transform(T)
-                parts.append(tongue)
+            feat = self._make_interlock_unit(
+                style, i, pt, up, tan, normal_in_plane, depth, pitch,
+            )
+            if feat is not None:
+                parts.append(feat)
 
         if not parts:
             return None
@@ -838,10 +799,165 @@ class MoldBuilder:
         try:
             combined = trimesh.util.concatenate(parts)
             _repair_mesh(combined)
+            logger.info("Parting interlock: %d features, %d faces", len(parts), len(combined.faces))
             return combined
         except Exception as e:
             logger.warning("Parting interlock creation failed: %s", e)
             return None
+
+    def _get_parting_outline(
+        self, solid: trimesh.Trimesh, center: np.ndarray, up: np.ndarray,
+    ) -> np.ndarray | None:
+        """Get 3D vertices along the mold cross-section at the parting plane.
+
+        Points are shifted slightly inward toward the cross-section centroid
+        so that features don't protrude beyond the mold boundary.
+        """
+        try:
+            section = solid.section(plane_origin=center, plane_normal=up)
+            if section is None:
+                return None
+            section_2d, to_3D = section.to_planar()
+            if section_2d is None:
+                return None
+
+            all_pts: list[np.ndarray] = []
+            for path_pts in section_2d.discrete:
+                for pt_2d in path_pts:
+                    homog = np.array([pt_2d[0], pt_2d[1], 0.0, 1.0])
+                    pt_3d = (to_3D @ homog)[:3]
+                    all_pts.append(pt_3d)
+
+            if len(all_pts) < 6:
+                return None
+
+            pts = np.array(all_pts)
+            centroid = pts.mean(axis=0)
+            inward_offset = min(self.config.parting_pitch * 0.3, 3.0)
+            for i in range(len(pts)):
+                to_center = centroid - pts[i]
+                d = np.linalg.norm(to_center)
+                if d > 1e-6:
+                    pts[i] += to_center / d * min(inward_offset, d * 0.2)
+            return pts
+        except Exception as e:
+            logger.warning("Cross-section extraction failed: %s", e)
+            return None
+
+    def _sample_outline_at_pitch(
+        self, outline_pts: np.ndarray, pitch: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Sample points along the outline at approximately *pitch* intervals."""
+        diffs = np.diff(outline_pts, axis=0)
+        seg_lengths = np.linalg.norm(diffs, axis=1)
+        cum_length = np.concatenate([[0.0], np.cumsum(seg_lengths)])
+        total_length = cum_length[-1]
+
+        if total_length < pitch:
+            step = max(1, len(outline_pts) // 4)
+            pts = outline_pts[::step]
+            tans = np.zeros_like(pts)
+            return pts, tans
+
+        n_features = max(4, int(total_length / pitch))
+        sample_dists = np.linspace(0, total_length, n_features, endpoint=False)
+
+        points: list[np.ndarray] = []
+        tangents: list[np.ndarray] = []
+        for d in sample_dists:
+            idx = int(np.searchsorted(cum_length, d, side="right")) - 1
+            idx = max(0, min(idx, len(outline_pts) - 2))
+            frac = (d - cum_length[idx]) / (seg_lengths[idx] + 1e-10)
+            pt = outline_pts[idx] + frac * diffs[idx]
+            tan = diffs[idx] / (seg_lengths[idx] + 1e-10)
+            points.append(pt)
+            tangents.append(tan)
+        return np.array(points), np.array(tangents)
+
+    def _make_interlock_unit(
+        self,
+        style: str,
+        index: int,
+        position: np.ndarray,
+        up: np.ndarray,
+        tangent: np.ndarray,
+        normal: np.ndarray,
+        depth: float,
+        pitch: float,
+    ) -> trimesh.Trimesh | None:
+        """Create a single interlock feature that straddles the parting plane.
+
+        Features are centered AT the parting plane (extending ±depth/2),
+        so both the upper and lower shells receive matching geometry
+        (protrusion in one, groove in the other).
+        """
+        fw = pitch * 0.55   # extent along tangent
+        fd = pitch * 0.45   # extent along in-plane normal (wall direction)
+
+        if style == "step":
+            if index % 2 != 0:
+                return None
+            box = trimesh.primitives.Box(extents=[fw, fd, depth]).to_mesh()
+            T = np.eye(4)
+            T[:3, 0] = tangent
+            T[:3, 1] = normal
+            T[:3, 2] = up
+            T[:3, 3] = position          # centered AT the plane, not above it
+            box.apply_transform(T)
+            return box
+
+        elif style == "dovetail":
+            top_w, bot_w, h, d = fw * 0.8, fw * 0.4, depth, fd
+            half_h = h / 2
+            verts = np.array([
+                [-top_w / 2, -d / 2, -half_h], [top_w / 2, -d / 2, -half_h],
+                [bot_w / 2, -d / 2, half_h],    [-bot_w / 2, -d / 2, half_h],
+                [-top_w / 2, d / 2, -half_h],   [top_w / 2, d / 2, -half_h],
+                [bot_w / 2, d / 2, half_h],      [-bot_w / 2, d / 2, half_h],
+            ])
+            faces = np.array([
+                [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+                [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
+                [0, 3, 2], [0, 2, 1], [4, 5, 6], [4, 6, 7],
+            ])
+            T = np.eye(4)
+            T[:3, 0] = tangent; T[:3, 1] = normal; T[:3, 2] = up
+            T[:3, 3] = position
+            mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=True)
+            mesh.apply_transform(T)
+            return mesh
+
+        elif style == "zigzag":
+            w, d, h = fw, fd, depth
+            half_h = h / 2
+            verts = np.array([
+                [-w / 2, -d / 2, -half_h], [w / 2, -d / 2, -half_h],
+                [0, -d / 2, half_h],
+                [-w / 2, d / 2, -half_h],  [w / 2, d / 2, -half_h],
+                [0, d / 2, half_h],
+            ])
+            faces = np.array([
+                [0, 1, 2], [3, 5, 4],
+                [0, 3, 4], [0, 4, 1],
+                [1, 4, 5], [1, 5, 2],
+                [2, 5, 3], [2, 3, 0],
+            ])
+            T = np.eye(4)
+            T[:3, 0] = tangent; T[:3, 1] = normal; T[:3, 2] = up
+            T[:3, 3] = position
+            mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=True)
+            mesh.apply_transform(T)
+            return mesh
+
+        elif style == "tongue_groove":
+            box = trimesh.primitives.Box(extents=[fw * 0.5, fd, depth]).to_mesh()
+            T = np.eye(4)
+            T[:3, 0] = tangent; T[:3, 1] = normal; T[:3, 2] = up
+            T[:3, 3] = position          # centered AT the plane
+            box.apply_transform(T)
+            return box
+
+        return None
 
     def _apply_parting_interlock(
         self,
@@ -852,30 +968,20 @@ class MoldBuilder:
         """Split solid with interlock profile.
 
         Strategy: first split the solid flat, then use boolean operations
-        to transfer interlock geometry between halves. If boolean ops fail,
-        fall back to simple flat split.
+        to transfer interlock geometry between halves. Features are already
+        placed along the wall boundary so no additional clipping is needed.
+        If any boolean op fails, fall back to simple flat split.
         """
-        interlock = self._create_parting_interlock(solid, center, direction)
-
         upper = _safe_slice(solid, center, direction)
         lower = _safe_slice(solid, center, -direction)
 
         if upper is None or lower is None:
             return upper, lower
 
+        interlock = self._create_parting_interlock(solid, center, direction)
         if interlock is None:
             return upper, lower
 
-        # Clip interlock geometry to within the mold solid boundary
-        # so features don't protrude from the exterior
-        clipped = self._robust_boolean_intersect(interlock, solid)
-        if clipped is not None and len(clipped.faces) > 4:
-            interlock = _repair_mesh(clipped)
-            logger.info("Parting interlock: clipped to mold solid (%d faces)", len(interlock.faces))
-        else:
-            logger.info("Parting interlock: clip failed, using raw geometry")
-
-        # Boolean union: add interlock protrusions to upper shell
         union_result = self._robust_boolean_union(upper, interlock)
         if union_result is not None and len(union_result.faces) > len(upper.faces) // 2:
             upper = _repair_mesh(union_result)
@@ -884,13 +990,14 @@ class MoldBuilder:
             logger.warning("Parting interlock: union failed, falling back to flat split")
             return upper, lower
 
-        # Boolean subtract: cut matching grooves from lower shell
         sub_result = self._robust_boolean_subtract(lower, interlock)
         if sub_result is not None and len(sub_result.faces) > 4:
             lower = _repair_mesh(sub_result)
             logger.info("Parting interlock: subtract OK (%d faces)", len(lower.faces))
         else:
-            logger.warning("Parting interlock: subtract failed, upper has interlock but lower is flat")
+            logger.warning("Parting interlock: subtract failed, reverting to flat split")
+            upper = _safe_slice(solid, center, direction)
+            lower = _safe_slice(solid, center, -direction)
 
         return upper, lower
 
@@ -1041,7 +1148,7 @@ class MoldBuilder:
         if max_ext < 1e-6:
             return None
 
-        resolution = 80
+        resolution = max(80, min(160, int(max_ext / 1.2)))
         pitch = max_ext / resolution
         logger.info("Voxel mold: pitch=%.3f mm, res=%d", pitch, resolution)
 

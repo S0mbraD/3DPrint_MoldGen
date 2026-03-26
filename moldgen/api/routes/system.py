@@ -49,6 +49,32 @@ async def health_check():
     return {"status": "ok", "version": __version__}
 
 
+@router.get("/readiness")
+async def readiness_check():
+    """Detailed readiness check — used by Tauri sidecar to confirm backend is fully up."""
+    from moldgen.api.websocket import ws_manager
+    from moldgen.config import get_config
+    cfg = get_config()
+    gpu = GPUDevice()
+    gpu_info = gpu.info
+    return {
+        "status": "ready",
+        "version": __version__,
+        "gpu_available": gpu_info.available,
+        "gpu_name": gpu_info.device_name,
+        "ai_configured": bool(cfg.ai.deepseek_api_key or cfg.ai.qwen_api_key),
+        "websocket": ws_manager.get_stats(),
+        "data_dir": str(cfg.data_dir.resolve()),
+    }
+
+
+@router.get("/ws-stats")
+async def websocket_stats():
+    """WebSocket connection statistics."""
+    from moldgen.api.websocket import ws_manager
+    return ws_manager.get_stats()
+
+
 # ── Connectivity check ─────────────────────────────────────────────────
 
 _AI_ENDPOINTS: dict[str, dict] = {
@@ -234,3 +260,19 @@ async def service_topology():
     ]
 
     return {"nodes": nodes, "edges": edges}
+
+
+# ── Console / Log Endpoints ──────────────────────────────────────────
+
+@router.get("/logs")
+async def get_logs(n: int = 200):
+    """Return the last *n* lines from the application log."""
+    from moldgen.utils.logger import get_recent_logs
+    return {"lines": get_recent_logs(n)}
+
+
+@router.get("/logs/errors")
+async def get_error_logs(n: int = 100):
+    """Return the last *n* lines from the error-only log."""
+    from moldgen.utils.logger import get_recent_errors
+    return {"lines": get_recent_errors(n)}

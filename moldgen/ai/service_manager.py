@@ -17,6 +17,10 @@ class AIServiceStatus:
     kimi: bool = False
     wanxiang: bool = False
     tripo3d: bool = False
+    local_image: bool = False
+    local_mesh: bool = False
+    image_provider: str = "cloud"
+    mesh_provider: str = "cloud"
 
 
 class AIServiceManager:
@@ -36,12 +40,29 @@ class AIServiceManager:
         self._config = get_config().ai
 
     def get_status(self) -> AIServiceStatus:
+        local_image = False
+        local_mesh = False
+        try:
+            from moldgen.ai.local_models import LocalModelManager
+            mgr = LocalModelManager()
+            for m in mgr.list_models():
+                if m["is_loaded"] and m["category"] == "image_gen":
+                    local_image = True
+                if m["is_loaded"] and m["category"] == "mesh_gen":
+                    local_mesh = True
+        except Exception:
+            pass
+
         return AIServiceStatus(
             deepseek=bool(self._config.deepseek_api_key),
             qwen=bool(self._config.qwen_api_key),
             kimi=bool(self._config.kimi_api_key),
             wanxiang=bool(self._config.wanxiang_api_key),
             tripo3d=bool(self._config.tripo_api_key),
+            local_image=local_image,
+            local_mesh=local_mesh,
+            image_provider=self._config.image_provider,
+            mesh_provider=self._config.mesh_provider,
         )
 
     def _get_client_config(self, model: str) -> tuple[str, str, str]:

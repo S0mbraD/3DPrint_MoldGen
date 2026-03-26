@@ -15,6 +15,7 @@ class GPUConfig(BaseSettings):
 class AIConfig(BaseSettings):
     model_config = {"env_prefix": "MOLDGEN_AI_"}
 
+    # ── Cloud LLM ─────────────────────────────────────────────────────
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_model: str = "deepseek-chat"
@@ -28,9 +29,19 @@ class AIConfig(BaseSettings):
     kimi_base_url: str = "https://api.moonshot.cn/v1"
     kimi_model: str = "moonshot-v1-8k"
 
+    # ── Cloud Image/3D ────────────────────────────────────────────────
     wanxiang_api_key: str = ""
+    wanxiang_model: str = "wanx2.1-t2i-plus"
 
     tripo_api_key: str = ""
+
+    # ── Local Model Settings ──────────────────────────────────────────
+    image_provider: str = "cloud"  # "cloud" | "local"
+    image_local_model: str = "sdxl-base"
+    mesh_provider: str = "cloud"  # "cloud" | "local"
+    mesh_local_model: str = "triposr"
+    auto_unload_after_gen: bool = True
+    max_local_vram_mb: int = 0  # 0 = auto (85% of total)
 
 
 class ServerConfig(BaseSettings):

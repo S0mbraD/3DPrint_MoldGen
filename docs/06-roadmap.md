@@ -98,14 +98,15 @@ Conda 环境 + Tauri 桌面骨架 + GPU 验证 + AI API 联通。
 
 ### 第一阶段: AI 基础服务 (Week 1)
 
-- [ ] **P4.1** AI 服务统一层
+- [x] **P4.1** AI 服务统一层 ✅
   - AIServiceManager 实现
   - DeepSeek 对话封装（含流式/Function Calling）
-  - 通义万相图像生成封装
-  - Tripo3D 3D 模型生成封装
+  - 通义万相图像生成封装 (cloud + local SDXL/FLUX)
+  - Tripo3D 3D 模型生成封装 (cloud + local TripoSR)
   - Qwen-VL 多模态分析封装
   - 错误处理 + provider 降级策略
-  - API 用量统计 + 成本追踪
+  - 本地模型管理器 (下载/加载/卸载/VRAM管理)
+  - 云端↔本地双后端透明切换
 
 ### 第二阶段: Agent 执行引擎 (Week 2)
 
@@ -255,10 +256,135 @@ Conda 环境 + Tauri 桌面骨架 + GPU 验证 + AI API 联通。
 ## Phase 6: 桌面应用完善 (3 周) ✅ 完成
 
 ### 任务清单
-- [ ] P6.1-P6.8（完整工作流 UI / 项目管理 / 材料库 / 动画 / 快捷键 / 设置）
+- [x] P6.1-P6.8（完整工作流 UI / 项目管理 / 材料库 / 动画 / 快捷键 / 设置）
 
 ### 里程碑
 - **M11**: 专业级桌面应用体验
+
+---
+
+## Phase 6.6: nTopology 级分析套件 (1 周) ✅ 完成
+
+### 目标
+参照 nTopology 的 Implicit Modeling 和 DfAM 工作流，为项目增加专业级几何分析、高级网格操作、晶格库和设计校验能力。
+
+### 已完成任务
+
+- [x] **P6.6.1** 五维几何分析 (analysis.py)
+  - 壁厚分析 (多射线逐顶点, 直方图, 薄壁警告)
+  - 离散曲率 (Gaussian 角亏法 + Mean cotangent)
+  - 拔模角分析 (逐面, 倒扣/临界比例)
+  - 对称性分析 (cKDTree Hausdorff + PCA)
+  - 悬垂分析 (3D 打印面法线检测)
+  - BOM 估算 (多组件体积/重量/时间)
+
+- [x] **P6.6.2** 高级网格操作 (mesh_editor.py)
+  - Laplacian / Taubin / HC 三种平滑
+  - 等尺重网格化 (subdivide→decimate)
+  - 表面偏移 (法线平移)
+  - 增厚 (曲面→实体, outward/inward/both)
+
+- [x] **P6.6.3** 晶格库 + 场驱动 (insert_generator.py)
+  - 6 种晶格: Hex, Grid, Gyroid (TPMS), Schwarz-P (TPMS), Diamond, Voronoi
+  - 3 种密度场: 边缘, 曲率, 均匀
+  - Lloyd relaxation for Voronoi
+
+- [x] **P6.6.4** Analysis API (api/routes/analysis.py)
+  - 10 个端点, Pydantic Field 验证, HTTPException, 日志
+  - asyncio.to_thread 异步执行
+
+- [x] **P6.6.5** 前端 UI
+  - WorkflowPipeline (块状工作流)
+  - 5 维分析折叠面板 + 直方图
+  - 网格健康仪表 (加权评分)
+  - 晶格图形选择器 + 场驱动密度
+  - 表面纹理选择器 + DesignRulesChecker
+  - MaterialLibrary 组件
+  - useAnalysisApi hooks (10 个)
+
+- [x] **P6.6.6** 代码质量
+  - Silent except→logged except
+  - core/__init__.py 导出补全
+  - test_analysis.py (20+ 用例)
+  - .gitignore Tauri 路径修复
+
+### 里程碑
+- **M11b**: nTopology 级分析 + 高级操作 + 晶格库完整可用
+
+---
+
+## Phase 6.7: TPMS 隐式场晶格库重写 + 网孔质量升级 (0.5 周) ✅ 完成
+
+### 目标
+仿照 nTopology 的 TPMS lattice 功能，重写晶格/网孔生成算法，使用数学精确的 TPMS 隐式场替代旧的近似实现，大幅提升网孔图案质量和圆润度。
+
+### 完成项
+
+- [x] `moldgen/core/tpms.py` — 7 种 TPMS 隐式场 (Gyroid, Schwarz-P, Schwarz-D, Neovius, Lidinoid, IWP, FRD)
+- [x] 2D 场求值 + 形态学极值检测孔位算法 (scipy.ndimage.maximum_filter)
+- [x] 自适应半径: r ∝ |f| (远离零等值面的区域孔更大)
+- [x] 5 种场驱动连续半径调制 (edge/center/radial/stress/uniform)
+- [x] `_carve_holes` 四阶段管线: 预细分 → 删除 → 圆周投射 → Laplacian 平滑
+- [x] `_subdivide_near_holes()` 2 轮局部细分 [0.7r, 1.3r] 环带
+- [x] InsertConfig 新参数: tpms_cell_size, tpms_z_slice, max_holes
+- [x] API 路由更新 + 前端 LeftPanel TPMS 选择器 (两行: 几何 4 种 + TPMS 7 种)
+- [x] 文档更新: algorithms, modules, error-log, README, roadmap
+
+### 里程碑
+- **M11c**: TPMS 隐式场精确晶格 + 网孔质量显著提升
+
+---
+
+## Phase 6.8: nTopology 全功能对标 — 隐式引擎 + TO + 3D 晶格 + 干涉 (1 周) ✅ 完成
+
+### 目标
+仿照 nTopology 的隐式建模引擎、拓扑优化、3D 晶格、装配干涉分析等核心功能，全面补齐项目能力短板。
+
+### 完成项
+
+- [x] `moldgen/core/distance_field.py` — SDF 隐式场引擎
+  - mesh_to_sdf, smooth/sharp boolean, field 操作全集
+  - 场驱动变厚度壳 (field_driven_shell)
+  - Marching Cubes iso-surface 提取
+- [x] `moldgen/core/topology_opt.py` — SIMP 拓扑优化
+  - 2D 平面应力 + 3D 六面体砖单元
+  - OC 更新 + 密度滤波 + 3 种 BC
+  - density_to_mesh (Marching Cubes)
+- [x] `moldgen/core/lattice.py` — 3D 体积晶格
+  - 杆件: BCC/FCC/Octet/Kelvin/Diamond + 场驱动变杆径
+  - TPMS 体积: 7 种 TPMS 壳体 + SDF 裁剪 + 变壁厚
+  - Voronoi 泡沫: Lloyd 松弛 + k-NN 壁面
+- [x] `moldgen/core/interference.py` — 干涉/间隙分析
+  - 双向最近点有符号距离 + 体素干涉体积
+  - 多零件装配全对检查
+- [x] `moldgen/core/analysis.py` — 网格质量分析
+  - 宽高比、角度、边长统计、拓扑、紧凑度
+- [x] `moldgen/api/routes/advanced.py` — 10 个新 API 端点
+- [x] 前端 LeftPanel: 网格质量、拓扑优化、变厚壳、3D 晶格面板
+- [x] `useAdvancedApi.ts` hooks
+- [x] 文档: algorithms, modules, roadmap, README, error-log
+
+### 里程碑
+- **M11d**: nTopology 全功能对标完成 — SDF + TO + 3D Lattice + Interference
+
+---
+
+## Phase 6.9: 全链路数据修复 + 日志机制 + 桌面封装 (1 周)
+
+### 任务清单
+- [x] P6.9.1 修复 `advanced.py` Boolean / Lattice / Shell 类型链断裂
+- [x] P6.9.2 新增 `mesh_to_sdf_shared()` 共享网格 SDF 对齐
+- [x] P6.9.3 后端日志三路输出 (控制台+文件滚动+错误独立)
+- [x] P6.9.4 后端日志 API (`/system/logs`, `/system/logs/errors`)
+- [x] P6.9.5 前端 `ErrorBoundary` + 全局 JS 错误 / Promise rejection 捕获
+- [x] P6.9.6 前端内嵌控制台面板 (`ConsolePanel`) 实时日志查看
+- [x] P6.9.7 TypeScript 全量修复 (AgentWorkstation, useWebSocket, SimulationViewer 等)
+- [x] P6.9.8 Tauri `lib.rs` sidecar 启动/退出管理
+- [x] P6.9.9 `scripts/build_backend.py` PyInstaller 后端打包
+- [x] P6.9.10 `tauri.conf.json` externalBin + NSIS 配置
+
+### 里程碑
+- **M11e**: 全链路数据完整 + 日志可观测 + 桌面构建就绪
 
 ---
 
@@ -266,8 +392,8 @@ Conda 环境 + Tauri 桌面骨架 + GPU 验证 + AI API 联通。
 
 ### 任务清单
 - [ ] P7.1 集成测试（含 AI 工作流端到端测试）
-- [ ] P7.2 PyInstaller 打包（含 AI SDK + CUDA）
-- [ ] P7.3 Tauri 构建 Windows 安装包
+- [x] P7.2 PyInstaller 打包（含 AI SDK + CUDA）— `scripts/build_backend.py`
+- [x] P7.3 Tauri 构建 Windows 安装包 — `npm run tauri:build`
 - [ ] P7.4 文档 + 发布
 
 ### 里程碑
@@ -293,7 +419,11 @@ Conda 环境 + Tauri 桌面骨架 + GPU 验证 + AI API 联通。
 | M9 | 支撑板一体化装配 | P5 |
 | M10 | 复合模具打印验证 | P5 |
 | M11 | 专业桌面应用 | P6 |
-| M12 | Windows 安装包 | P7 |
+| M11b | nTopology 级分析+高级操作+晶格库 | P6.6 |
+| M11c | TPMS 隐式场精确晶格+网孔质量升级 | P6.7 |
+| M11d | nTopology 全功能对标 (SDF+TO+Lattice+Interference) | P6.8 |
+| M11e | 全链路数据修复+日志机制+控制台面板 | P6.9 |
+| M12 | Windows 安装包 (Tauri + PyInstaller sidecar) | P7 |
 | M13 | v0.1.0 发布 | P7 |
 
 ## MVP 定义

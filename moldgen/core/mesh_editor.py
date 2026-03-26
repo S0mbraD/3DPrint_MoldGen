@@ -249,7 +249,8 @@ class MeshEditor:
                 return None
             path2d = section.to_planar()[0]
             return np.array(path2d.vertices)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Section computation failed: %s", exc)
             return None
 
     @staticmethod
@@ -262,7 +263,8 @@ class MeshEditor:
         from trimesh.ray.ray_pyembree import RayMeshIntersector
         try:
             intersector = RayMeshIntersector(tm)
-        except Exception:
+        except Exception as exc:
+            logger.debug("pyembree unavailable, falling back to ray_triangle: %s", exc)
             from trimesh.ray.ray_triangle import RayMeshIntersector as RayFallback
             intersector = RayFallback(tm)
 
@@ -306,3 +308,132 @@ class MeshEditor:
         result = MeshData.from_trimesh(combined, mesh.source_path, mesh.source_format)
         result.unit = mesh.unit
         return self._record(mesh, "shell", {"thickness": thickness}, result)
+
+    # ── nTopology-inspired mesh operations ──────────────────────────
+
+    def smooth_laplacian(
+        self, mesh: MeshData, iterations: int = 3, lamb: float = 0.5,
+    ) -> MeshData:
+        """Laplacian smoothing — uniform neighbour averaging."""
+        tm = mesh.to_trimesh()
+        try:
+            trimesh.smoothing.filter_laplacian(tm, iterations=iterations, lamb=lamb)
+        except Exception as exc:
+            logger.debug("trimesh Laplacian failed, using manual fallback: %s", exc)
+            verts = np.asarray(tm.vertices, dtype=np.float64)
+            faces = np.asarray(tm.faces, dtype=np.int64)
+            for _ in range(iterations):
+                new_v = verts.copy()
+                for f in faces:
+                    for idx in range(3):
+                        n1, n2 = f[(idx + 1) % 3], f[(idx + 2) % 3]
+                        new_v[f[idx]] += lamb * (verts[n1] + verts[n2] - 2 * verts[f[idx]]) / 6
+                verts = new_v
+            tm.vertices = verts
+        result = MeshData.from_trimesh(tm, mesh.source_path, mesh.source_format)
+        result.unit = mesh.unit
+        return self._record(mesh, "smooth_laplacian", {"iterations": iterations, "lambda": lamb}, result)
+
+    def smooth_taubin(
+        self, mesh: MeshData, iterations: int = 5, lamb: float = 0.5, mu: float = -0.53,
+    ) -> MeshData:
+        """Taubin smoothing — alternating +lambda/-mu to reduce shrinkage."""
+        tm = mesh.to_trimesh()
+        try:
+            trimesh.smoothing.filter_taubin(tm, iterations=iterations, lamb=lamb, mu=mu)
+        except Exception as exc:
+            logger.debug("Taubin not available, falling back to Laplacian: %s", exc)
+            trimesh.smoothing.filter_laplacian(tm, iterations=iterations, lamb=lamb)
+        result = MeshData.from_trimesh(tm, mesh.source_path, mesh.source_format)
+        result.unit = mesh.unit
+        return self._record(mesh, "smooth_taubin", {"iterations": iterations}, result)
+
+    def smooth_humphrey(
+        self, mesh: MeshData, iterations: int = 5, alpha: float = 0.1, beta: float = 0.5,
+    ) -> MeshData:
+        """HC (Humphrey's Classes) smoothing — volume-preserving."""
+        tm = mesh.to_trimesh()
+        try:
+            trimesh.smoothing.filter_humphrey(tm, iterations=iterations, alpha=alpha, beta=beta)
+        except Exception as exc:
+            logger.debug("HC smoothing not available, falling back to Laplacian: %s", exc)
+            trimesh.smoothing.filter_laplacian(tm, iterations=max(1, iterations // 2))
+        result = MeshData.from_trimesh(tm, mesh.source_path, mesh.source_format)
+        result.unit = mesh.unit
+        return self._record(mesh, "smooth_humphrey", {"iterations": iterations}, result)
+
+    def remesh_isotropic(
+        self, mesh: MeshData, target_edge_length: float | None = None,
+    ) -> MeshData:
+        """Isotropic remeshing via subdivide → decimate cycle."""
+        tm = mesh.to_trimesh()
+        if target_edge_length is None:
+            edges = tm.edges_unique_length
+            target_edge_length = float(np.median(edges))
+
+        n_faces = len(tm.faces)
+        est_area = float(tm.area)
+        target_faces = max(100, int(est_area / (target_edge_length ** 2 * 0.433)))
+        target_faces = min(target_faces, 500_000)
+
+        if n_faces < target_faces:
+            tm = tm.subdivide()
+
+        if len(tm.faces) > target_faces:
+            try:
+                import open3d as o3d
+                o3d_mesh = o3d.geometry.TriangleMesh(
+                    o3d.utility.Vector3dVector(tm.vertices),
+                    o3d.utility.Vector3iVector(tm.faces),
+                )
+                o3d_mesh = o3d_mesh.simplify_quadric_decimation(target_faces)
+                tm = trimesh.Trimesh(
+                    vertices=np.asarray(o3d_mesh.vertices),
+                    faces=np.asarray(o3d_mesh.triangles),
+                )
+            except ImportError:
+                tm = tm.simplify_quadric_decimation(target_faces)
+
+        result = MeshData.from_trimesh(tm, mesh.source_path, mesh.source_format)
+        result.unit = mesh.unit
+        return self._record(mesh, "remesh_isotropic", {"target_edge": target_edge_length}, result)
+
+    def offset_surface(
+        self, mesh: MeshData, distance: float,
+    ) -> MeshData:
+        """Offset surface along vertex normals (positive = outward)."""
+        tm = mesh.to_trimesh()
+        tm.vertices += tm.vertex_normals * distance
+        result = MeshData.from_trimesh(tm, mesh.source_path, mesh.source_format)
+        result.unit = mesh.unit
+        return self._record(mesh, "offset_surface", {"distance": distance}, result)
+
+    def thicken(
+        self, mesh: MeshData, thickness: float, direction: str = "both",
+    ) -> MeshData:
+        """Thicken a surface mesh into a solid.
+
+        direction: "outward", "inward", or "both" (half each way).
+        """
+        tm = mesh.to_trimesh()
+        if direction == "both":
+            half = thickness / 2
+            outer = tm.copy()
+            outer.vertices += outer.vertex_normals * half
+            inner = tm.copy()
+            inner.vertices -= inner.vertex_normals * half
+            inner.invert()
+        elif direction == "outward":
+            outer = tm.copy()
+            outer.vertices += outer.vertex_normals * thickness
+            inner = tm.copy()
+            inner.invert()
+        else:
+            outer = tm.copy()
+            inner = tm.copy()
+            inner.vertices -= inner.vertex_normals * thickness
+            inner.invert()
+        combined = trimesh.util.concatenate([outer, inner])
+        result = MeshData.from_trimesh(combined, mesh.source_path, mesh.source_format)
+        result.unit = mesh.unit
+        return self._record(mesh, "thicken", {"thickness": thickness, "direction": direction}, result)

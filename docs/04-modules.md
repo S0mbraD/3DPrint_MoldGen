@@ -145,6 +145,30 @@ class MeshEditor:
     def shell(self, mesh: MeshData, thickness: float) -> MeshData:
         """抽壳操作"""
     
+    # === 高级操作 (nTopology-style, v6 新增) ===
+    def smooth_laplacian(self, mesh: MeshData, iterations: int = 3,
+                         lamb: float = 0.5) -> MeshData:
+        """Laplacian 平滑 — 均匀邻域均值"""
+    
+    def smooth_taubin(self, mesh: MeshData, iterations: int = 3,
+                      lamb: float = 0.5, mu: float = -0.53) -> MeshData:
+        """Taubin 平滑 — 交替 λ/μ 防止体积收缩"""
+    
+    def smooth_humphrey(self, mesh: MeshData, iterations: int = 3,
+                        alpha: float = 0.1, beta: float = 0.5) -> MeshData:
+        """HC 平滑 (Humphrey's Classes) — 体积保持平滑"""
+    
+    def remesh_isotropic(self, mesh: MeshData,
+                         target_edge_length: float | None = None) -> MeshData:
+        """等尺重网格化 — subdivide→decimate 迫近目标边长"""
+    
+    def offset_surface(self, mesh: MeshData, distance: float) -> MeshData:
+        """表面偏移 — 沿顶点法线平移"""
+    
+    def thicken(self, mesh: MeshData, thickness: float,
+                direction: str = "both") -> MeshData:
+        """将曲面网格增厚为实体 (outward / inward / both)"""
+    
     # === 撤销/重做 ===
     def undo(self) -> MeshData: ...
     def redo(self) -> MeshData: ...
@@ -250,7 +274,120 @@ class OrientationConfig:
 - `scikit-image>=0.22.0` (marching cubes 体素回退)
 - `scipy` (ndimage 体素膨胀)
 
-## 6b. fea 模块 — 有限元结构分析 (v5 新增)
+## 6b. analysis 模块 — nTopology 级网格分析套件 (v6 新增)
+
+提供五维几何分析能力，参考 nTopology 的 Implicit Modeling 和 Design for Additive Manufacturing (DfAM) 工作流。
+
+### 数据类
+
+```python
+@dataclass
+class ThicknessResult:
+    per_vertex: np.ndarray       # (N,) 逐顶点壁厚 (mm)
+    min_thickness: float
+    max_thickness: float
+    mean_thickness: float
+    std_thickness: float
+    thin_count: int              # 薄壁顶点数 (< thin_threshold)
+    histogram_bins: list[float]
+    histogram_counts: list[int]
+
+@dataclass
+class CurvatureResult:
+    gaussian: np.ndarray         # (N,) Gaussian 曲率
+    mean_curvature: np.ndarray   # (N,) Mean 曲率
+    max_curvature: np.ndarray    # (N,) max(|G|, |H|)
+    min_val: float
+    max_val: float
+
+@dataclass
+class DraftAnalysisResult:
+    per_face_angle: np.ndarray   # (M,) 逐面拔模角 (deg)
+    min_draft: float
+    max_draft: float
+    mean_draft: float
+    undercut_fraction: float     # 倒扣比例
+    critical_fraction: float     # < critical_angle 比例
+    histogram_bins: list[float]
+    histogram_counts: list[int]
+
+@dataclass
+class SymmetryResult:
+    x_symmetry: float            # [0, 1]
+    y_symmetry: float
+    z_symmetry: float
+    best_plane: str              # "x" | "y" | "z"
+    best_score: float
+    principal_axes: list[list[float]]  # PCA 3×3
+
+@dataclass
+class OverhangResult:
+    per_face_overhang: np.ndarray  # (M,) 布尔
+    overhang_fraction: float
+    overhang_area_mm2: float
+    total_area_mm2: float
+    critical_angle_deg: float
+
+@dataclass
+class BOMEntry:
+    component: str
+    volume_mm3: float
+    surface_area_mm2: float
+    face_count: int
+    estimated_weight_g: float
+    estimated_print_time_min: float
+```
+
+### 核心函数
+
+```python
+def compute_thickness(mesh: MeshData, n_rays: int = 6,
+                      max_distance: float = 50.0,
+                      thin_threshold: float = 1.0) -> ThicknessResult:
+    """多射线逐顶点壁厚估计。算法: 沿 −normal + jitter 发射 n_rays 条射线，
+    记录最近反向命中距离。O(N × n_rays) ray intersections."""
+
+def compute_curvature(mesh: MeshData) -> CurvatureResult:
+    """离散 Gaussian 曲率 (角亏法) + Mean 曲率 (cotangent Laplacian / trimesh)。"""
+
+def compute_draft_analysis(mesh: MeshData,
+                           pull_direction: list[float] | None = None,
+                           critical_angle: float = 3.0) -> DraftAnalysisResult:
+    """逐面拔模角。draft = arccos(|n · pull|)，倒扣 = n · pull < 0。"""
+
+def compute_symmetry(mesh: MeshData) -> SymmetryResult:
+    """X/Y/Z 轴平面对称评分。算法: 顶点镜像 + cKDTree 最近邻 Hausdorff 距离。"""
+
+def compute_overhang(mesh: MeshData,
+                     build_direction: list[float] | None = None,
+                     critical_angle: float = 45.0) -> OverhangResult:
+    """3D 打印悬垂检测。overhang = face normal 与 build_direction 夹角 > critical_angle。"""
+
+def compute_bom(components: dict[str, MeshData],
+                density_g_per_mm3: float = 1.24e-3) -> list[BOMEntry]:
+    """多组件 BOM 估算 (体积/面积/重量/打印时间)。"""
+```
+
+### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/analysis/{model_id}/thickness` | 壁厚分析 |
+| POST | `/api/v1/analysis/{model_id}/curvature` | 曲率分析 |
+| POST | `/api/v1/analysis/{model_id}/draft` | 拔模角分析 |
+| POST | `/api/v1/analysis/{model_id}/symmetry` | 对称性分析 |
+| POST | `/api/v1/analysis/{model_id}/overhang` | 悬垂分析 |
+| POST | `/api/v1/analysis/{model_id}/smooth` | 网格平滑 |
+| POST | `/api/v1/analysis/{model_id}/remesh` | 等尺重网格化 |
+| POST | `/api/v1/analysis/{model_id}/thicken` | 曲面增厚为实体 |
+| POST | `/api/v1/analysis/{model_id}/offset` | 表面偏移 |
+
+所有端点包含:
+- Pydantic `Field` 验证 (ge/le/gt/lt 约束)
+- `asyncio.to_thread` 异步执行
+- `try/except` + `logger.error` + `HTTPException(500)` 错误处理
+
+## 6c. fea 模块 — 有限元结构分析 (v5 新增)
 
 ### 核心接口
 
@@ -337,7 +474,17 @@ class AnchorConfig:
     # 网孔参数
     hole_diameter: float = 3.0
     hole_spacing: float = 7.0
-    hole_pattern: str = "hexagonal"         # "grid" | "hexagonal" | "random"
+    hole_pattern: str = "hexagonal"         # 几何: hex|grid|diamond|voronoi
+                                            # TPMS: gyroid|schwarz_p|schwarz_d|neovius|lidinoid|iwp|frd
+    # TPMS 参数
+    tpms_cell_size: float | None = None     # TPMS 单胞尺寸 (mm), None=auto
+    tpms_z_slice: float = 0.0              # 2D 切片 z 坐标
+    max_holes: int = 300                   # 最大孔数
+    # 场驱动半径调制
+    variable_density: bool = False          # 启用场驱动半径调制
+    density_field: str = "edge"            # edge|center|radial|stress|uniform
+    density_min_factor: float = 0.4        # 最小半径系数
+    density_max_factor: float = 1.0        # 最大半径系数
     # 凸起参数
     bump_height: float = 1.5
     bump_diameter: float = 2.5
@@ -361,6 +508,174 @@ class InsertPlate:
     print_orientation: np.ndarray           # 建议打印方向
     installation_direction: np.ndarray       # 安装方向
 ```
+
+## 7b. tpms 模块 — TPMS 隐式场晶格库 (v7 新增)
+
+独立的三周期极小曲面 (TPMS) 数学库，为 `insert_generator` 提供精确的晶格/网孔布局。
+
+### 7b.1 TPMS 曲面注册表
+
+| 名称 | 函数签名 | 对称群 | 典型应用 |
+|------|---------|--------|---------|
+| **Gyroid** | `_gyroid(x,y,z)` | I4₁32 | 生物支架、均匀渗透 |
+| **Schwarz-P** | `_schwarz_p(x,y,z)` | Pm3̄m | 热交换器、过滤器 |
+| **Schwarz-D** | `_schwarz_d(x,y,z)` | Fd3̄m | 高比强度结构 |
+| **Neovius** | `_neovius(x,y,z)` | Pm3̄m | 高孔隙率轻量化 |
+| **Lidinoid** | `_lidinoid(x,y,z)` | I4₁32 | 手性流道设计 |
+| **IWP** | `_iwp(x,y,z)` | Im3̄m | 双通道互穿结构 |
+| **FRD** | `_frd(x,y,z)` | Fm3̄m | 复杂互连孔隙 |
+
+### 7b.2 核心接口
+
+```python
+def evaluate_field_2d(
+    name: str, half_span: float, cell_size: float,
+    z_slice: float = 0.0, resolution: int = 200, margin: float = 0.0,
+) -> TPMSFieldResult:
+    """在 2D (u,v) 网格上求值 TPMS 场 f(ωu, ωv, ωz₀)"""
+
+def extract_hole_centres(
+    result: TPMSFieldResult, base_radius: float,
+    min_spacing: float = None, max_holes: int = 300,
+    adaptive_radius: bool = True,
+) -> list[HoleCentre]:
+    """从 |f| 场的形态学极值提取孔心，支持自适应半径"""
+
+def apply_field_modulation(
+    holes: list[HoleCentre], half_span: float,
+    field_type: str = "edge", min_factor: float = 0.4, max_factor: float = 1.0,
+) -> list[HoleCentre]:
+    """5 种空间场连续调制孔径半径 (非二元删除)"""
+
+def generate_tpms_holes(
+    tpms_name: str, half_span: float, hole_diameter: float,
+    cell_size: float = None, z_slice: float = 0.0,
+    adaptive_radius: bool = True, max_holes: int = 300,
+    density_field: str = None, density_min: float = 0.4, density_max: float = 1.0,
+) -> list[tuple[float, float, float]]:
+    """一站式 API: TPMS 名称 → [(u, v, radius)] 孔洞列表"""
+```
+
+### 7b.3 网孔雕刻管线 (insert_generator 集成)
+
+```
+_carve_holes() 管线:
+  Phase 0: _subdivide_near_holes()  — 2 轮局部细分 [0.7r, 1.3r] 环带
+  Phase 1: 面片删除               — 质心距 < r → remove (支持变半径)
+  Phase 2: _snap_hole_boundaries() — 边界顶点投射到理想圆周
+  Phase 3: _smooth_boundary_ring() — 3 轮 Laplacian 平滑边界 1-ring
+```
+
+## 7c. distance_field 模块 — SDF 隐式场引擎 (v10 新增)
+
+nTopology 风格的隐式场基础设施，为 boolean 混合、场驱动设计、变厚度壳体提供底层能力。
+
+### 7c.1 核心数据结构
+
+```python
+@dataclass
+class SDFGrid:
+    values: np.ndarray    # (nz, ny, nx) float32 有符号距离场
+    origin: np.ndarray    # (3,) 世界坐标系原点
+    spacing: float        # 体素边长 (mm)
+    shape: tuple          # (nz, ny, nx)
+
+    def sample(self, points) -> np.ndarray:  # 三线性插值
+    def gradient(self, points) -> np.ndarray:  # 中心差分梯度
+```
+
+### 7c.2 核心接口
+
+| 函数 | 功能 |
+|------|------|
+| `mesh_to_sdf(mesh, resolution, pad)` | 三角网格 → SDF 体素网格 |
+| `smooth_union(a, b, k)` | Íñigo Quílez polynomial k-blend 并集 |
+| `smooth_intersection(a, b, k)` | Smooth 交集 |
+| `smooth_difference(a, b, k)` | Smooth 差集 |
+| `field_offset(sdf, distance)` | 等距偏移 (正=外扩, 负=内缩) |
+| `field_shell(sdf, thickness)` | 等厚壳体 |
+| `field_variable_shell(sdf, thickness_field)` | 变厚度壳体 |
+| `field_blend(a, b, op, blend_radius)` | 两 SDF 场混合布尔 |
+| `field_remap(sdf, in_range, out_range)` | 值域线性重映射 |
+| `field_gaussian_blur(sdf, sigma_mm)` | 高斯模糊 |
+| `distance_field_from_points(template, points)` | 点集距离场 |
+| `distance_field_from_axis(template, axis)` | 轴向距离场 |
+| `extract_isosurface(sdf, iso)` | Marching Cubes 提取等值面 |
+| `field_driven_shell(mesh, ...)` | 一站式场驱动变厚度壳 |
+
+## 7d. topology_opt 模块 — SIMP 拓扑优化 (v10 新增)
+
+密度法结构拓扑优化，最小化柔度 (最大化刚度)。
+
+### 7d.1 核心接口
+
+```python
+def topology_opt_2d(config: TOConfig2D) -> TOResult2D
+def topology_opt_3d(config: TOConfig3D) -> TOResult3D
+def density_to_mesh(density, threshold, spacing) -> trimesh.Trimesh
+```
+
+| 参数 | 说明 |
+|------|------|
+| `nelx, nely, nelz` | 网格分辨率 |
+| `volfrac` | 目标体积分数 (0.05–0.9) |
+| `penal` | SIMP 惩罚指数 (典型 3.0) |
+| `rmin` | 密度滤波半径 (元素单位) |
+| `bc_type` | cantilever / mbb / bridge |
+
+### 7d.2 API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/advanced/topology-opt/2d` | 2D 拓扑优化 |
+| POST | `/api/v1/advanced/topology-opt/3d` | 3D 拓扑优化 |
+
+## 7e. lattice 模块 — 3D 体积晶格生成器 (v10 新增)
+
+在任意包围网格内部生成晶格结构。
+
+### 7e.1 晶格类型
+
+| 类别 | 可用类型 | 说明 |
+|------|---------|------|
+| **graph** | BCC, FCC, Octet, Kelvin, Diamond | 杆件晶格 — 圆柱体素堆叠 |
+| **tpms** | Gyroid, Schwarz-P/D, Neovius, Lidinoid, IWP, FRD | TPMS 壳体 — SDF + Marching Cubes |
+| **foam** | Voronoi | Lloyd 松弛 + k=2 距离差壁面 |
+
+### 7e.2 核心接口
+
+```python
+def generate_lattice(bounding_mesh, lattice_type, config) -> LatticeResult
+def generate_graph_lattice(bounding_mesh, config) -> LatticeResult
+def generate_tpms_lattice(bounding_mesh, config) -> LatticeResult
+def generate_voronoi_foam(bounding_mesh, n_cells, wall_thickness, ...) -> LatticeResult
+```
+
+### 7e.3 API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/advanced/lattice/generate` | 3D 晶格生成 |
+
+## 7f. interference 模块 — 干涉/间隙分析 (v10 新增)
+
+### 7f.1 核心接口
+
+```python
+def compute_clearance(mesh_a, mesh_b, sample_count) -> ClearanceResult
+def validate_assembly(parts: list[(name, mesh)], min_clearance) -> AssemblyCheckResult
+```
+
+### 7f.2 API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/advanced/interference/check` | 两零件干涉检测 |
+| POST | `/api/v1/advanced/interference/assembly` | 多零件装配检查 |
+| POST | `/api/v1/advanced/boolean` | 布尔运算 (含 smooth blend) |
+| POST | `/api/v1/advanced/{model_id}/mesh-quality` | 网格质量分析 |
+| POST | `/api/v1/advanced/sdf/compute` | SDF 计算 |
+| POST | `/api/v1/advanced/sdf/variable-shell` | 场驱动变厚度壳 |
 
 ## 8. gating_system 模块 — 浇注系统
 
@@ -1038,3 +1353,78 @@ function useAgentWebSocket(taskId: string): {
   connectionStatus: "connected" | "disconnected" | "reconnecting";
 };
 ```
+
+---
+
+## 11. 日志与报错机制
+
+### 11a. 后端日志 (`moldgen/utils/logger.py`)
+
+```
+setup_logging(level="INFO")
+  ├── stdout (控制台格式)
+  ├── data/logs/moldgen.log     (RotatingFileHandler 5MB × 5)
+  └── data/logs/moldgen-error.log (ERROR 级, 5MB × 5)
+
+get_recent_logs(n=200) → list[str]
+get_recent_errors(n=100) → list[str]
+```
+
+**API 端点**:
+- `GET /api/v1/system/logs?n=200` — 返回最新 N 行主日志
+- `GET /api/v1/system/logs/errors?n=100` — 返回最新 N 行错误日志
+
+### 11b. 前端错误捕获 (`App.tsx`)
+
+| 机制 | 捕获范围 |
+|------|---------|
+| `ErrorBoundary` class | React 组件树渲染异常 |
+| `window.onerror` | 同步 JS 运行时错误 |
+| `window.unhandledrejection` | 未捕获 Promise rejection |
+| `toastError()` | 所有错误统一通过 toast 弹窗通知用户 |
+
+### 11c. 前端控制台 (`ConsolePanel.tsx`)
+
+- 标题栏 Terminal 按钮切换显隐
+- 实时拉取 `/system/logs` (3s 间隔)
+- 错误日志独立 tab (5s 间隔)
+- 日志行按级别 (ERROR/WARNING/INFO) 着色
+
+---
+
+## 12. 桌面封装 (Tauri 2.0)
+
+### 12a. 架构
+
+```
+Tauri (Rust) ─── 启动 ──→ moldgen-server(.exe)  ← PyInstaller 打包
+      │                         │
+      ├── 前端 (Vite build)     └── FastAPI :8000
+      │   └── WebView2               └── REST + WebSocket
+      │
+      └── on_exit → kill backend child
+```
+
+### 12b. 构建流程
+
+```bash
+# 1. 打包 Python 后端
+python scripts/build_backend.py
+# → frontend/src-tauri/binaries/moldgen-server-x86_64-pc-windows-msvc.exe
+
+# 2. 构建 Tauri 安装包
+cd frontend
+npm run tauri:build
+# → frontend/src-tauri/target/release/bundle/nsis/MoldGen_0.1.0_x64-setup.exe
+# → frontend/src-tauri/target/release/bundle/msi/MoldGen_0.1.0_x64_en-US.msi
+```
+
+### 12c. Tauri 配置关键项 (`tauri.conf.json`)
+
+| 配置 | 值 |
+|------|-----|
+| `bundle.targets` | `["nsis", "msi"]` |
+| `bundle.externalBin` | `["binaries/moldgen-server"]` |
+| `bundle.windows.nsis.languages` | `["SimpChinese", "English"]` |
+| `bundle.windows.nsis.installMode` | `"both"` (per-user / all-users) |
+| `app.windows[0].title` | `"MoldGen — AI 医学教具模具工作站"` |

@@ -119,6 +119,15 @@ class InsertConfig:
     add_mesh_holes: bool = False       # through-holes for silicone penetration
     mesh_hole_density: float = 0.3     # holes per unit area
     mesh_hole_size: float = 2.0        # hole diameter (mm)
+    hole_pattern: str = "hex"          # geometric: "hex"|"grid"|"diamond"|"voronoi"
+                                       # TPMS: "gyroid"|"schwarz_p"|"schwarz_d"|"neovius"|"lidinoid"|"iwp"|"frd"
+    variable_density: bool = False     # field-driven radius modulation
+    density_field: str = "edge"        # "edge"|"center"|"radial"|"stress"|"uniform"
+    density_min_factor: float = 0.4    # at low field value, radius × this factor
+    density_max_factor: float = 1.0    # at high field value, radius × this factor
+    tpms_cell_size: float | None = None  # TPMS unit cell period (mm); None → auto
+    tpms_z_slice: float = 0.0         # z-coordinate for TPMS 2D slice evaluation
+    max_holes: int = 300              # upper bound on hole count
 
     add_ribs: bool = False             # reinforcement ribs on plate surface
     rib_height: float = 3.0
@@ -127,6 +136,16 @@ class InsertConfig:
 
     add_interlocking: str | None = None  # "dovetail"|"diamond"|"grooves"|"bumps"|None
     interlock_feature_size: float = 2.0
+
+    # Manual hole planning: list of {u, v, radius} dicts in mm relative to
+    # plate centre.  If non-empty, only holes that overlap a painted region
+    # are carved; holes outside all regions are skipped.
+    custom_hole_regions: list[dict] | None = None
+
+    # Manual rib planning: list of {u, v, radius} dicts defining regions
+    # where ribs should appear.  If non-empty, rib displacement is only
+    # applied to vertices within a painted region.
+    custom_rib_regions: list[dict] | None = None
 
     # Legacy compat fields (mapped to new feature toggles internally)
     organ_type: OrganType = OrganType.GENERAL
@@ -266,6 +285,7 @@ class InsertGenerator:
 
     def __init__(self, config: InsertConfig | None = None):
         self.config = config or InsertConfig()
+        self._subdivision_boost: float = 1.0
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -305,40 +325,85 @@ class InsertGenerator:
         return positions[:n_candidates]
 
     def generate_plate(self, model: MeshData, position: InsertPosition) -> InsertPlate:
-        """Generate base plate (flat or conformal), then apply optional features."""
+        """Generate base plate (flat or conformal), then apply optional features.
+
+        For conformal plates, holes and ribs are integrated directly into
+        the parametric grid (clean, uniform geometry).  For flat/legacy
+        plates, features are applied as post-processing.
+        """
         cfg = self.config
         itype = cfg.insert_type
-
-        # Step 1: Generate base plate shape
-        if itype == InsertType.CONFORMAL:
-            plate_mesh = self._generate_conformal(model, position)
-        elif itype == InsertType.RIBBED:
-            # Legacy: map to flat + ribs
-            plate_mesh = self._generate_flat(model, position)
-            cfg.add_ribs = True
-        elif itype == InsertType.LATTICE:
-            # Legacy: map to flat + mesh holes
-            plate_mesh = self._generate_flat(model, position)
-            cfg.add_mesh_holes = True
-        else:
-            plate_mesh = self._generate_flat(model, position)
-
-        # Step 2: Ensure plate is inside the model
-        plate_mesh = self._ensure_interior(plate_mesh, model)
-
-        # Step 3: Apply optional features to the base plate
         features_applied: list[str] = []
 
-        if cfg.add_mesh_holes:
-            n_holes = max(3, int(plate_mesh.area * cfg.mesh_hole_density / (cfg.mesh_hole_size ** 2)))
-            n_holes = min(n_holes, 8)
-            plate_mesh, _ = self._add_mesh_holes(plate_mesh, n_holes, cfg.mesh_hole_size)
-            features_applied.append("mesh_holes")
+        # --- Conformal: generate → refine → carve with quality iteration ---
+        if itype == InsertType.CONFORMAL:
+            want_holes = bool(cfg.add_mesh_holes)
+            want_ribs = bool(cfg.add_ribs)
 
-        if cfg.add_ribs:
-            plate_mesh = self._apply_ribs(plate_mesh, position)
-            features_applied.append("ribs")
+            plate_mesh = self._generate_conformal(
+                model, position,
+                integrate_holes=want_holes,
+                integrate_ribs=want_ribs,
+            )
 
+            # Auto-iterative quality analysis: if hole circularity is
+            # too low, boost the subdivision cap and regenerate once.
+            if want_holes:
+                quality = self._assess_hole_quality(plate_mesh, position, model)
+                logger.info("Quality iter 0: circ_mean=%.3f, circ_gt90=%.0f%%",
+                            quality["circ_mean"], quality["circ_gt90_pct"])
+                if quality["circ_mean"] < 0.88 or quality["circ_gt90_pct"] < 70:
+                    logger.info("Quality below threshold — re-generating with 1.5x cap")
+                    saved_max = self._iterative_subdivide.__defaults__  # type: ignore[attr-defined]
+                    self._subdivision_boost = 1.5
+                    plate_mesh = self._generate_conformal(
+                        model, position,
+                        integrate_holes=want_holes,
+                        integrate_ribs=want_ribs,
+                    )
+                    self._subdivision_boost = 1.0
+                    q2 = self._assess_hole_quality(plate_mesh, position, model)
+                    logger.info("Quality iter 1: circ_mean=%.3f, circ_gt90=%.0f%%",
+                                q2["circ_mean"], q2["circ_gt90_pct"])
+
+            if want_holes:
+                features_applied.append("mesh_holes")
+            if want_ribs:
+                features_applied.append("ribs")
+
+        else:
+            # Flat / legacy types
+            if itype == InsertType.RIBBED:
+                plate_mesh = self._generate_flat(model, position)
+                cfg.add_ribs = True
+            elif itype == InsertType.LATTICE:
+                plate_mesh = self._generate_flat(model, position)
+                cfg.add_mesh_holes = True
+            else:
+                plate_mesh = self._generate_flat(model, position)
+
+            # Post-hoc features for flat plates
+            if cfg.add_mesh_holes:
+                n_holes = max(4, int(
+                    plate_mesh.area * cfg.mesh_hole_density
+                    / (cfg.mesh_hole_size ** 2)
+                ))
+                n_holes = min(n_holes, 50)
+                plate_mesh, _ = self._add_mesh_holes(
+                    plate_mesh, n_holes, cfg.mesh_hole_size,
+                )
+                features_applied.append("mesh_holes")
+
+            if cfg.add_ribs:
+                plate_mesh = self._apply_ribs(plate_mesh, position)
+                features_applied.append("ribs")
+
+        # Ensure plate sits inside the model (conformal plates are already
+        # surface-projected; _ensure_interior would destructively scale ribs)
+        if itype != InsertType.CONFORMAL:
+            plate_mesh = self._ensure_interior(plate_mesh, model)
+
+        # Interlocking features (post-hoc for all plate types)
         if cfg.add_interlocking:
             interlock_type = cfg.add_interlocking
             n_feat = max(3, int(plate_mesh.area * 0.2 / (cfg.interlock_feature_size ** 2)))
@@ -556,14 +621,74 @@ class InsertGenerator:
     def _generate_flat(self, model: MeshData, pos: InsertPosition) -> trimesh.Trimesh:
         tm = model.to_trimesh()
         cfg = self.config
-        section = self._get_cross_section(tm, pos.normal, pos.plane_d)
-        if section is None:
-            section = self._generate_fallback_plate(model, pos)
-        plate = self._extrude_section(section, pos.normal, cfg.thickness)
+        plate = self._get_cross_section(tm, pos.normal, pos.plane_d, cfg.thickness)
+        if plate is None:
+            plate = self._generate_fallback_plate(model, pos)
         return plate
 
-    def _generate_conformal(self, model: MeshData, pos: InsertPosition) -> trimesh.Trimesh:
-        """Conformal plate via grid projection — fast vectorized approach."""
+    def _generate_conformal(
+        self,
+        model: MeshData,
+        pos: InsertPosition,
+        *,
+        integrate_holes: bool = False,
+        integrate_ribs: bool = False,
+    ) -> trimesh.Trimesh:
+        """Three-stage conformal plate generation (generate → refine → carve).
+
+        Stage 1 — Base grid:  moderate-resolution parametric grid projected
+                  onto the model surface.  No features yet.
+        Stage 2 — Refine:     iterative ``trimesh.remesh.subdivide`` until
+                  the average face area is small enough for clean features.
+        Stage 3 — Carve:      holes via face-removal on the dense mesh
+                  (smooth circular edges);  ribs via vertex-normal
+                  displacement (smooth continuous ridges).
+        """
+        # ── Stage 1: base conformal grid ──
+        plate = self._conformal_base_grid(model, pos)
+        if plate is None or len(plate.faces) < 4:
+            return self._generate_flat(model, pos)
+
+        if not integrate_holes and not integrate_ribs:
+            return plate
+
+        # ── Stage 2: iterative subdivision ──
+        cfg = self.config
+        target_area = self._target_face_area_for_features(cfg)
+        boost = getattr(self, "_subdivision_boost", 1.0)
+        max_f = int(500_000 * boost)
+        plate = self._iterative_subdivide(plate, target_area, max_iters=5, max_faces=max_f)
+        logger.info(
+            "After subdivision: %d faces, avg_area=%.3f mm2 (target=%.3f)",
+            len(plate.faces), plate.area / max(len(plate.faces), 1), target_area,
+        )
+
+        # ── Stage 3: carve features ──
+        normal = np.asarray(pos.normal, dtype=np.float64)
+        up = normal / (np.linalg.norm(normal) + 1e-12)
+        arb = np.array([1.0, 0, 0]) if abs(up[0]) < 0.9 else np.array([0.0, 1, 0])
+        u_ax = np.cross(up, arb); u_ax /= (np.linalg.norm(u_ax) + 1e-12)
+        v_ax = np.cross(up, u_ax); v_ax /= (np.linalg.norm(v_ax) + 1e-12)
+        centroid = plate.vertices.mean(axis=0)
+        half_span = float(np.max(model.extents)) * cfg.plate_scale * 0.55
+
+        if integrate_ribs:
+            plate = self._carve_ribs(plate, up, u_ax, v_ax, centroid, half_span)
+
+        if integrate_holes:
+            plate = self._carve_holes(plate, up, u_ax, v_ax, centroid, half_span)
+
+        _clean_mesh(plate)
+        return plate
+
+    # ------------------------------------------------------------------
+    # Stage 1 helper: base conformal grid (no features)
+    # ------------------------------------------------------------------
+
+    def _conformal_base_grid(
+        self, model: MeshData, pos: InsertPosition,
+    ) -> trimesh.Trimesh | None:
+        """Moderate-resolution conformal grid projection."""
         tm = model.to_trimesh()
         cfg = self.config
         normal = np.asarray(pos.normal, dtype=np.float64)
@@ -578,7 +703,7 @@ class InsertGenerator:
         plane_origin = center + up * (plane_d - np.dot(center, up))
         half_span = float(np.max(model.extents)) * cfg.plate_scale * 0.55
 
-        grid_res = min(30, max(8, int(half_span * 2 / 2.5)))
+        grid_res = min(60, max(15, int(half_span * 2 / 2.0)))
 
         lu = np.linspace(-half_span, half_span, grid_res)
         lv = np.linspace(-half_span, half_span, grid_res)
@@ -586,9 +711,9 @@ class InsertGenerator:
         flat_u, flat_v = gu.ravel(), gv.ravel()
         n_pts = len(flat_u)
 
-        grid_3d = (plane_origin[None, :] +
-                    flat_u[:, None] * u_ax[None, :] +
-                    flat_v[:, None] * v_ax[None, :])
+        grid_3d = (plane_origin[None, :]
+                   + flat_u[:, None] * u_ax[None, :]
+                   + flat_v[:, None] * v_ax[None, :])
 
         tree = cKDTree(tm.vertices)
         dists, indices = tree.query(grid_3d, k=1, workers=-1)
@@ -596,42 +721,815 @@ class InsertGenerator:
         valid = dists < max_dist
 
         if np.sum(valid) < 9:
-            return self._generate_flat(model, pos)
+            return None
 
         surf_pts = tm.vertices[indices]
         surf_normals = np.asarray(tm.vertex_normals, dtype=np.float64)[indices]
+        sn_len = np.linalg.norm(surf_normals, axis=1, keepdims=True)
+        sn_unit = surf_normals / (sn_len + 1e-12)
         offset = cfg.conformal_offset
 
         close_mask = dists < offset * 5
-        inner = np.where(close_mask[:, None],
-                         surf_pts + surf_normals * (-offset),
-                         grid_3d - up[None, :] * offset)
-        outer = inner + up[None, :] * cfg.thickness
+        inner = np.where(
+            close_mask[:, None],
+            surf_pts + sn_unit * (-offset),
+            grid_3d - up[None, :] * offset,
+        )
+        outer_dir = np.where(close_mask[:, None], sn_unit, up[None, :])
+        outer = inner + outer_dir * cfg.thickness
 
-        ri, ci = np.meshgrid(np.arange(grid_res - 1), np.arange(grid_res - 1), indexing="ij")
+        ri, ci = np.meshgrid(
+            np.arange(grid_res - 1), np.arange(grid_res - 1), indexing="ij",
+        )
         ri, ci = ri.ravel(), ci.ravel()
         tl = ri * grid_res + ci
-        tr = tl + 1
-        bl = tl + grid_res
-        br = bl + 1
+        tr, bl, br = tl + 1, tl + grid_res, tl + grid_res + 1
 
-        quad_valid = valid[tl] & valid[tr] & valid[bl] & valid[br]
-        tl, tr, bl, br = tl[quad_valid], tr[quad_valid], bl[quad_valid], br[quad_valid]
+        qv = valid[tl] & valid[tr] & valid[bl] & valid[br]
+        tl, tr, bl, br = tl[qv], tr[qv], bl[qv], br[qv]
 
         if len(tl) < 4:
-            return self._generate_flat(model, pos)
+            return None
 
-        inner_faces = np.vstack([np.column_stack([tl, tr, br]),
-                                  np.column_stack([tl, br, bl])])
-        outer_faces = np.vstack([np.column_stack([tl + n_pts, br + n_pts, tr + n_pts]),
-                                  np.column_stack([tl + n_pts, bl + n_pts, br + n_pts])])
-
-        all_verts = np.vstack([inner, outer])
-        all_faces = np.vstack([inner_faces, outer_faces])
-
-        plate = trimesh.Trimesh(vertices=all_verts, faces=all_faces, process=True)
+        inner_f = np.vstack([
+            np.column_stack([tl, tr, br]),
+            np.column_stack([tl, br, bl]),
+        ])
+        outer_f = np.vstack([
+            np.column_stack([tl + n_pts, br + n_pts, tr + n_pts]),
+            np.column_stack([tl + n_pts, bl + n_pts, br + n_pts]),
+        ])
+        plate = trimesh.Trimesh(
+            vertices=np.vstack([inner, outer]),
+            faces=np.vstack([inner_f, outer_f]),
+            process=True,
+        )
         _clean_mesh(plate)
         return plate
+
+    # ------------------------------------------------------------------
+    # Stage 2 helper: iterative subdivision
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _target_face_area_for_features(cfg: "InsertConfig") -> float:
+        """Target avg face area for smooth features.
+
+        Target edge ≈ hole_diameter / 14 → ~44 boundary edges per hole.
+        For ribs: rib_width / 5 → ≥5 edges across a rib.
+        """
+        targets: list[float] = []
+        if cfg.add_mesh_holes and cfg.mesh_hole_size > 0:
+            edge = cfg.mesh_hole_size / 14
+            targets.append(edge * edge * 0.433)
+        if cfg.add_ribs and cfg.rib_width > 0:
+            edge = cfg.rib_width / 5
+            targets.append(edge * edge * 0.433)
+        return min(targets) if targets else 1.0
+
+    @staticmethod
+    def _iterative_subdivide(
+        plate: trimesh.Trimesh,
+        target_area: float,
+        max_iters: int = 5,
+        max_faces: int = 500_000,
+    ) -> trimesh.Trimesh:
+        """Subdivide until average face area ≤ *target_area*."""
+        for i in range(max_iters):
+            avg = plate.area / max(len(plate.faces), 1)
+            if avg <= target_area:
+                break
+            if len(plate.faces) * 4 > max_faces:
+                logger.info("Subdivision capped at %d faces (limit %d)",
+                            len(plate.faces), max_faces)
+                break
+            try:
+                nv, nf = trimesh.remesh.subdivide(plate.vertices, plate.faces)
+                plate = trimesh.Trimesh(vertices=nv, faces=nf, process=True)
+            except Exception:
+                break
+        return plate
+
+    # ------------------------------------------------------------------
+    # Stage 3a: carve holes (face-removal on dense mesh)
+    # ------------------------------------------------------------------
+
+    def _carve_holes(
+        self,
+        plate: trimesh.Trimesh,
+        up: np.ndarray,
+        u_ax: np.ndarray,
+        v_ax: np.ndarray,
+        centroid: np.ndarray,
+        half_span: float,
+    ) -> trimesh.Trimesh:
+        """Remove faces inside holes, then snap boundary vertices to circles.
+
+        Improvement over v1: pre-subdivides faces near hole boundaries so
+        the carved edge follows the circle more closely, producing rounder
+        holes even on coarse meshes.  Variable-radius holes (from TPMS
+        adaptive sizing) are handled natively.
+
+        If ``config.custom_hole_regions`` is set, only holes whose centre
+        falls inside at least one painted region are carved.
+        """
+        cfg = self.config
+        holes = self._hole_layout(half_span, cfg)
+        if not holes:
+            return plate
+
+        if cfg.custom_hole_regions:
+            holes = self._filter_holes_by_regions(holes, cfg.custom_hole_regions)
+            if not holes:
+                return plate
+
+        holes_arr = np.array(holes, dtype=np.float64)
+
+        # ── Phase 0: adaptive pre-subdivision near hole boundaries ────
+        # Subdivide faces whose edges straddle a hole boundary (within
+        # ±1.3r) so that the subsequent face-removal produces smoother
+        # circular edges.  Up to 2 passes; each pass only subdivides
+        # the narrow ring, keeping total face count reasonable.
+        plate = self._subdivide_near_holes(plate, holes_arr, u_ax, v_ax, centroid, passes=2)
+
+        # ── Phase 1: face removal (centroid distance test) ────────────
+        fc = plate.triangles_center
+        fc_c = fc - centroid
+        fu = fc_c @ u_ax
+        fv = fc_c @ v_ax
+
+        keep = np.ones(len(plate.faces), dtype=bool)
+        for hu, hv, hr in holes:
+            keep &= (fu - hu) ** 2 + (fv - hv) ** 2 >= hr * hr
+
+        n_removed = int(np.sum(~keep))
+        if n_removed == 0:
+            return plate
+
+        result = plate.copy()
+        result.update_faces(keep)
+        result.remove_unreferenced_vertices()
+
+        # ── Phase 2: snap boundary vertices to ideal circles ──────────
+        result = self._snap_hole_boundaries(result, holes_arr, u_ax, v_ax, centroid)
+
+        # ── Phase 3: Laplacian smoothing of boundary ring ─────────────
+        result = self._smooth_boundary_ring(result, iterations=3)
+
+        logger.info(
+            "Carved %d faces for %d holes (%.1f%% removed, pre-subdivided, snapped)",
+            n_removed, len(holes), 100 * n_removed / len(plate.faces),
+        )
+        return result
+
+    @staticmethod
+    def _subdivide_near_holes(
+        plate: trimesh.Trimesh,
+        holes_arr: np.ndarray,
+        u_ax: np.ndarray,
+        v_ax: np.ndarray,
+        centroid: np.ndarray,
+        passes: int = 2,
+    ) -> trimesh.Trimesh:
+        """Locally subdivide faces near hole boundaries for smoother carving.
+
+        For each pass, identifies faces whose centroid is in the annular ring
+        [0.7r, 1.3r] around any hole and subdivides only those faces.
+        """
+        for _ in range(passes):
+            fc = plate.triangles_center
+            fc_c = fc - centroid
+            fu = fc_c @ u_ax
+            fv = fc_c @ v_ax
+
+            near_boundary = np.zeros(len(plate.faces), dtype=bool)
+            for hu, hv, hr in holes_arr:
+                d2 = (fu - hu) ** 2 + (fv - hv) ** 2
+                inner = (0.7 * hr) ** 2
+                outer = (1.3 * hr) ** 2
+                near_boundary |= (d2 >= inner) & (d2 <= outer)
+
+            face_idx = np.where(near_boundary)[0]
+            if len(face_idx) == 0 or len(face_idx) > len(plate.faces) * 0.6:
+                break
+
+            try:
+                verts, faces = trimesh.remesh.subdivide(
+                    plate.vertices, plate.faces, face_index=face_idx,
+                )
+                plate = trimesh.Trimesh(vertices=verts, faces=faces, process=True)
+            except Exception as exc:
+                logger.debug("Pre-subdivision pass failed: %s", exc)
+                break
+        return plate
+
+    @staticmethod
+    def _filter_holes_by_regions(
+        holes: list[tuple[float, float, float]],
+        regions: list[dict],
+    ) -> list[tuple[float, float, float]]:
+        """Keep only holes whose centre overlaps at least one painted region."""
+        kept: list[tuple[float, float, float]] = []
+        for hu, hv, hr in holes:
+            for reg in regions:
+                ru, rv, rr = reg["u"], reg["v"], reg["radius"]
+                if (hu - ru) ** 2 + (hv - rv) ** 2 <= (rr + hr) ** 2:
+                    kept.append((hu, hv, hr))
+                    break
+        return kept
+
+    @staticmethod
+    def _find_boundary_verts(faces: np.ndarray) -> np.ndarray:
+        """Return sorted array of boundary vertex indices (vectorised)."""
+        f = faces
+        edges = np.vstack([
+            np.sort(f[:, [0, 1]], axis=1),
+            np.sort(f[:, [1, 2]], axis=1),
+            np.sort(f[:, [0, 2]], axis=1),
+        ])
+        _, inv, counts = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
+        boundary_mask = counts[inv] == 1
+        bv = np.unique(edges[boundary_mask])
+        return bv
+
+    @staticmethod
+    def _snap_hole_boundaries(
+        plate: trimesh.Trimesh,
+        holes_arr: np.ndarray,
+        u_ax: np.ndarray,
+        v_ax: np.ndarray,
+        centroid: np.ndarray,
+    ) -> trimesh.Trimesh:
+        """Project boundary vertices onto nearest ideal circle in u-v space.
+
+        For each boundary vertex within 40 % of hole radius from the ideal
+        circle, snap its u-v position to the exact circle perimeter while
+        preserving its height component.
+        """
+        bv_idx = InsertGenerator._find_boundary_verts(plate.faces)
+        if len(bv_idx) == 0:
+            return plate
+
+        verts = plate.vertices.copy()
+        bv_pos = verts[bv_idx]
+
+        centered = bv_pos - centroid
+        bu = centered @ u_ax
+        bv = centered @ v_ax
+
+        hu, hv, hr = holes_arr[:, 0], holes_arr[:, 1], holes_arr[:, 2]
+
+        du = bu[:, None] - hu[None, :]
+        dv = bv[:, None] - hv[None, :]
+        dist_to_center = np.sqrt(du ** 2 + dv ** 2)
+        dist_to_circle = np.abs(dist_to_center - hr[None, :])
+
+        nearest_hole = np.argmin(dist_to_circle, axis=1)
+        nearest_dist = dist_to_circle[np.arange(len(bv_idx)), nearest_hole]
+
+        snap_threshold = hr[nearest_hole] * 0.4
+        snap_mask = nearest_dist < snap_threshold
+        if np.sum(snap_mask) == 0:
+            return plate
+
+        si = np.where(snap_mask)[0]
+        hi = nearest_hole[si]
+        d = dist_to_center[si, hi]
+        safe_d = np.maximum(d, 1e-9)
+        target_r = hr[hi]
+
+        new_u = hu[hi] + (bu[si] - hu[hi]) / safe_d * target_r
+        new_v = hv[hi] + (bv[si] - hv[hi]) / safe_d * target_r
+
+        verts[bv_idx[si]] += ((new_u - bu[si])[:, None] * u_ax[None, :]
+                              + (new_v - bv[si])[:, None] * v_ax[None, :])
+
+        logger.info("Boundary snap: %d / %d boundary vertices projected to circles",
+                     int(snap_mask.sum()), len(bv_idx))
+        return trimesh.Trimesh(vertices=verts, faces=plate.faces.copy(), process=True)
+
+    @staticmethod
+    def _smooth_boundary_ring(
+        plate: trimesh.Trimesh, iterations: int = 2,
+    ) -> trimesh.Trimesh:
+        """Laplacian smoothing of vertices in the 1-ring around boundaries.
+
+        Uses sparse adjacency matrix for vectorised computation.
+        """
+        from scipy.sparse import csr_matrix
+
+        bv_set = set(InsertGenerator._find_boundary_verts(plate.faces).tolist())
+        if not bv_set:
+            return plate
+
+        n_v = len(plate.vertices)
+        f = plate.faces
+        rows = np.concatenate([f[:, 0], f[:, 1], f[:, 2],
+                               f[:, 1], f[:, 2], f[:, 0]])
+        cols = np.concatenate([f[:, 1], f[:, 2], f[:, 0],
+                               f[:, 0], f[:, 1], f[:, 2]])
+        adj = csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(n_v, n_v))
+
+        # 1-ring: interior vertices adjacent to at least one boundary vertex
+        ring_set: set[int] = set()
+        for bv in bv_set:
+            ring_set.update(adj[bv].indices.tolist())
+        ring_set -= bv_set
+        if not ring_set:
+            return plate
+
+        ring_idx = np.array(sorted(ring_set))
+        verts = plate.vertices.copy()
+
+        for _ in range(iterations):
+            nbs_sum = np.asarray(adj[ring_idx].dot(verts))
+            degree = np.asarray(adj[ring_idx].sum(axis=1)).ravel()[:, None]
+            nbs_avg = nbs_sum / np.maximum(degree, 1)
+            verts[ring_idx] = verts[ring_idx] * 0.5 + nbs_avg * 0.5
+
+        return trimesh.Trimesh(vertices=verts, faces=plate.faces.copy(), process=True)
+
+    # ------------------------------------------------------------------
+    # Quality assessment (auto-iterative analysis)
+    # ------------------------------------------------------------------
+
+    def _assess_hole_quality(
+        self,
+        plate: trimesh.Trimesh,
+        pos: InsertPosition,
+        model: MeshData,
+    ) -> dict:
+        """Compute hole circularity metrics for iterative quality control."""
+        from collections import defaultdict
+
+        bv_idx = self._find_boundary_verts(plate.faces)
+        if len(bv_idx) == 0:
+            return {"circ_mean": 1.0, "circ_gt90_pct": 100.0, "n_holes": 0}
+
+        f = plate.faces
+        edges = np.vstack([
+            np.sort(f[:, [0, 1]], axis=1),
+            np.sort(f[:, [1, 2]], axis=1),
+            np.sort(f[:, [0, 2]], axis=1),
+        ])
+        _, inv, counts = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
+        b_edges = edges[counts[inv] == 1]
+        adj: dict[int, set[int]] = defaultdict(set)
+        for a, b in b_edges:
+            adj[a].add(b)
+            adj[b].add(a)
+        visited: set[int] = set()
+        loops: list[list[int]] = []
+        for start in adj:
+            if start in visited:
+                continue
+            loop: list[int] = []
+            stack = [start]
+            while stack:
+                v = stack.pop()
+                if v in visited:
+                    continue
+                visited.add(v)
+                loop.append(v)
+                stack.extend(adj[v] - visited)
+            loops.append(loop)
+
+        hole_loops = [l for l in loops if 8 <= len(l) < 300]
+        if not hole_loops:
+            return {"circ_mean": 1.0, "circ_gt90_pct": 100.0, "n_holes": 0}
+
+        circs = []
+        for loop in hole_loops:
+            pts = plate.vertices[loop]
+            c = pts.mean(axis=0)
+            d = np.linalg.norm(pts - c, axis=1)
+            circs.append(1 - d.std() / max(d.mean(), 0.01))
+        ca = np.array(circs)
+        return {
+            "circ_mean": float(ca.mean()),
+            "circ_gt90_pct": float(100 * (ca > 0.90).sum() / len(ca)),
+            "n_holes": len(hole_loops),
+        }
+
+    # ------------------------------------------------------------------
+    # Stage 3b: carve ribs (vertex-normal displacement on dense mesh)
+    # ------------------------------------------------------------------
+
+    def _carve_ribs(
+        self,
+        plate: trimesh.Trimesh,
+        up: np.ndarray,
+        u_ax: np.ndarray,
+        v_ax: np.ndarray,
+        centroid: np.ndarray,
+        half_span: float,
+    ) -> trimesh.Trimesh:
+        """Displace outer vertices along normals with a smooth cosine profile.
+
+        Instead of a binary step (0 or rib_height), uses a raised-cosine
+        cross-section: vertices at the rib centre get full height, those at
+        the edge taper smoothly to zero.  This eliminates the sharp step
+        transition and produces printable, organic-looking ridges.
+        """
+        cfg = self.config
+        verts = plate.vertices.copy()
+        fn = np.asarray(plate.face_normals, dtype=np.float64)
+
+        # Robust outer-only vertex normals via face accumulation
+        face_outer = np.einsum("ij,j->i", fn, up) > 0
+        ofi = np.where(face_outer)[0]
+        v_normals = np.zeros_like(verts)
+        np.add.at(v_normals, plate.faces[ofi, 0], fn[ofi])
+        np.add.at(v_normals, plate.faces[ofi, 1], fn[ofi])
+        np.add.at(v_normals, plate.faces[ofi, 2], fn[ofi])
+        vn_len = np.linalg.norm(v_normals, axis=1, keepdims=True)
+        vn_unit = v_normals / (vn_len + 1e-12)
+
+        outer = (vn_len.ravel() > 0.5) & (np.einsum("ij,j->i", vn_unit, up) > 0.2)
+
+        vc = verts - centroid
+        vu = vc @ u_ax
+        vv = vc @ v_ax
+
+        # Compute per-vertex distance to nearest rib centre-line
+        dist_field = self._rib_distance_field(vu, vv, half_span, cfg)
+
+        hw = cfg.rib_width / 2
+        within_rib = outer & (dist_field < hw)
+
+        # Apply custom rib region mask if provided
+        if cfg.custom_rib_regions:
+            region_mask = np.zeros(len(verts), dtype=bool)
+            for reg in cfg.custom_rib_regions:
+                ru, rv, rr = reg["u"], reg["v"], reg["radius"]
+                region_mask |= (vu - ru) ** 2 + (vv - rv) ** 2 <= rr * rr
+            within_rib &= region_mask
+
+        n_moved = int(np.sum(within_rib))
+        if n_moved == 0:
+            return plate
+
+        # Raised-cosine profile: 1.0 at centre, 0.0 at hw
+        t = dist_field[within_rib] / hw
+        profile = 0.5 * (1.0 + np.cos(np.pi * np.clip(t, 0, 1)))
+
+        verts[within_rib] += vn_unit[within_rib] * (cfg.rib_height * profile[:, None])
+        result = trimesh.Trimesh(
+            vertices=verts, faces=plate.faces.copy(), process=True,
+        )
+        logger.info("Rib displacement: %d vertices, cosine profile, max=%.1f mm",
+                     n_moved, cfg.rib_height)
+        return result
+
+    # ------------------------------------------------------------------
+    # Parametric feature helpers (used by _generate_conformal)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hole_layout(
+        half_span: float, cfg: "InsertConfig",
+    ) -> list[tuple[float, float, float]]:
+        """Dispatch to pattern-specific hole layout.  Returns [(u, v, radius)].
+
+        Geometric patterns (hex, grid, voronoi) use direct placement.
+        TPMS patterns (gyroid, schwarz_p, schwarz_d, neovius, lidinoid,
+        iwp, frd) use the implicit-field library in ``tpms.py`` with
+        local-extrema detection for mathematically precise placement.
+        """
+        from moldgen.core.tpms import generate_tpms_holes, apply_field_modulation, TPMS_REGISTRY
+
+        pattern = cfg.hole_pattern
+        tpms_cell_size = getattr(cfg, "tpms_cell_size", None) or cfg.mesh_hole_size * 3.0
+        tpms_z_slice = getattr(cfg, "tpms_z_slice", 0.0)
+        max_holes = getattr(cfg, "max_holes", 300)
+
+        # TPMS-based patterns — use the implicit-field pipeline
+        if pattern in TPMS_REGISTRY:
+            density_field = cfg.density_field if cfg.variable_density else None
+            holes = generate_tpms_holes(
+                tpms_name=pattern,
+                half_span=half_span,
+                hole_diameter=cfg.mesh_hole_size,
+                cell_size=tpms_cell_size,
+                z_slice=tpms_z_slice,
+                adaptive_radius=True,
+                max_holes=max_holes,
+                density_field=density_field,
+                density_min=cfg.density_min_factor,
+                density_max=cfg.density_max_factor,
+            )
+            return holes
+
+        # Geometric patterns
+        dispatchers: dict[str, object] = {
+            "hex": InsertGenerator._layout_hex,
+            "grid": InsertGenerator._layout_grid,
+            "diamond": InsertGenerator._layout_diamond_geo,
+            "voronoi": InsertGenerator._layout_voronoi,
+        }
+        fn = dispatchers.get(pattern, InsertGenerator._layout_hex)
+        holes = fn(half_span, cfg)  # type: ignore[operator]
+
+        # Apply field-driven radius modulation (continuous, not binary)
+        if cfg.variable_density:
+            holes = InsertGenerator._apply_variable_density(
+                holes, half_span,
+                field_type=cfg.density_field,
+                min_factor=cfg.density_min_factor,
+                max_factor=cfg.density_max_factor,
+            )
+        return holes
+
+    # ── Geometric layout helpers ──────────────────────────────────────
+
+    @staticmethod
+    def _layout_hex(
+        half_span: float, cfg: "InsertConfig",
+    ) -> list[tuple[float, float, float]]:
+        """Classic hex-grid hole centres in u-v space."""
+        hole_r = cfg.mesh_hole_size / 2
+        plate_area = (2 * half_span) ** 2
+        n_target = max(4, int(plate_area * cfg.mesh_hole_density / (cfg.mesh_hole_size ** 2)))
+        n_target = min(n_target, 300)
+
+        spacing = np.sqrt(plate_area / max(n_target, 1)) * 0.92
+        margin = hole_r * 1.5
+        lo, hi = -half_span + margin, half_span - margin
+
+        centres: list[tuple[float, float, float]] = []
+        row = 0
+        v = lo
+        while v < hi:
+            u_off = (spacing * 0.5) * (row % 2)
+            u = lo + u_off
+            while u < hi:
+                centres.append((float(u), float(v), float(hole_r)))
+                u += spacing
+            v += spacing * np.sqrt(3) / 2
+            row += 1
+        if len(centres) > n_target:
+            step = max(1, len(centres) // n_target)
+            centres = centres[::step][:n_target]
+        return centres
+
+    @staticmethod
+    def _layout_grid(
+        half_span: float, cfg: "InsertConfig",
+    ) -> list[tuple[float, float, float]]:
+        """Square grid pattern."""
+        hole_r = cfg.mesh_hole_size / 2
+        plate_area = (2 * half_span) ** 2
+        n_target = max(4, int(plate_area * cfg.mesh_hole_density / (cfg.mesh_hole_size ** 2)))
+        n_target = min(n_target, 300)
+        spacing = np.sqrt(plate_area / max(n_target, 1))
+        margin = hole_r * 1.5
+        lo, hi = -half_span + margin, half_span - margin
+
+        centres: list[tuple[float, float, float]] = []
+        v = lo
+        while v < hi:
+            u = lo
+            while u < hi:
+                centres.append((float(u), float(v), float(hole_r)))
+                u += spacing
+            v += spacing
+        return centres[:n_target]
+
+    @staticmethod
+    def _layout_diamond_geo(
+        half_span: float, cfg: "InsertConfig",
+    ) -> list[tuple[float, float, float]]:
+        """Diamond geometric pattern: 45°-rotated square grid."""
+        hole_r = cfg.mesh_hole_size / 2
+        plate_area = (2 * half_span) ** 2
+        n_target = max(4, int(plate_area * cfg.mesh_hole_density / (cfg.mesh_hole_size ** 2)))
+        n_target = min(n_target, 300)
+        spacing = np.sqrt(plate_area / max(n_target, 1))
+        margin = hole_r * 1.5
+        lo, hi = -half_span + margin, half_span - margin
+        cos45, sin45 = np.cos(np.pi / 4), np.sin(np.pi / 4)
+        centres: list[tuple[float, float, float]] = []
+        ext = half_span * 1.6
+        v = -ext
+        while v < ext:
+            u = -ext
+            while u < ext:
+                ru = u * cos45 - v * sin45
+                rv = u * sin45 + v * cos45
+                if lo <= ru <= hi and lo <= rv <= hi:
+                    centres.append((float(ru), float(rv), float(hole_r)))
+                u += spacing
+            v += spacing
+        return centres[:n_target]
+
+    @staticmethod
+    def _layout_voronoi(
+        half_span: float, cfg: "InsertConfig",
+    ) -> list[tuple[float, float, float]]:
+        """Voronoi-based stochastic pattern with 5× Lloyd relaxation."""
+        hole_r = cfg.mesh_hole_size / 2
+        plate_area = (2 * half_span) ** 2
+        n_target = max(4, int(plate_area * cfg.mesh_hole_density / (cfg.mesh_hole_size ** 2)))
+        n_target = min(n_target, 300)
+        margin = hole_r * 1.5
+        lo, hi = -half_span + margin, half_span - margin
+        rng = np.random.default_rng(42)
+        pts = rng.uniform(lo, hi, size=(n_target * 2, 2))
+        from scipy.spatial import Voronoi
+        for _ in range(5):
+            try:
+                vor = Voronoi(pts)
+                new_pts = []
+                for i, reg_idx in enumerate(vor.point_region):
+                    region = vor.regions[reg_idx]
+                    if -1 in region or len(region) == 0:
+                        new_pts.append(pts[i])
+                        continue
+                    verts = vor.vertices[region]
+                    centroid = verts.mean(axis=0)
+                    centroid = np.clip(centroid, lo, hi)
+                    new_pts.append(centroid)
+                pts = np.array(new_pts)
+            except Exception as exc:
+                logger.debug("Voronoi Lloyd iteration failed: %s", exc)
+                break
+        pts = pts[(pts[:, 0] >= lo) & (pts[:, 0] <= hi) & (pts[:, 1] >= lo) & (pts[:, 1] <= hi)]
+        return [(float(p[0]), float(p[1]), float(hole_r)) for p in pts[:n_target]]
+
+    # ── Variable density (legacy compat — new code uses tpms.apply_field_modulation) ──
+
+    @staticmethod
+    def _apply_variable_density(
+        holes: list[tuple[float, float, float]],
+        half_span: float,
+        field_type: str = "edge",
+        min_factor: float = 0.3,
+        max_factor: float = 1.0,
+    ) -> list[tuple[float, float, float]]:
+        """Field-driven radius modulation.  Smoothly varies hole *size* instead
+        of binary removal for nTopology-style graded perforations.
+        """
+        from moldgen.core.tpms import _field_value
+        result: list[tuple[float, float, float]] = []
+        for u, v, r in holes:
+            t = _field_value(u, v, half_span, field_type)
+            factor = min_factor + (max_factor - min_factor) * t
+            new_r = r * factor
+            if new_r >= r * 0.3:
+                result.append((u, v, new_r))
+        return result
+
+    @staticmethod
+    def _rib_vertex_mask(
+        flat_u: np.ndarray,
+        flat_v: np.ndarray,
+        half_span: float,
+        cfg: "InsertConfig",
+    ) -> np.ndarray:
+        """Boolean mask selecting vertices that sit on a rib cross-hatch line."""
+        hw = cfg.rib_width / 2
+        spacing = cfg.rib_spacing
+        mask = np.zeros(len(flat_u), dtype=bool)
+
+        n_u = max(1, int(2 * half_span / spacing))
+        for i in range(n_u):
+            u_pos = -half_span + (i + 0.5) * 2 * half_span / n_u
+            mask |= np.abs(flat_u - u_pos) < hw
+
+        n_v = max(1, int(2 * half_span / spacing))
+        for i in range(n_v):
+            v_pos = -half_span + (i + 0.5) * 2 * half_span / n_v
+            mask |= np.abs(flat_v - v_pos) < hw
+
+        return mask
+
+    @staticmethod
+    def _rib_distance_field(
+        flat_u: np.ndarray,
+        flat_v: np.ndarray,
+        half_span: float,
+        cfg: "InsertConfig",
+    ) -> np.ndarray:
+        """Signed distance from each vertex to the nearest rib centre-line.
+
+        Used by the raised-cosine rib profile to smoothly taper the
+        displacement from full height at the centre to zero at the edge.
+        """
+        spacing = cfg.rib_spacing
+        dist = np.full(len(flat_u), float("inf"))
+
+        n_u = max(1, int(2 * half_span / spacing))
+        for i in range(n_u):
+            u_pos = -half_span + (i + 0.5) * 2 * half_span / n_u
+            dist = np.minimum(dist, np.abs(flat_u - u_pos))
+
+        n_v = max(1, int(2 * half_span / spacing))
+        for i in range(n_v):
+            v_pos = -half_span + (i + 0.5) * 2 * half_span / n_v
+            dist = np.minimum(dist, np.abs(flat_v - v_pos))
+
+        return dist
+
+    def _adaptive_grid_res(
+        self,
+        half_span: float,
+        integrate_holes: bool,
+        integrate_ribs: bool,
+    ) -> int:
+        """Compute grid resolution so features have enough cells to look clean.
+
+        For holes: ~20 cells per hole gives a good circular approximation.
+        For ribs:  >=3 grid points across each rib width for a smooth profile.
+        """
+        cfg = self.config
+        span = 2 * half_span
+
+        # Baseline: reasonable display quality
+        res_base = max(20, int(span / 2.0))
+
+        # Holes: need spacing small enough that each hole covers ~20 cells
+        res_holes = 0
+        if integrate_holes and cfg.mesh_hole_size > 0:
+            hole_r = cfg.mesh_hole_size / 2
+            target_cells = 20
+            max_spacing = hole_r / np.sqrt(target_cells / np.pi)
+            res_holes = int(np.ceil(span / max_spacing))
+
+        # Ribs: >=3 points per rib width
+        res_ribs = 0
+        if integrate_ribs and cfg.rib_width > 0:
+            max_spacing_rib = cfg.rib_width / 3.0
+            res_ribs = int(np.ceil(span / max_spacing_rib))
+
+        grid_res = max(res_base, res_holes, res_ribs)
+
+        boost = getattr(cfg, "_grid_res_boost", 1.0)
+        if boost > 1.0:
+            grid_res = int(grid_res * boost)
+
+        grid_res = min(grid_res, 200)
+
+        logger.info(
+            "Adaptive grid: span=%.0fmm, base=%d, holes=%d, ribs=%d -> res=%d (spacing=%.2fmm)",
+            span, res_base, res_holes, res_ribs, grid_res, span / grid_res,
+        )
+        return grid_res
+
+    # ------------------------------------------------------------------
+    # Mesh quality analysis (iterative convergence)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def analyze_plate_quality(
+        plate_mesh: trimesh.Trimesh,
+        cfg: "InsertConfig",
+        grid_res: int,
+        half_span: float,
+    ) -> dict:
+        """Compute quality metrics for a conformal plate.
+
+        Returns a dict of metrics and a boolean ``converged`` flag.
+        """
+        n_faces = len(plate_mesh.faces)
+        total_area = plate_mesh.area
+        avg_area = total_area / max(n_faces, 1)
+        spacing = 2 * half_span / max(grid_res, 1)
+
+        metrics: dict = {
+            "grid_res": grid_res,
+            "spacing_mm": round(spacing, 3),
+            "n_faces": n_faces,
+            "total_area_mm2": round(total_area, 1),
+            "avg_face_area_mm2": round(avg_area, 3),
+        }
+
+        converged = True
+
+        if cfg.add_mesh_holes and cfg.mesh_hole_size > 0:
+            hole_r = cfg.mesh_hole_size / 2
+            cells_per_hole = np.pi * (hole_r / max(spacing, 0.01)) ** 2
+            metrics["cells_per_hole"] = round(cells_per_hole, 1)
+            if cells_per_hole < 12:
+                converged = False
+                metrics["hole_quality"] = "LOW — increase grid_res"
+            elif cells_per_hole < 20:
+                metrics["hole_quality"] = "MEDIUM"
+            else:
+                metrics["hole_quality"] = "HIGH"
+
+        if cfg.add_ribs and cfg.rib_width > 0:
+            pts_per_rib = cfg.rib_width / max(spacing, 0.01)
+            metrics["pts_per_rib_width"] = round(pts_per_rib, 1)
+            if pts_per_rib < 2:
+                converged = False
+                metrics["rib_quality"] = "LOW — increase grid_res"
+            elif pts_per_rib < 3:
+                metrics["rib_quality"] = "MEDIUM"
+            else:
+                metrics["rib_quality"] = "HIGH"
+
+        metrics["converged"] = converged
+        return metrics
 
     def _generate_ribbed(self, model: MeshData, pos: InsertPosition) -> trimesh.Trimesh:
         flat = self._generate_flat(model, pos)
@@ -672,39 +1570,84 @@ class InsertGenerator:
             return flat
 
     def _apply_ribs(self, plate_mesh: trimesh.Trimesh, pos: InsertPosition) -> trimesh.Trimesh:
-        """Add reinforcement ribs to an existing plate mesh."""
+        """Add reinforcement ribs ON the plate surface by extruding face strips.
+
+        Algorithm:
+          1. Project face centroids to a local u-v coordinate system on the
+             plate's reference plane.
+          2. Select grid-aligned strips of faces for each rib line.
+          3. Extrude each selected face outward along its own normal by
+             *rib_height*, creating triangular prisms that naturally follow
+             the surface curvature.
+        """
         cfg = self.config
-        normal = pos.normal
-        main_ax = int(np.argmax(np.abs(normal)))
-        bounds = np.array([plate_mesh.vertices.min(axis=0), plate_mesh.vertices.max(axis=0)])
-        center = (bounds[0] + bounds[1]) / 2
-        extents = bounds[1] - bounds[0]
-        axes = [i for i in range(3) if i != main_ax]
-
-        ribs: list[trimesh.Trimesh] = []
-        for ax_idx in axes:
-            lo = float(bounds[0][ax_idx]) + cfg.rib_spacing / 2
-            hi = float(bounds[1][ax_idx]) - cfg.rib_spacing / 2
-            n_ribs = max(1, int((hi - lo) / cfg.rib_spacing) + 1)
-            for ri in range(n_ribs):
-                pos_val = lo + ri * cfg.rib_spacing if n_ribs > 1 else (lo + hi) / 2
-                rib_ext = [0.0, 0.0, 0.0]
-                rib_ext[ax_idx] = cfg.rib_width
-                other = [a for a in axes if a != ax_idx][0] if len(axes) > 1 else axes[0]
-                rib_ext[other] = float(extents[other]) * 0.9
-                rib_ext[main_ax] = cfg.rib_height
-                rib_c = center.copy()
-                rib_c[ax_idx] = pos_val
-                rib_c[main_ax] += (cfg.thickness / 2 + cfg.rib_height / 2) * (1 if normal[main_ax] >= 0 else -1)
-                rib = trimesh.creation.box(extents=rib_ext)
-                rib.apply_translation(rib_c)
-                ribs.append(rib)
-
-        if not ribs:
+        if len(plate_mesh.faces) < 4:
             return plate_mesh
+
+        normal = np.asarray(pos.normal, dtype=np.float64)
+        up = normal / (np.linalg.norm(normal) + 1e-12)
+        arb = np.array([1.0, 0, 0]) if abs(up[0]) < 0.9 else np.array([0.0, 1, 0])
+        u_ax = np.cross(up, arb); u_ax /= (np.linalg.norm(u_ax) + 1e-12)
+        v_ax = np.cross(up, u_ax); v_ax /= (np.linalg.norm(v_ax) + 1e-12)
+
+        fc = plate_mesh.triangles_center
+        fn = plate_mesh.face_normals
+        centroid = fc.mean(axis=0)
+
+        u_coords = (fc - centroid) @ u_ax
+        v_coords = (fc - centroid) @ v_ax
+        u_span = float(u_coords.max() - u_coords.min())
+        v_span = float(v_coords.max() - v_coords.min())
+
+        # Outer-facing faces: normal has positive component along `up`
+        outer_mask = np.einsum("ij,j->i", fn, up) > 0
+        if np.sum(outer_mask) < 2:
+            outer_mask = np.ones(len(fn), dtype=bool)
+
+        rib_faces: set[int] = set()
+
+        for coord, span in [(u_coords, u_span), (v_coords, v_span)]:
+            n_ribs = max(1, int(span / cfg.rib_spacing))
+            c_min = float(coord.min())
+            for ri in range(n_ribs):
+                c_pos = c_min + (ri + 0.5) * span / n_ribs
+                strip = (np.abs(coord - c_pos) < cfg.rib_width * 0.6) & outer_mask
+                rib_faces.update(np.where(strip)[0].tolist())
+
+        if not rib_faces:
+            return plate_mesh
+
+        prisms: list[trimesh.Trimesh] = []
+        for fi in rib_faces:
+            tri = plate_mesh.triangles[fi]         # (3, 3)
+            n_vec = fn[fi]
+            n_len = np.linalg.norm(n_vec)
+            if n_len < 1e-10:
+                continue
+            n_vec = n_vec / n_len
+
+            outer = tri + n_vec * cfg.rib_height
+            verts = np.vstack([tri, outer])        # (6, 3)
+            faces = np.array([
+                [0, 2, 1], [3, 4, 5],             # caps
+                [0, 3, 5], [0, 5, 2],             # sides
+                [2, 5, 4], [2, 4, 1],
+                [1, 4, 3], [1, 3, 0],
+            ])
+            prisms.append(trimesh.Trimesh(vertices=verts, faces=faces, process=False))
+
+        if not prisms:
+            return plate_mesh
+
+        MAX_PRISMS = 400
+        if len(prisms) > MAX_PRISMS:
+            step = max(1, len(prisms) // MAX_PRISMS)
+            prisms = prisms[::step][:MAX_PRISMS]
+
         try:
-            combined = trimesh.util.concatenate([plate_mesh] + ribs)
+            combined = trimesh.util.concatenate([plate_mesh] + prisms)
             _clean_mesh(combined)
+            logger.info("Ribs: %d face prisms on plate (%d total faces)", len(prisms), len(combined.faces))
             return combined
         except Exception:
             return plate_mesh
@@ -797,17 +1740,171 @@ class InsertGenerator:
     # ═══════════════════════ Anchor Features ═══════════════════════════
 
     def _add_mesh_holes(self, plate: trimesh.Trimesh, n: int, size: float) -> tuple[trimesh.Trimesh, np.ndarray]:
+        """Cut through-holes in the plate for silicone penetration.
+
+        Strategy:
+          1. Watertight plate → manifold3d boolean subtraction (precise).
+          2. Non-watertight (conformal) → subdivide mesh to increase face
+             density, then remove faces within hole radius.
+        """
         points = self._sample_pts(plate, n * 3)
         selected = self._farthest_point_sampling(points, n)
-        result = plate
-        for pt in selected:
-            hole = trimesh.creation.cylinder(radius=size / 2, height=self.config.thickness * 3, sections=8)
-            hole.apply_translation(pt)
-            with contextlib.suppress(Exception):
-                r = result.difference(hole)
-                if r is not None and len(r.faces) > 4:
-                    result = r
+
+        if plate.is_watertight:
+            result = self._boolean_mesh_holes(plate, selected, size)
+            if result is not None:
+                logger.info("Mesh holes: boolean cut %d holes", len(selected))
+                return result, selected
+
+        work = self._subdivide_for_holes(plate, size)
+        result = self._face_removal_mesh_holes(work, selected, size)
         return result, selected
+
+    def _subdivide_for_holes(
+        self, plate: trimesh.Trimesh, hole_size: float,
+    ) -> trimesh.Trimesh:
+        """Subdivide a mesh until faces are small enough for clean hole cutting."""
+        target_area = (hole_size * 0.4) ** 2
+        avg_area = plate.area / max(len(plate.faces), 1)
+        result = plate
+        for _ in range(3):
+            if avg_area <= target_area:
+                break
+            try:
+                new_v, new_f = trimesh.remesh.subdivide(
+                    result.vertices, result.faces,
+                )
+                result = trimesh.Trimesh(vertices=new_v, faces=new_f, process=True)
+                avg_area = result.area / max(len(result.faces), 1)
+            except Exception:
+                break
+        logger.info(
+            "Subdivide for holes: %d → %d faces (avg area %.2f mm²)",
+            len(plate.faces), len(result.faces), avg_area,
+        )
+        return result
+
+    def _boolean_mesh_holes(
+        self, plate: trimesh.Trimesh, centers: np.ndarray, size: float,
+    ) -> trimesh.Trimesh | None:
+        avg_normal = self._plate_avg_normal(plate)
+        result = plate
+        holes_cut = 0
+        for pt in centers:
+            local_n = self._local_face_normal(result, pt, avg_normal)
+            hole = trimesh.creation.cylinder(
+                radius=size / 2, height=self.config.thickness * 4, sections=12,
+            )
+            rot = self._align_z_to(local_n)
+            hole.apply_transform(rot)
+            hole.apply_translation(pt)
+            new_result = self._manifold_subtract(result, hole)
+            if new_result is not None:
+                result = new_result
+                holes_cut += 1
+        return result if holes_cut > 0 else None
+
+    def _face_removal_mesh_holes(
+        self, plate: trimesh.Trimesh, centers: np.ndarray, size: float,
+    ) -> trimesh.Trimesh:
+        """Remove faces whose centroid or any vertex is within the hole radius."""
+        radius = size / 2
+        face_centers = plate.triangles_center
+        face_verts = plate.triangles
+        keep = np.ones(len(plate.faces), dtype=bool)
+
+        for pt in centers:
+            cd = np.linalg.norm(face_centers - pt, axis=1)
+            v0 = np.linalg.norm(face_verts[:, 0] - pt, axis=1)
+            v1 = np.linalg.norm(face_verts[:, 1] - pt, axis=1)
+            v2 = np.linalg.norm(face_verts[:, 2] - pt, axis=1)
+            hit = (cd < radius) | (v0 < radius) | (v1 < radius) | (v2 < radius)
+            keep &= ~hit
+
+        n_removed = int(np.sum(~keep))
+        if n_removed == 0:
+            logger.warning("Mesh holes: no faces removed (hole_size=%.1fmm)", size)
+            return plate
+
+        result = plate.copy()
+        result.update_faces(keep)
+        result.remove_unreferenced_vertices()
+        logger.info("Mesh holes (face-removal): removed %d / %d faces", n_removed, len(plate.faces))
+        return result
+
+    # ─── boolean / geometry helpers for mesh holes ────────────
+
+    def _plate_avg_normal(self, plate: trimesh.Trimesh) -> np.ndarray:
+        fn = plate.face_normals
+        if len(fn) > 0:
+            avg = fn.mean(axis=0)
+            nrm = np.linalg.norm(avg)
+            if nrm > 1e-10:
+                return avg / nrm
+        return np.array([0.0, 0.0, 1.0])
+
+    def _local_face_normal(
+        self, plate: trimesh.Trimesh, point: np.ndarray, fallback: np.ndarray,
+    ) -> np.ndarray:
+        try:
+            _, _, face_idx = plate.nearest.on_surface([point])
+            if face_idx is not None and len(face_idx) > 0:
+                n = plate.face_normals[face_idx[0]]
+                if np.linalg.norm(n) > 1e-10:
+                    return n
+        except Exception:
+            pass
+        return fallback
+
+    @staticmethod
+    def _align_z_to(target: np.ndarray) -> np.ndarray:
+        """4x4 rotation that maps +Z to *target*."""
+        z = np.array([0.0, 0.0, 1.0])
+        t = target / (np.linalg.norm(target) + 1e-12)
+        dot = float(np.dot(z, t))
+        if dot > 1.0 - 1e-8:
+            return np.eye(4)
+        if dot < -1.0 + 1e-8:
+            arb = np.array([1.0, 0.0, 0.0]) if abs(z[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+            perp = np.cross(z, arb)
+            perp /= np.linalg.norm(perp)
+            return trimesh.transformations.rotation_matrix(np.pi, perp)
+        axis = np.cross(z, t)
+        axis /= np.linalg.norm(axis)
+        angle = np.arccos(np.clip(dot, -1.0, 1.0))
+        return trimesh.transformations.rotation_matrix(angle, axis)
+
+    @staticmethod
+    def _manifold_subtract(
+        mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh,
+    ) -> trimesh.Trimesh | None:
+        try:
+            import manifold3d
+            m_a = manifold3d.Manifold(manifold3d.Mesh(
+                vert_properties=np.asarray(mesh_a.vertices, dtype=np.float32),
+                tri_verts=np.asarray(mesh_a.faces, dtype=np.uint32),
+            ))
+            m_b = manifold3d.Manifold(manifold3d.Mesh(
+                vert_properties=np.asarray(mesh_b.vertices, dtype=np.float32),
+                tri_verts=np.asarray(mesh_b.faces, dtype=np.uint32),
+            ))
+            diff = m_a - m_b
+            out = diff.to_mesh()
+            tm = trimesh.Trimesh(
+                vertices=np.asarray(out.vert_properties[:, :3]),
+                faces=np.asarray(out.tri_verts), process=True,
+            )
+            if len(tm.faces) > 4:
+                return tm
+        except Exception:
+            pass
+        try:
+            r = mesh_a.difference(mesh_b)
+            if r is not None and len(r.faces) > 4:
+                return r
+        except Exception:
+            pass
+        return None
 
     def _add_bumps(self, plate: trimesh.Trimesh, n: int, size: float) -> tuple[trimesh.Trimesh, np.ndarray]:
         points = self._sample_pts(plate, n * 3)
@@ -890,7 +1987,15 @@ class InsertGenerator:
         centrality = max(0, min(1, 1 - 2 * abs(plane_d - cv) / span)) if span > 0 else 0.5
         return min(1.0, max(0.0, 0.5 * ar + 0.35 * centrality + 0.15 * (0.1 if axis_idx >= 0 else 0)))
 
-    def _get_cross_section(self, tm: trimesh.Trimesh, normal: np.ndarray, plane_d: float) -> trimesh.Trimesh | None:
+    def _get_cross_section(
+        self, tm: trimesh.Trimesh, normal: np.ndarray, plane_d: float,
+        thickness: float = 2.0,
+    ) -> trimesh.Trimesh | None:
+        """Cross-section → Shapely polygon → watertight extruded solid.
+
+        The resulting mesh is guaranteed watertight, enabling reliable
+        boolean operations for mesh holes and other features.
+        """
         try:
             work = tm
             if len(tm.faces) > 20000:
@@ -905,9 +2010,10 @@ class InsertGenerator:
                 if poly is not None:
                     if hasattr(poly, 'simplify') and len(poly.exterior.coords) > 200:
                         poly = poly.simplify(0.5, preserve_topology=True)
-                    mesh_2d = trimesh.creation.extrude_polygon(poly, height=0.1)
-                    mesh_2d.apply_transform(np.linalg.inv(transform))
-                    return mesh_2d
+                    plate = trimesh.creation.extrude_polygon(poly, height=thickness)
+                    plate.apply_translation([0, 0, -thickness / 2])
+                    plate.apply_transform(np.linalg.inv(transform))
+                    return plate
         except Exception:
             pass
         return None

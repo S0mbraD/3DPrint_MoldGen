@@ -10,9 +10,9 @@
 │  React 18 │ TypeScript │ Three.js │ R3F │ WebGPU                      │
 │  Zustand │ TanStack Query │ Framer Motion │ Tailwind │ shadcn/ui      │
 ├──────────────────────────────────────────────────────────────────────┤
-│                          AI Services (NEW)                            │
-│  DeepSeek V3 (对话/Agent) │ 通义万相 (图像生成) │ Tripo3D (3D生成)     │
-│  Qwen-VL (多模态视觉)    │ OpenAI 兼容 SDK                           │
+│                      AI Services (Cloud + Local)                      │
+│  Cloud: DeepSeek V3 │ 通义万相 │ Tripo3D │ Qwen-VL │ Kimi           │
+│  Local: SDXL/FLUX.1 (图像) │ TripoSR/TRELLIS (3D) │ Diffusers      │
 ├──────────────────────────────────────────────────────────────────────┤
 │                      Backend: Python 3.11+ / FastAPI                  │
 ├──────────────────────────────────────────────────────────────────────┤

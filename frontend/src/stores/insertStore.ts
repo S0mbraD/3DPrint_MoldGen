@@ -36,6 +36,12 @@ export interface InsertPlateInfo {
   center: number[];
 }
 
+export interface HoleBrushRegion {
+  u: number;
+  v: number;
+  radius: number;
+}
+
 interface InsertState {
   positions: InsertPosition[];
   setPositions: (p: InsertPosition[]) => void;
@@ -57,6 +63,20 @@ interface InsertState {
 
   isGenerating: boolean;
   setGenerating: (v: boolean) => void;
+
+  // Brush painting (holes + ribs)
+  brushMode: "holes" | "ribs";
+  setBrushMode: (m: "holes" | "ribs") => void;
+  holeBrushActive: boolean;
+  setHoleBrushActive: (v: boolean) => void;
+  holeBrushSize: number;
+  setHoleBrushSize: (v: number) => void;
+  holeBrushRegions: HoleBrushRegion[];
+  addHoleBrushRegion: (r: HoleBrushRegion) => void;
+  clearHoleBrushRegions: () => void;
+  ribBrushRegions: HoleBrushRegion[];
+  addRibBrushRegion: (r: HoleBrushRegion) => void;
+  clearRibBrushRegions: () => void;
 }
 
 export const useInsertStore = create<InsertState>((set) => ({
@@ -80,4 +100,19 @@ export const useInsertStore = create<InsertState>((set) => ({
 
   isGenerating: false,
   setGenerating: (isGenerating) => set({ isGenerating }),
+
+  brushMode: "holes",
+  setBrushMode: (brushMode) => set({ brushMode }),
+  holeBrushActive: false,
+  setHoleBrushActive: (holeBrushActive) => set({ holeBrushActive }),
+  holeBrushSize: 15,
+  setHoleBrushSize: (holeBrushSize) => set({ holeBrushSize }),
+  holeBrushRegions: [],
+  addHoleBrushRegion: (r) =>
+    set((s) => ({ holeBrushRegions: [...s.holeBrushRegions, r] })),
+  clearHoleBrushRegions: () => set({ holeBrushRegions: [] }),
+  ribBrushRegions: [],
+  addRibBrushRegion: (r) =>
+    set((s) => ({ ribBrushRegions: [...s.ribBrushRegions, r] })),
+  clearRibBrushRegions: () => set({ ribBrushRegions: [] }),
 }));

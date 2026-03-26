@@ -128,6 +128,8 @@ class SimulationResult:
     voxel_origin: np.ndarray | None = None
     voxel_pitch: float = 0.0
     voxel_mask: np.ndarray | None = None
+    # Gate position (world coordinates) for streamline seeding
+    gate_position: np.ndarray | None = None
     # Analysis report
     analysis: AnalysisReport | None = None
 
@@ -377,6 +379,7 @@ class FlowSimulator:
             voxel_origin=origin,
             voxel_pitch=pitch,
             voxel_mask=voxels,
+            gate_position=np.asarray(gating.gate.position, dtype=np.float64),
             analysis=report,
         )
 
@@ -729,6 +732,10 @@ class FlowSimulator:
                     "severity": round(float(d.severity), 3),
                 })
 
+        gate_pos: list[float] | None = None
+        if result.gate_position is not None:
+            gate_pos = [round(float(v), 3) for v in result.gate_position]
+
         sf = _safe_float
         return {
             "n_points": len(positions),
@@ -748,6 +755,7 @@ class FlowSimulator:
             "max_thickness": round(sf(max_th), 2),
             "voxel_pitch": round(sf(pitch), 3),
             "defect_positions": defect_positions,
+            "gate_position": gate_pos,
         }
 
     def extract_cross_section(

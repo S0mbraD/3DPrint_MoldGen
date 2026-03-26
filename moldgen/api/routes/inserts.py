@@ -61,6 +61,12 @@ class GenerateInsertRequest(BaseModel):
     # Feature toggles
     add_mesh_holes: bool = False
     mesh_hole_size: float = 2.0
+    hole_pattern: str = "hex"  # hex|grid|diamond|voronoi|gyroid|schwarz_p|schwarz_d|neovius|lidinoid|iwp|frd
+    variable_density: bool = False
+    density_field: str = "edge"  # edge|center|radial|stress|uniform
+    tpms_cell_size: float | None = None
+    tpms_z_slice: float = 0.0
+    max_holes: int = 300
     add_ribs: bool = False
     rib_height: float = 3.0
     rib_spacing: float = 8.0
@@ -70,6 +76,10 @@ class GenerateInsertRequest(BaseModel):
     pillar_diameter: float = 2.0
     pillar_count: int = 4
     pillar_side: str = "auto"
+    # Manual hole planning (list of {u, v, radius} in mm relative to plate center)
+    custom_hole_regions: list[dict] | None = None
+    # Manual rib planning (list of {u, v, radius} in mm relative to plate center)
+    custom_rib_regions: list[dict] | None = None
     # Legacy compat
     anchor_type: str | None = None
     anchor_density: float = 0.3
@@ -126,6 +136,12 @@ async def generate_inserts(req: GenerateInsertRequest):
         conformal_offset=req.conformal_offset,
         add_mesh_holes=req.add_mesh_holes,
         mesh_hole_size=req.mesh_hole_size,
+        hole_pattern=req.hole_pattern,
+        variable_density=req.variable_density,
+        density_field=req.density_field,
+        tpms_cell_size=req.tpms_cell_size,
+        tpms_z_slice=req.tpms_z_slice,
+        max_holes=req.max_holes,
         add_ribs=req.add_ribs,
         rib_height=req.rib_height,
         rib_spacing=req.rib_spacing,
@@ -134,6 +150,8 @@ async def generate_inserts(req: GenerateInsertRequest):
         pillar_diameter=req.pillar_diameter,
         pillar_count=req.pillar_count,
         pillar_side=req.pillar_side,
+        custom_hole_regions=req.custom_hole_regions,
+        custom_rib_regions=req.custom_rib_regions,
     )
 
     gen = InsertGenerator(config)

@@ -1053,7 +1053,263 @@ E_a/R ≈ 5000 K
   └─ 4. 前端: 逐顶点着色 (vertex colors) 渲染热力图叠加
 ```
 
-## 12. AI 辅助模型生成流程（新增）
+## 12. nTopology 级几何分析算法 (v6 新增)
+
+### 12.1 壁厚分析 — 多射线逐顶点估计
+
+```
+算法:
+  对每个顶点 v, 沿 n_rays 条方向发射射线:
+    ray_0 = -normal_v               (主方向)
+    ray_i = -normal_v + jitter_i    (抖动方向, i=1..n_rays-1)
+  
+  对每条射线, 从 v + dir × ε 出发做射线-网格求交:
+    hit_dist = ||intersection - origin||
+    thickness[v] = min(thickness[v], hit_dist)
+  
+  后处理:
+    thickness = clip(thickness, 0, max_distance)
+    thin_count = count(thickness < thin_threshold)
+    histogram = np.histogram(finite_thickness, bins=20)
+
+复杂度: O(N × n_rays × R), R = 射线求交 (BVH 加速)
+参考: nTopology Wall Thickness Check, Materialise Magics
+```
+
+### 12.2 离散曲率计算
+
+```
+Gaussian 曲率 (角亏法 / Angle Defect):
+  K(v) = (2π - Σ θ_ij) / A(v)
+  
+  其中 θ_ij 为顶点 v 在三角形 (v, v_i, v_j) 中的内角
+  A(v) = Σ area(face) / 3  (Voronoi 面积)
+  
+  计算步骤:
+    1. 对每个面 (i, j, k):
+       计算三个内角 α_i, α_j, α_k
+    2. 角亏 defect[v] = 2π - Σ(v 所在面的内角)
+    3. 面积和 area_sum[v] = Σ(v 所在面面积) / 3
+    4. K[v] = defect[v] / area_sum[v]
+
+Mean 曲率:
+  使用 trimesh.curvature.discrete_mean_curvature_measure
+  回退: H(v) = K(v) × 0.5
+
+参考: Meyer et al. "Discrete Differential-Geometry Operators for
+      Triangulated 2-Manifolds" (2003)
+```
+
+### 12.3 拔模角分析
+
+```
+对每个面 f, 拔模角定义为:
+  draft_angle = 90° - arccos(|n_f · pull_direction|)
+  等价于: draft_angle = arcsin(|n_f · pull_direction|)
+
+倒扣检测:
+  undercut = (n_f · pull_direction < 0)
+  
+临界面:
+  critical = (draft_angle < critical_threshold)  — 默认 3°
+
+输出:
+  per_face_angle: (M,) 逐面拔模角度
+  undercut_fraction: 倒扣面积 / 总面积
+  critical_fraction: 临界面积 / 总面积
+  histogram: 角度分布直方图
+
+参考: nTopology Draft Analysis, Moldex3D Draft Angle Check
+```
+
+### 12.4 对称性分析
+
+```
+算法:
+  1. 中心化: verts_c = vertices - centroid
+  2. 构建 cKDTree(verts_c)
+  3. 对每个轴 (X, Y, Z):
+     a. 镜像: reflected = verts_c; reflected[:, axis] *= -1
+     b. 最近邻: dists, _ = tree.query(reflected)
+     c. 归一化: norm_dist = dists / extent(verts_c[:, axis])
+     d. 评分: score = max(0, 1 - 4 × mean(norm_dist))
+        score=1 表示完美对称, score=0 表示完全不对称
+  4. 最佳平面 = argmax(scores)
+  5. PCA: SVD(verts_c) → 主轴方向
+
+参考: nTopology Symmetry Detection, CGAL Symmetry Tools
+```
+
+### 12.5 悬垂分析 (3D 打印)
+
+```
+对每个面 f:
+  cos_angle = n_f · build_direction
+  face_angle = arccos(cos_angle)          — 面法线与打印方向的夹角
+  overhang = (face_angle > 90° + critical_angle)  — 默认 critical=45°
+
+等价判断: n_f · build_direction < -cos(critical_angle)
+
+输出:
+  per_face_overhang: (M,) 布尔掩码
+  overhang_fraction: 悬垂面数 / 总面数
+  overhang_area_mm2: 悬垂面积
+  total_area_mm2: 总面积
+
+参考: nTopology Overhang Detection, Autodesk Netfabb
+```
+
+### 12.6 高级平滑算法
+
+```
+Laplacian 平滑:
+  v'_i = v_i + λ × L(v_i)
+  L(v_i) = (1/|N(i)|) × Σ_{j∈N(i)} (v_j - v_i)
+  每次迭代沿 Laplacian 方向移动。缺点: 体积收缩。
+
+Taubin 平滑 (λ|μ):
+  交替两步:
+    v'  = v  + λ × L(v)     (收缩步, λ > 0)
+    v'' = v' + μ × L(v')    (膨胀步, μ < 0, |μ| > λ)
+  通常 λ=0.5, μ=-0.53。收缩与膨胀近似抵消, 保持体积。
+
+HC 平滑 (Humphrey's Classes):
+  1. p = original_vertices
+  2. 对每次迭代:
+     b = v + λ × L(v)          — Laplacian 步
+     d = b - (α × p + (1-α) × v)  — 偏差
+     v = b - (β × d + (1-β) × L(d))  — 修正
+  体积保持优于 Taubin, 适合精密模型。
+
+参考: Taubin (1995), Vollmer et al. (1999)
+```
+
+### 12.7 等尺重网格化
+
+```
+目标: 将网格边长统一到 target_edge_length
+
+算法 (subdivide-decimate 循环):
+  1. 计算 mean_edge = 平均边长
+  2. 如未指定 target, 使用 target = mean_edge
+  3. 细分: trimesh.remesh.subdivide_to_size(target × 0.8)
+  4. 简化: open3d.simplify_quadric_decimation(target_face_count)
+     target_face_count = surface_area / (√3/4 × target²)
+
+参考: nTopology Remesh, Mesquite Mesh Quality Improvement
+```
+
+### 12.8 表面增厚
+
+```
+将开放曲面网格转为封闭实体:
+
+算法:
+  1. 计算逐顶点法线 normals (N, 3)
+  2. 外壳: outer = vertices + normals × (thickness/2)  [direction=both]
+  3. 内壳: inner = vertices - normals × (thickness/2)
+  4. 反转内壳面片绕序: inner_faces = inner_faces[:, ::-1]
+  5. 缝合侧面: 检测边界边, 创建四边形连接内外壳边界
+  6. 合并: concatenate(outer_mesh, inner_mesh, side_mesh)
+
+direction 变体:
+  outward: outer = verts + normals × thickness; inner = verts
+  inward:  outer = verts; inner = verts - normals × thickness
+  both:    ±thickness/2
+
+参考: nTopology Thicken, Rhino OffsetMesh
+```
+
+### 12.9 TPMS 晶格生成 (v2 — 隐式场精确实现)
+
+```
+三周期极小曲面 (Triply Periodic Minimal Surface) 是零平均曲率的
+三维周期曲面，用于生成高性能晶格/网孔结构。
+
+── 隐式场数学定义 ────────────────────────────────────
+
+所有 TPMS 定义为 f(x,y,z) = 0 的零等值面:
+
+  Gyroid:     sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x)
+  Schwarz-P:  cos(x) + cos(y) + cos(z)
+  Schwarz-D:  sin(x)sin(y)sin(z) + sin(x)cos(y)cos(z)
+              + cos(x)sin(y)cos(z) + cos(x)cos(y)sin(z)
+  Neovius:    3(cos(x)+cos(y)+cos(z)) + 4·cos(x)cos(y)cos(z)
+  Lidinoid:   sin(2x)cos(y)sin(z) + sin(2y)cos(z)sin(x)
+              + sin(2z)cos(x)sin(y) - cos(2x)cos(2y)
+              - cos(2y)cos(2z) - cos(2z)cos(2x) + 0.3
+  IWP:        2(cos(x)cos(y) + cos(y)cos(z) + cos(z)cos(x))
+              - (cos(2x) + cos(2y) + cos(2z))
+  FRD:        4·cos(x)cos(y)cos(z)
+              - (cos(2x)cos(2y) + cos(2y)cos(2z) + cos(2z)cos(2x))
+
+参考: nTopology TPMS Equations, Schoen (1970)
+
+── 2D 切片网孔布局管线 ─────────────────────────────────
+
+对一块位于 z=z₀ 平面的支撑板:
+
+  1. 构造 (u,v) 高分辨率网格 (60-400 点/轴, 自适应):
+     ω = 2π / cell_size
+     grid: [−half_span + margin, half_span − margin]²
+
+  2. 求值: field[i,j] = f(ω·u_j, ω·v_i, ω·z₀)
+     零等值线 f=0 即为 TPMS "壁"
+     |f| 大的区域远离壁 → 适合放孔
+
+  3. 局部极值检测:
+     abs_field = |field|
+     local_max = scipy.ndimage.maximum_filter(abs_field, footprint)
+     peaks = (abs_field == local_max) & (abs_field > 0.15 × max)
+     footprint 尺寸 = min_spacing / du (保证间距)
+
+  4. 贪心选择 (距离约束):
+     按 |f| 降序排列极值点
+     逐个加入，跳过距已选点 < min_spacing 的点
+     上限 max_holes=300
+
+  5. 自适应半径:
+     ratio = |f(peak)| / max(|f|)
+     r = base_r × (0.5 + 0.5 × ratio)
+     → 远离壁的区域孔更大，靠近壁的区域孔更小
+
+复杂度: O(resolution² + N log N) (N = 极值点数)
+
+── 场驱动半径调制 ─────────────────────────────────────
+
+每个孔的半径经空间场连续调制 (非二元删除):
+
+  r_final = r × (min_factor + (max_factor − min_factor) × t)
+  t = field_value(u, v, half_span, field_type)
+
+  field_type:
+    "edge"    → t = 1 − edge_dist/hs      (边缘大、中心小)
+    "center"  → t = edge_dist/hs           (中心大、边缘小)
+    "radial"  → t = √(u²+v²) / (hs√2)     (径向渐增)
+    "stress"  → t = edge_dist/hs (代理)    (应力反比)
+    "uniform" → t = 0                       (全部最小)
+
+  若 r_final < 0.3 × r_original → 移除该孔
+
+── 几何图案 ─────────────────────────────────────────
+
+  Hex (蜂窝):  经典六角密堆积, 行交错 spacing/2
+  Grid (网格): 正方形等距阵列
+  Diamond (菱形): 45° 旋转正方形阵列
+  Voronoi:     随机撒种 + 5 轮 Lloyd 松弛 → 近均匀分布
+
+── 网孔雕刻质量 ─────────────────────────────────────
+
+  Phase 0: 预细分 — 2 轮选择性细分 [0.7r, 1.3r] 环形带
+  Phase 1: 面片删除 — 质心距孔心 < r 的面被移除
+  Phase 2: 边界拟合 — 边界顶点投射到理想圆周
+  Phase 3: 平滑 — 3 轮 Laplacian 平滑边界 1-ring
+
+参考: nTopology Lattice Library, Al-Ketan & Abu Al-Rub (2019)
+      "TPMS architectured materials: A review"
+```
+
+## 13. AI 辅助模型生成流程（新增）
 
 ### 11.1 文字→器官模型 全流程
 
@@ -1632,4 +1888,62 @@ AGENT_TOOLS = [
         }
     }
 ]
+```
+
+---
+
+## 13. nTopology 级隐式场与高级算法 (v10 新增)
+
+### 13.1 SDF (有符号距离场) 计算
+
+```
+Mesh → SDF 转换:
+  1. 计算 bounding box + padding → 均匀体素网格 (nz × ny × nx)
+  2. 对每个体素中心 P:
+     - closest_point(mesh, P) → 最近距离 d
+     - mesh.contains(P) → 内/外判定 (winding number)
+     - sdf(P) = d if outside, -d if inside
+  3. 存储为 float32 体素数组 + origin + spacing
+
+复杂度: O(N_voxels × log N_faces) (trimesh BVH 加速)
+```
+
+### 13.2 Smooth Boolean (Íñigo Quílez)
+
+```
+smooth_union(a, b, k):
+    h = clamp(0.5 + 0.5(b-a)/k, 0, 1)
+    return a·h + b·(1-h) - k·h·(1-h)
+
+k 参数控制混合圆角半径 (mm)。k→0 退化为 sharp boolean。
+```
+
+### 13.3 SIMP 拓扑优化
+
+```
+  E_e = ρ_e^p · E_0  (p=3)
+  min C = f^T u  subject to  Σρ_e/N ≤ V_frac
+  ∂C/∂ρ_e = -p · ρ_e^(p-1) · u_e^T K_e u_e
+  OC 更新 + 密度卷积滤波
+```
+
+### 13.4 3D 晶格单胞
+
+```
+BCC(8杆), FCC(15杆), Octet(BCC+FCC), Kelvin, Diamond
+TPMS 体积: |f(ωx,ωy,ωz)| - t/2 ≤ 0 → Marching Cubes
+Voronoi 泡沫: Lloyd 松弛 + k=2 最近邻距离差 → 壳体
+```
+
+### 13.5 干涉/间隙分析
+
+```
+双向最近点有符号距离 + 体素干涉体积估算
+```
+
+### 13.6 网格质量指标
+
+```
+aspect_ratio, min/max angle, edge_length stats
+euler=V-E+F, genus=(2-euler)/2, compactness=36πV²/A³
 ```

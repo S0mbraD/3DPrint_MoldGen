@@ -9,10 +9,13 @@ import {
   FlaskConical,
   Download,
   Settings,
+  Lock,
+  Check,
 } from "lucide-react";
 import type { WorkflowStep } from "../../stores/appStore";
 import { useAppStore } from "../../stores/appStore";
 import { cn } from "../../lib/utils";
+import { toastInfo } from "../../stores/toastStore";
 
 const STEPS: { key: WorkflowStep; label: string; icon: typeof Upload }[] = [
   { key: "import", label: "导入", icon: Upload },
@@ -26,7 +29,15 @@ const STEPS: { key: WorkflowStep; label: string; icon: typeof Upload }[] = [
 ];
 
 export function Toolbar() {
-  const { currentStep, setStep, toggleSettings } = useAppStore();
+  const { currentStep, setStep, toggleSettings, canNavigateTo, completedSteps } = useAppStore();
+
+  const handleStepClick = (key: WorkflowStep) => {
+    if (canNavigateTo(key)) {
+      setStep(key);
+    } else {
+      toastInfo("请先导入模型", "需要加载3D模型后才能进入此步骤");
+    }
+  };
 
   return (
     <div className="flex items-center gap-1 px-4 h-11 bg-bg-secondary border-b border-border">
@@ -34,7 +45,8 @@ export function Toolbar() {
         const Icon = step.icon;
         const active = currentStep === step.key;
         const stepIndex = STEPS.findIndex((s) => s.key === currentStep);
-        const completed = i < stepIndex;
+        const completed = completedSteps.has(step.key);
+        const locked = !canNavigateTo(step.key);
 
         return (
           <div key={step.key} className="flex items-center">
@@ -42,24 +54,32 @@ export function Toolbar() {
               <div
                 className={cn(
                   "w-6 h-px mx-1",
-                  completed ? "bg-accent" : "bg-border",
+                  completed ? "bg-accent" : i < stepIndex ? "bg-accent/40" : "bg-border",
                 )}
               />
             )}
             <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => setStep(step.key)}
+              whileHover={locked ? {} : { scale: 1.05 }}
+              whileTap={locked ? {} : { scale: 0.95 }}
+              onClick={() => handleStepClick(step.key)}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
-                active
-                  ? "bg-accent/20 text-accent"
-                  : completed
-                    ? "bg-bg-hover text-success"
-                    : "text-text-secondary hover:bg-bg-hover hover:text-text-primary",
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors relative",
+                locked
+                  ? "text-text-muted/40 cursor-not-allowed"
+                  : active
+                    ? "bg-accent/20 text-accent"
+                    : completed
+                      ? "bg-success/10 text-success"
+                      : "text-text-secondary hover:bg-bg-hover hover:text-text-primary",
               )}
             >
-              <Icon size={14} />
+              {completed && !active ? (
+                <Check size={12} className="text-success" />
+              ) : locked ? (
+                <Lock size={12} />
+              ) : (
+                <Icon size={14} />
+              )}
               {step.label}
             </motion.button>
           </div>
