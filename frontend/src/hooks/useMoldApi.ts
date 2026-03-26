@@ -103,6 +103,9 @@ export function useMoldGeneration() {
       flangeThickness = 4.0,
       screwHoleDiameter = 4.0,
       nFlanges = 4,
+      shrinkageCompensation = 0.0,
+      addEjectors = false,
+      nEjectors = 4,
     }: {
       modelId: string;
       direction?: number[];
@@ -117,6 +120,9 @@ export function useMoldGeneration() {
       flangeThickness?: number;
       screwHoleDiameter?: number;
       nFlanges?: number;
+      shrinkageCompensation?: number;
+      addEjectors?: boolean;
+      nEjectors?: number;
     }) => {
       store.setGeneratingMold(true);
       const body: Record<string, unknown> = {
@@ -131,6 +137,9 @@ export function useMoldGeneration() {
         flange_thickness: flangeThickness,
         screw_hole_diameter: screwHoleDiameter,
         n_flanges: nFlanges,
+        shrinkage_compensation: shrinkageCompensation,
+        add_ejectors: addEjectors,
+        n_ejectors: nEjectors,
       };
       if (direction) body.direction = direction;
 

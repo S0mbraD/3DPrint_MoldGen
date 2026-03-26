@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass, field as dc_field
 
 import numpy as np
@@ -167,8 +168,9 @@ class TOConfig2D:
     E0: float = 1.0              # Young's modulus of solid
     Emin: float = 1e-9           # minimum stiffness (void)
     nu: float = 0.3              # Poisson's ratio
-    max_iter: int = 100          # maximum iterations
+    max_iter: int = 50           # maximum iterations
     tol: float = 0.01            # convergence tolerance on density change
+    timeout_s: float = 30.0      # wall-clock timeout in seconds
     # Boundary conditions: "cantilever" | "mbb" | "bridge"
     bc_type: str = "cantilever"
 
@@ -256,8 +258,13 @@ def topology_opt_2d(config: TOConfig2D | None = None) -> TOResult2D:
     x = np.full((nely, nelx), volfrac)
     xPhys = x.copy()
     compliance_history: list[float] = []
+    start_time = time.time()
 
     for iteration in range(cfg.max_iter):
+        if time.time() - start_time > cfg.timeout_s:
+            logger.warning("2D TO timed out after %.1fs at iter %d", cfg.timeout_s, iteration)
+            break
+
         # Filtered density
         xPhys = convolve(x, H, mode="reflect")
         xPhys = np.clip(xPhys, 0.0, 1.0)
@@ -274,8 +281,12 @@ def topology_opt_2d(config: TOConfig2D | None = None) -> TOResult2D:
 
         # Solve
         u = np.zeros(ndof)
-        K_ff = K[np.ix_(free_dofs, free_dofs)]
-        u[free_dofs] = spsolve(K_ff, F[free_dofs])
+        try:
+            K_ff = K[np.ix_(free_dofs, free_dofs)]
+            u[free_dofs] = spsolve(K_ff, F[free_dofs])
+        except Exception as exc:
+            logger.error("2D TO solve failed at iter %d: %s", iteration, exc)
+            break
 
         # Compliance and sensitivity
         ce = np.zeros(nelx * nely)
@@ -345,8 +356,9 @@ class TOConfig3D:
     E0: float = 1.0
     Emin: float = 1e-9
     nu: float = 0.3
-    max_iter: int = 60
+    max_iter: int = 30
     tol: float = 0.01
+    timeout_s: float = 60.0
     bc_type: str = "cantilever"
 
 
@@ -435,8 +447,13 @@ def topology_opt_3d(config: TOConfig3D | None = None) -> TOResult3D:
 
     x = np.full((nelz, nely, nelx), volfrac)
     compliance_history: list[float] = []
+    start_time = time.time()
 
     for iteration in range(cfg.max_iter):
+        if time.time() - start_time > cfg.timeout_s:
+            logger.warning("3D TO timed out after %.1fs at iter %d", cfg.timeout_s, iteration)
+            break
+
         xPhys = convolve(x, H, mode="reflect")
         xPhys = np.clip(xPhys, 0.0, 1.0)
         xflat = xPhys.ravel()

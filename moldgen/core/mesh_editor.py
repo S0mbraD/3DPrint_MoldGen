@@ -111,26 +111,75 @@ class MeshEditor:
     # ─── Simplification ─────────────────────────────────
 
     def simplify_qem(self, mesh: MeshData, target_faces: int) -> MeshData:
-        """QEM-based decimation using open3d or trimesh fallback."""
+        """QEM-based decimation with multiple fallback strategies."""
+        result = None
+
+        # Strategy 1: Open3D QEM (best quality)
         try:
             import open3d as o3d
             o3d_mesh = o3d.geometry.TriangleMesh()
             o3d_mesh.vertices = o3d.utility.Vector3dVector(mesh.vertices)
             o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces)
             o3d_mesh.compute_vertex_normals()
-            simplified = o3d_mesh.simplify_quadric_decimation(target_number_of_triangles=target_faces)
-            result = MeshData(
-                vertices=np.asarray(simplified.vertices, dtype=np.float64),
-                faces=np.asarray(simplified.triangles, dtype=np.int64),
-                unit=mesh.unit,
-                source_path=mesh.source_path,
-                source_format=mesh.source_format,
+            simplified = o3d_mesh.simplify_quadric_decimation(
+                target_number_of_triangles=target_faces,
             )
+            if len(simplified.triangles) >= 4:
+                result = MeshData(
+                    vertices=np.asarray(simplified.vertices, dtype=np.float64),
+                    faces=np.asarray(simplified.triangles, dtype=np.int64),
+                    unit=mesh.unit,
+                    source_path=mesh.source_path,
+                    source_format=mesh.source_format,
+                )
         except ImportError:
+            pass
+        except Exception as exc:
+            logger.warning("Open3D simplify failed: %s", exc)
+
+        # Strategy 2: Trimesh QEM
+        if result is None:
+            try:
+                tm = mesh.to_trimesh()
+                simplified = tm.simplify_quadric_decimation(face_count=target_faces)
+                if simplified is not None and len(simplified.faces) >= 4:
+                    result = MeshData.from_trimesh(
+                        simplified, mesh.source_path, mesh.source_format,
+                    )
+                    result.unit = mesh.unit
+            except Exception as exc:
+                logger.warning("Trimesh QEM simplify failed: %s", exc)
+
+        # Strategy 3: Vertex clustering (fast, lower quality)
+        if result is None:
+            try:
+                import open3d as o3d
+                o3d_mesh = o3d.geometry.TriangleMesh()
+                o3d_mesh.vertices = o3d.utility.Vector3dVector(mesh.vertices)
+                o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces)
+                ratio = max(0.01, target_faces / max(mesh.face_count, 1))
+                voxel_size = mesh.to_trimesh().bounding_box.extents.max() * (1.0 - ratio) * 0.02
+                simplified = o3d_mesh.simplify_vertex_clustering(voxel_size)
+                if len(simplified.triangles) >= 4:
+                    result = MeshData(
+                        vertices=np.asarray(simplified.vertices, dtype=np.float64),
+                        faces=np.asarray(simplified.triangles, dtype=np.int64),
+                        unit=mesh.unit,
+                        source_path=mesh.source_path,
+                        source_format=mesh.source_format,
+                    )
+            except Exception:
+                pass
+
+        # Strategy 4: Random face subset (last resort)
+        if result is None:
             tm = mesh.to_trimesh()
-            simplified = tm.simplify_quadric_decimation(face_count=target_faces)
-            result = MeshData.from_trimesh(simplified, mesh.source_path, mesh.source_format)
+            n = min(target_faces, len(tm.faces))
+            indices = np.random.choice(len(tm.faces), n, replace=False)
+            sub = tm.submesh([indices], append=True)
+            result = MeshData.from_trimesh(sub, mesh.source_path, mesh.source_format)
             result.unit = mesh.unit
+            logger.warning("Used random subset fallback for simplification")
 
         return self._record(mesh, "simplify_qem", {"target_faces": target_faces}, result)
 

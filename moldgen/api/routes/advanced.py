@@ -99,7 +99,7 @@ class TORequest2D(BaseModel):
     penal: float = Field(3.0, ge=1.0, le=5.0)
     rmin: float = Field(1.5, ge=1.0, le=5.0)
     bc_type: str = Field("cantilever", description="cantilever|mbb|bridge")
-    max_iter: int = Field(100, ge=10, le=500)
+    max_iter: int = Field(50, ge=10, le=500)
 
 
 class TORequest3D(BaseModel):
@@ -110,7 +110,7 @@ class TORequest3D(BaseModel):
     penal: float = Field(3.0, ge=1.0, le=5.0)
     rmin: float = Field(1.5, ge=1.0, le=5.0)
     bc_type: str = Field("cantilever")
-    max_iter: int = Field(60, ge=10, le=200)
+    max_iter: int = Field(30, ge=10, le=200)
 
 
 @router.post("/topology-opt/2d")

@@ -84,17 +84,17 @@ export function WorkflowPipeline() {
   const completedCount = Object.values(statuses).filter(s => s.status === "done").length;
 
   return (
-    <div className="w-full px-2 py-1.5 bg-bg-panel border-b border-border overflow-x-auto">
-      {/* Progress indicator */}
-      <div className="h-0.5 rounded-full bg-bg-hover mb-1.5 mx-1 overflow-hidden">
+    <div className="w-full h-8 flex items-center px-2 bg-bg-panel border-b border-border overflow-x-auto shrink-0">
+      {/* Thin progress bar */}
+      <div className="absolute left-0 right-0 top-0 h-[2px] bg-bg-hover overflow-hidden pointer-events-none">
         <motion.div
-          className="h-full rounded-full bg-accent/60"
+          className="h-full bg-accent/50"
           animate={{ width: `${(completedCount / STEP_ORDER.length) * 100}%` }}
           transition={{ type: "spring", stiffness: 200, damping: 30 }}
         />
       </div>
 
-      <div className="flex items-center gap-0 min-w-max">
+      <div className="flex items-center gap-0 flex-1 min-w-max">
         {STEP_ORDER.map((step, i) => {
           const meta = STEP_META[step];
           const Icon = meta.icon;
@@ -104,20 +104,20 @@ export function WorkflowPipeline() {
           return (
             <div key={step} className="flex items-center">
               <motion.button
-                whileHover={{ scale: 1.05, y: -1 }}
-                whileTap={{ scale: 0.95 }}
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
                 onClick={() => setStep(step as typeof currentStep)}
                 className={cn(
-                  "relative flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg transition-all min-w-[48px] group",
+                  "relative flex items-center gap-1.5 px-2.5 h-6 rounded-md transition-all group",
                   isActive
-                    ? "bg-accent/15 ring-1 ring-accent/50 shadow-sm shadow-accent/10"
+                    ? "bg-accent/15 ring-1 ring-accent/40"
                     : st === "done"
                       ? "bg-success/8 hover:bg-success/12"
-                      : "bg-bg-secondary/30 hover:bg-bg-hover",
+                      : "hover:bg-bg-hover",
                 )}
               >
                 <div className={cn(
-                  "w-5 h-5 rounded-md flex items-center justify-center transition-colors",
+                  "w-4 h-4 rounded flex items-center justify-center transition-colors shrink-0",
                   isActive
                     ? "bg-accent text-white"
                     : st === "done"
@@ -125,60 +125,51 @@ export function WorkflowPipeline() {
                       : "bg-bg-hover text-text-muted",
                 )}>
                   {st === "done" && !isActive ? (
-                    <span className="text-[9px] font-bold">✓</span>
+                    <span className="text-[10px] font-bold leading-none">✓</span>
                   ) : (
                     <Icon size={11} />
                   )}
                 </div>
+
                 <span className={cn(
-                  "text-[7px] font-medium leading-tight",
+                  "text-[11px] font-medium leading-none whitespace-nowrap",
                   isActive ? "text-accent" : st === "done" ? "text-success/80" : "text-text-muted",
                 )}>
                   {meta.shortLabel}
                 </span>
 
-                {/* Data flow label */}
                 {dataLabel && st === "done" && !isActive && (
-                  <span className="text-[6px] text-success/60 leading-none mt-px">
+                  <span className="text-[9px] text-success/60 leading-none whitespace-nowrap">
                     {dataLabel}
                   </span>
                 )}
 
-                {/* Tooltip on hover */}
-                <div className="absolute -bottom-7 left-1/2 -translate-x-1/2 hidden group-hover:block z-50 whitespace-nowrap">
-                  <div className="bg-bg-primary border border-border rounded px-1.5 py-0.5 text-[8px] text-text-muted shadow-lg">
-                    {meta.desc}
+                {/* Tooltip */}
+                <div className="absolute top-full mt-1 left-1/2 -translate-x-1/2 hidden group-hover:block z-50 whitespace-nowrap pointer-events-none">
+                  <div className="bg-bg-primary border border-border rounded px-2 py-1 text-[10px] text-text-muted shadow-lg">
+                    {meta.label} — {meta.desc}
                   </div>
                 </div>
 
                 {isActive && (
                   <motion.div
                     className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent"
-                    animate={{ scale: [1, 1.4, 1], opacity: [1, 0.5, 1] }}
+                    animate={{ scale: [1, 1.3, 1], opacity: [1, 0.5, 1] }}
                     transition={{ duration: 2, repeat: Infinity }}
                   />
                 )}
               </motion.button>
 
-              {/* Connector with data flow animation */}
               {i < STEP_ORDER.length - 1 && (
                 <div className="flex items-center px-0.5 relative">
                   <div className={cn(
-                    "w-3 h-[2px] rounded-full transition-colors",
-                    st === "done" ? "bg-success/40" : "bg-border/60",
+                    "w-3 h-[1.5px] rounded-full transition-colors",
+                    st === "done" ? "bg-success/40" : "bg-border/40",
                   )} />
                   <div className={cn(
-                    "w-0 h-0 border-t-[2.5px] border-t-transparent border-b-[2.5px] border-b-transparent transition-colors",
-                    st === "done" ? "border-l-[3px] border-l-success/40" : "border-l-[3px] border-l-border/60",
+                    "w-0 h-0 border-t-[2px] border-t-transparent border-b-[2px] border-b-transparent transition-colors",
+                    st === "done" ? "border-l-[2.5px] border-l-success/40" : "border-l-[2.5px] border-l-border/40",
                   )} />
-                  {/* Animated data flow dot */}
-                  {st === "done" && (
-                    <motion.div
-                      className="absolute top-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-success/60"
-                      animate={{ left: ["0%", "100%"], opacity: [0, 1, 0] }}
-                      transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                    />
-                  )}
                 </div>
               )}
             </div>
@@ -186,12 +177,12 @@ export function WorkflowPipeline() {
         })}
 
         {/* Overall progress */}
-        <div className="ml-2 pl-2 border-l border-border/40 flex flex-col items-center">
-          <span className={cn("text-[10px] font-bold tabular-nums",
+        <div className="ml-2 pl-2 border-l border-border/30 flex items-center gap-1">
+          <span className={cn("text-[11px] font-bold tabular-nums",
             completedCount === STEP_ORDER.length ? "text-success" : "text-text-muted")}>
             {completedCount}/{STEP_ORDER.length}
           </span>
-          <span className="text-[7px] text-text-muted/50">完成</span>
+          <span className="text-[10px] text-text-muted/50">完成</span>
         </div>
       </div>
     </div>

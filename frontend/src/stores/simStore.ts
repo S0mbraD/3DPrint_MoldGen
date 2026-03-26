@@ -12,6 +12,11 @@ export interface VentInfo {
   normal: number[];
 }
 
+export interface MeshGeometry {
+  vertices: number[][];
+  faces: number[][];
+}
+
 export interface GatingResultInfo {
   gate: GateInfo;
   vents: VentInfo[];
@@ -20,6 +25,8 @@ export interface GatingResultInfo {
   cavity_volume: number;
   estimated_fill_time: number;
   estimated_material_volume: number;
+  gate_mesh?: MeshGeometry;
+  vent_meshes?: MeshGeometry[];
 }
 
 export interface DefectInfo {

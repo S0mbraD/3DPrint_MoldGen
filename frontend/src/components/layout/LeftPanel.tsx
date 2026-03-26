@@ -7,7 +7,7 @@ import { useMoldStore } from "../../stores/moldStore";
 import { useSimStore } from "../../stores/simStore";
 import { useInsertStore } from "../../stores/insertStore";
 import { useUploadModel, useSimplifyModel, useSubdivideModel, useTransformModel, useRepairModel, useModelQuality } from "../../hooks/useModelApi";
-import { useOrientationAnalysis, usePartingGeneration, useMoldGeneration } from "../../hooks/useMoldApi";
+import { useOrientationAnalysis, usePartingGeneration, useMoldGeneration, useCoolingChannelDesign } from "../../hooks/useMoldApi";
 import { useGatingDesign, useRunSimulation, useRunOptimization, useFetchVisualization, useFetchCrossSection, useFetchSurfaceMap, useRunFEA, useFetchFEAVisualization } from "../../hooks/useSimApi";
 import { useAnalyzePositions, useGenerateInserts, useValidateAssembly } from "../../hooks/useInsertApi";
 import { useThicknessAnalysis, useCurvatureAnalysis, useSymmetryAnalysis, useOverhangAnalysis, useSmoothMesh, useRemeshMesh, useThickenMesh, useOffsetMesh } from "../../hooks/useAnalysisApi";
@@ -15,6 +15,7 @@ import type { ThicknessData, CurvatureData, SymmetryData, OverhangData } from ".
 import { useExportModel, useExportMold, useExportInsert, useExportAll } from "../../hooks/useExportApi";
 import { cn } from "../../lib/utils";
 import { toastSuccess, toastError, toastInfo } from "../../stores/toastStore";
+import { useHistoryStore } from "../../stores/historyStore";
 
 export function LeftPanel() {
   const { leftPanelOpen, toggleLeftPanel, currentStep } = useAppStore();
@@ -70,6 +71,7 @@ function ImportPanel() {
   const { setStep, markStepCompleted } = useAppStore();
   const [isDragging, setIsDragging] = useState(false);
 
+  const pushHistory = useHistoryStore((s) => s.push);
   const handleFile = useCallback(
     async (file: File) => {
       try {
@@ -77,12 +79,18 @@ function ImportPanel() {
         setModel(data.model_id, data.filename, data.mesh_info);
         markStepCompleted("import");
         setStep("repair");
+        pushHistory({
+          type: "import",
+          label: `导入 ${data.filename}`,
+          detail: `${data.mesh_info.face_count.toLocaleString()} 面, ${data.mesh_info.is_watertight ? "水密" : "非水密"}`,
+          modelId: data.model_id,
+        });
         toastSuccess("模型已导入", `${data.filename} — ${data.mesh_info.face_count.toLocaleString()} 面`);
       } catch (e) {
         toastError("导入失败", (e as Error)?.message ?? "未知错误");
       }
     },
-    [upload, setModel, markStepCompleted, setStep],
+    [upload, setModel, markStepCompleted, setStep, pushHistory],
   );
 
   const handleDrop = useCallback(
@@ -233,11 +241,11 @@ function EditPanel() {
   const transform = useTransformModel();
   const { data: qualityData } = useModelQuality(modelId);
   const markStepCompleted = useAppStore((s) => s.markStepCompleted);
+  const pushHistory = useHistoryStore((s) => s.push);
   const [targetRatio, setTargetRatio] = useState(0.5);
   const [subdivIter, setSubdivIter] = useState(1);
   const [scaleVal, setScaleVal] = useState(1.0);
 
-  // nTopology-style analysis hooks
   const thicknessAnalysis = useThicknessAnalysis();
   const curvatureAnalysis = useCurvatureAnalysis();
   const symmetryAnalysis = useSymmetryAnalysis();
@@ -265,6 +273,7 @@ function EditPanel() {
         updateInfo((data as { mesh_info: typeof meshInfo }).mesh_info!);
         bumpGlb();
       }
+      pushHistory({ type: "repair", label, modelId: modelId ?? undefined });
       toastSuccess(`${label}完成`);
     } catch (e) {
       toastError(`${label}失败`, (e as Error)?.message);
@@ -827,19 +836,59 @@ function TopologyOptPanel() {
   const [volfrac, setVolfrac] = useState(0.4);
   const [bcType, setBcType] = useState("cantilever");
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState("");
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const run = async () => {
     setLoading(true);
+    setResult(null);
+    setProgress("正在求解...");
     try {
       const res = await fetch("/api/v1/advanced/topology-opt/2d", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nelx, nely, volfrac, bc_type: bcType }),
       });
-      if (res.ok) setResult(await res.json());
-    } catch { /* ignore */ }
+      if (res.ok) {
+        const data = await res.json();
+        setResult(data);
+        setProgress("");
+        renderDensity(data.density);
+      } else {
+        const txt = await res.text();
+        setProgress(`失败: ${txt.slice(0, 80)}`);
+      }
+    } catch (e) {
+      setProgress(`错误: ${e instanceof Error ? e.message : String(e)}`);
+    }
     setLoading(false);
+  };
+
+  const renderDensity = (density: number[][]) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !density?.length) return;
+    const rows = density.length;
+    const cols = density[0].length;
+    canvas.width = cols;
+    canvas.height = rows;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const imgData = ctx.createImageData(cols, rows);
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const v = Math.max(0, Math.min(1, density[y][x]));
+        const idx = (y * cols + x) * 4;
+        const r = Math.round(v * 59 + (1 - v) * 19);
+        const g = Math.round(v * 220 + (1 - v) * 19);
+        const b = Math.round(v * 255 + (1 - v) * 26);
+        imgData.data[idx] = r;
+        imgData.data[idx + 1] = g;
+        imgData.data[idx + 2] = b;
+        imgData.data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
   };
 
   return (
@@ -860,13 +909,25 @@ function TopologyOptPanel() {
         ))}
       </div>
       <ActionButton label={loading ? "优化中..." : "运行拓扑优化"} loading={loading} onClick={run} />
+      {loading && progress && <div className="text-[8px] text-accent animate-pulse">{progress}</div>}
       {result && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[9px]">
           <ResultRow label="迭代次数" value={String((result as Record<string,unknown>).iterations)} />
           <ResultRow label="最终柔度" value={Number((result as Record<string,unknown>).final_compliance).toExponential(3)} />
           <ResultRow label="最终体积分数" value={Number((result as Record<string,unknown>).final_volfrac).toFixed(3)} />
-          <div className="text-[7px] text-text-muted/50 mt-0.5">密度分布已计算 — 白色=材料 黑色=空腔</div>
         </motion.div>
+      )}
+      <canvas
+        ref={canvasRef}
+        className="w-full border border-border/30 rounded bg-[#13131a]"
+        style={{ imageRendering: "pixelated", aspectRatio: `${nelx} / ${nely}` }}
+      />
+      {result && (
+        <div className="flex items-center gap-1 text-[7px] text-text-muted/50">
+          <div className="w-12 h-2 rounded" style={{ background: "linear-gradient(to right, #13131a, #3bdcff)" }} />
+          <span>0</span>
+          <span className="ml-auto">1 (材料)</span>
+        </div>
       )}
     </div>
   );
@@ -935,6 +996,7 @@ function OrientationPanel() {
   const setSelectedCandidate = useMoldStore((s) => s.setSelectedCandidate);
   const setOrientationResult = useMoldStore((s) => s.setOrientationResult);
   const orientation = useOrientationAnalysis();
+  const pushHistory = useHistoryStore((s) => s.push);
   const [nSamples, setNSamples] = useState(100);
   const [nFinal, setNFinal] = useState(5);
   const [manualDir, setManualDir] = useState([0, 0, 1]);
@@ -980,7 +1042,10 @@ function OrientationPanel() {
           loading={isAnalyzing}
           variant="primary"
           onClick={() => orientation.mutate({ modelId, nSamples, nFinal }, {
-            onSuccess: (r) => toastSuccess("方向分析完成", `评分 ${(r.best_score.total_score * 100).toFixed(0)}%`),
+            onSuccess: (r) => {
+              pushHistory({ type: "orientation", label: "方向分析", detail: `评分 ${(r.best_score.total_score * 100).toFixed(0)}%`, modelId });
+              toastSuccess("方向分析完成", `评分 ${(r.best_score.total_score * 100).toFixed(0)}%`);
+            },
             onError: (e) => toastError("分析失败", (e as Error).message),
           })}
         />
@@ -1131,6 +1196,8 @@ function MoldPanel() {
   const orientation = useOrientationAnalysis();
   const parting = usePartingGeneration();
   const moldGen = useMoldGeneration();
+  const coolingDesign = useCoolingChannelDesign();
+  const pushHistory = useHistoryStore((s) => s.push);
   const setStep = useAppStore((s) => s.setStep);
   const [wallThickness, setWallThickness] = useState(4.0);
   const [shellType, setShellType] = useState("box");
@@ -1216,7 +1283,7 @@ function MoldPanel() {
           label={isGeneratingParting ? "生成中..." : "生成分型面"}
           loading={isGeneratingParting}
           onClick={() => parting.mutate({ modelId }, {
-            onSuccess: () => toastSuccess("分型面已生成"),
+            onSuccess: () => { pushHistory({ type: "parting", label: "生成分型面", modelId }); toastSuccess("分型面已生成"); },
             onError: (e) => toastError("分型面生成失败", (e as Error).message),
           })}
         />
@@ -1436,9 +1503,25 @@ function MoldPanel() {
               partingStyle,
               addFlanges,
               nFlanges: flangeCount,
+              shrinkageCompensation: shrinkagePct,
+              addEjectors,
+              nEjectors: ejectorCount,
               direction: orientationResult?.best_direction,
             }, {
-              onSuccess: ({ result }) => toastSuccess("模具已生成", `${result.n_shells} 片壳体`),
+              onSuccess: ({ moldId: newMoldId, result }) => {
+                pushHistory({
+                  type: "mold", label: "生成模具",
+                  detail: `${shellType} 壳 / ${partingStyle} 分型 / ${result.n_shells} 壳体`,
+                  moldId: newMoldId, modelId,
+                });
+                toastSuccess("模具已生成", `${result.n_shells} 片壳体`);
+                if (addCooling && newMoldId) {
+                  coolingDesign.mutate({ moldId: newMoldId, channelDiameter: coolingDiameter }, {
+                    onSuccess: () => toastSuccess("冷却水道已生成"),
+                    onError: (e) => toastError("冷却水道失败", (e as Error).message),
+                  });
+                }
+              },
               onError: (e) => toastError("模具生成失败", (e as Error).message),
             })
           }
@@ -2172,6 +2255,7 @@ function GatingPanel() {
   const moldId = useMoldStore((s) => s.moldId);
   const { gatingId, gatingResult, isDesigningGating, selectedMaterial, setMaterial } = useSimStore();
   const gatingDesign = useGatingDesign();
+  const pushHistory = useHistoryStore((s) => s.push);
   const setStep = useAppStore((s) => s.setStep);
   const [gateDiam, setGateDiam] = useState(6.0);
   const [runnerWidth, setRunnerWidth] = useState(4.0);
@@ -2254,7 +2338,7 @@ function GatingPanel() {
             gateDiameter: gateDiam,
             nVents,
           }, {
-            onSuccess: () => toastSuccess("浇注系统设计完成"),
+            onSuccess: () => { pushHistory({ type: "gating", label: "设计浇注系统", detail: `浇口 ⌀${gateDiam}mm / ${nVents} 排气孔`, modelId, moldId }); toastSuccess("浇注系统设计完成"); },
             onError: (e) => toastError("设计失败", (e as Error).message),
           })}
         />
@@ -2324,6 +2408,7 @@ function SimPanel() {
   const fetchSurfaceMap = useFetchSurfaceMap();
   const runFEA = useRunFEA();
   const fetchFEAVis = useFetchFEAVisualization();
+  const pushHistory = useHistoryStore((s) => s.push);
   const [simLevel, setSimLevel] = useState(2);
   const [feaMaterial, setFeaMaterial] = useState("pla");
 
@@ -2420,6 +2505,7 @@ function SimPanel() {
           loading={isSimulating}
           onClick={() => gatingId && runSim.mutate({ modelId, gatingId, level: simLevel }, {
             onSuccess: ({ simId: newSimId, result: r }) => {
+              pushHistory({ type: "simulation", label: "充模仿真", detail: `充填率 ${(r.fill_fraction * 100).toFixed(1)}%`, modelId });
               toastSuccess("仿真完成", `充填率 ${(r.fill_fraction * 100).toFixed(1)}%`);
               if (r.has_visualization && newSimId) {
                 fetchVis.mutate(newSimId);
@@ -2725,6 +2811,7 @@ function SimPanel() {
             variant="primary"
             onClick={() => runFEA.mutate({ modelId, materialPreset: feaMaterial }, {
               onSuccess: ({ feaId: fid }) => {
+                pushHistory({ type: "simulation", label: "FEA 结构分析", detail: `材料: ${feaMaterial}`, modelId });
                 toastSuccess("FEA 分析完成");
                 fetchFEAVis.mutate(fid);
               },
@@ -2895,6 +2982,7 @@ function ExportPanel() {
   const exportMold = useExportMold();
   const exportInsert = useExportInsert();
   const exportAll = useExportAll();
+  const pushHistory = useHistoryStore((s) => s.push);
   const [format, setFormat] = useState("stl");
   const [lastExport, setLastExport] = useState<{
     label: string;
@@ -3037,6 +3125,7 @@ function ExportPanel() {
                 { model_id: modelId, format },
                 {
                   onSuccess: () => {
+                    pushHistory({ type: "export", label: `导出模型 (${format.toUpperCase()})`, modelId });
                     toastSuccess("模型已导出", `${format.toUpperCase()} 格式`);
                     setLastExport({
                       label: "模型",

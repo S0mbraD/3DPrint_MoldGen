@@ -63,9 +63,11 @@ class GatingResult:
     cavity_volume: float = 0.0
     estimated_fill_time: float = 0.0
     estimated_material_volume: float = 0.0
+    gate_mesh: object = None
+    vent_meshes: list = None
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "gate": self.gate.to_dict(),
             "vents": [v.to_dict() for v in self.vents],
             "gate_diameter": round(self.gate_diameter, 2),
@@ -74,6 +76,20 @@ class GatingResult:
             "estimated_fill_time": round(self.estimated_fill_time, 1),
             "estimated_material_volume": round(self.estimated_material_volume, 2),
         }
+        if self.gate_mesh is not None:
+            result["gate_mesh"] = {
+                "vertices": np.asarray(self.gate_mesh.vertices).tolist(),
+                "faces": np.asarray(self.gate_mesh.faces).tolist(),
+            }
+        if self.vent_meshes:
+            result["vent_meshes"] = [
+                {
+                    "vertices": np.asarray(m.vertices).tolist(),
+                    "faces": np.asarray(m.faces).tolist(),
+                }
+                for m in self.vent_meshes
+            ]
+        return result
 
 
 class GatingSystem:
@@ -99,6 +115,9 @@ class GatingSystem:
         fill_time = self._estimate_fill_time(cavity_volume, material)
         material_volume = cavity_volume * (1.0 + material.shrinkage) * 1.1  # 10% overflow
 
+        gate_mesh = self._build_gate_mesh(gate, mold)
+        vent_meshes = self._build_vent_meshes(vents, mold)
+
         return GatingResult(
             gate=gate,
             vents=vents,
@@ -107,6 +126,8 @@ class GatingSystem:
             cavity_volume=cavity_volume,
             estimated_fill_time=fill_time,
             estimated_material_volume=material_volume,
+            gate_mesh=gate_mesh,
+            vent_meshes=vent_meshes,
         )
 
     def _optimize_gate_position(
@@ -243,3 +264,57 @@ class GatingSystem:
 
         fill_time_s = cavity_volume_mm3 / flow_rate
         return float(max(fill_time_s, 0.1))
+
+    def _build_gate_mesh(self, gate: GatePosition, mold: MoldResult) -> trimesh.Trimesh:
+        """Build a cylindrical gate mesh."""
+        up = np.array([0.0, 0.0, 1.0])
+        if mold.shells:
+            up = np.asarray(mold.shells[0].direction, dtype=np.float64)
+
+        r = self.config.gate_diameter / 2
+        height = max(self.config.gate_diameter * 1.5, 15.0)
+        cyl = trimesh.creation.cylinder(radius=r, height=height, sections=24)
+
+        z_axis = np.array([0.0, 0.0, 1.0])
+        if not np.allclose(up, z_axis):
+            axis = np.cross(z_axis, up)
+            axis_len = np.linalg.norm(axis)
+            if axis_len > 1e-9:
+                axis /= axis_len
+                angle = np.arccos(np.clip(np.dot(z_axis, up), -1, 1))
+                rot = trimesh.transformations.rotation_matrix(angle, axis)
+                cyl.apply_transform(rot)
+
+        cyl.apply_translation(gate.position)
+        return cyl
+
+    def _build_vent_meshes(
+        self, vents: list[VentPosition], mold: MoldResult,
+    ) -> list[trimesh.Trimesh]:
+        """Build small box meshes for each vent."""
+        meshes: list[trimesh.Trimesh] = []
+        w = self.config.vent_width
+        d = max(self.config.vent_depth * 100, 2.0)
+        h = 8.0
+
+        for vent in vents:
+            box = trimesh.creation.box(extents=[w, d, h])
+
+            normal = np.asarray(vent.normal, dtype=np.float64)
+            normal /= max(np.linalg.norm(normal), 1e-9)
+
+            z_axis = np.array([0.0, 0.0, 1.0])
+            if not np.allclose(normal, z_axis) and not np.allclose(normal, -z_axis):
+                axis = np.cross(z_axis, normal)
+                axis_len = np.linalg.norm(axis)
+                if axis_len > 1e-9:
+                    axis /= axis_len
+                    angle = np.arccos(np.clip(np.dot(z_axis, normal), -1, 1))
+                    rot = trimesh.transformations.rotation_matrix(angle, axis)
+                    box.apply_transform(rot)
+
+            offset = vent.position + normal * (h / 2)
+            box.apply_translation(offset)
+            meshes.append(box)
+
+        return meshes

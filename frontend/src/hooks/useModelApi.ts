@@ -114,7 +114,14 @@ export function useSimplifyModel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target_faces: targetFaces, ratio }),
       });
-      if (!res.ok) throw new Error("Simplify failed");
+      if (!res.ok) {
+        let detail = "简化失败";
+        try {
+          const err = await res.json();
+          if (err.detail) detail = String(err.detail);
+        } catch { /* ignore */ }
+        throw new Error(detail);
+      }
       return res.json();
     },
     onSuccess: (_data, { modelId }) => {

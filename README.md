@@ -459,4 +459,4 @@ frontend/
 
 ## License
 
-待定 (计划采用 AGPL-3.0 或 MIT)
+本项目基于 [MIT License](./LICENSE) 开源，欢迎自由使用、修改与分发。

@@ -967,10 +967,8 @@ class MoldBuilder:
     ) -> tuple[trimesh.Trimesh | None, trimesh.Trimesh | None]:
         """Split solid with interlock profile.
 
-        Strategy: first split the solid flat, then use boolean operations
-        to transfer interlock geometry between halves. Features are already
-        placed along the wall boundary so no additional clipping is needed.
-        If any boolean op fails, fall back to simple flat split.
+        Strategy 1: Boolean union/subtract with interlock geometry.
+        Strategy 2: Direct vertex displacement on parting face vertices.
         """
         upper = _safe_slice(solid, center, direction)
         lower = _safe_slice(solid, center, -direction)
@@ -980,25 +978,74 @@ class MoldBuilder:
 
         interlock = self._create_parting_interlock(solid, center, direction)
         if interlock is None:
-            return upper, lower
+            # Fallback to vertex displacement
+            return self._displace_parting_verts(upper, lower, center, direction)
 
         union_result = self._robust_boolean_union(upper, interlock)
         if union_result is not None and len(union_result.faces) > len(upper.faces) // 2:
-            upper = _repair_mesh(union_result)
-            logger.info("Parting interlock: union OK (%d faces)", len(upper.faces))
-        else:
-            logger.warning("Parting interlock: union failed, falling back to flat split")
-            return upper, lower
+            upper_new = _repair_mesh(union_result)
+            sub_result = self._robust_boolean_subtract(lower, interlock)
+            if sub_result is not None and len(sub_result.faces) > 4:
+                lower_new = _repair_mesh(sub_result)
+                logger.info("Parting interlock: boolean OK (upper=%d, lower=%d faces)",
+                            len(upper_new.faces), len(lower_new.faces))
+                return upper_new, lower_new
 
-        sub_result = self._robust_boolean_subtract(lower, interlock)
-        if sub_result is not None and len(sub_result.faces) > 4:
-            lower = _repair_mesh(sub_result)
-            logger.info("Parting interlock: subtract OK (%d faces)", len(lower.faces))
-        else:
-            logger.warning("Parting interlock: subtract failed, reverting to flat split")
-            upper = _safe_slice(solid, center, direction)
-            lower = _safe_slice(solid, center, -direction)
+        logger.info("Parting interlock: boolean failed, using vertex displacement")
+        return self._displace_parting_verts(upper, lower, center, direction)
 
+    def _displace_parting_verts(
+        self,
+        upper: trimesh.Trimesh,
+        lower: trimesh.Trimesh,
+        center: np.ndarray,
+        direction: np.ndarray,
+    ) -> tuple[trimesh.Trimesh, trimesh.Trimesh]:
+        """Displace vertices near the parting plane to create interlocking geometry."""
+        c = self.config
+        style = c.parting_style
+        depth = c.parting_depth
+        pitch = c.parting_pitch
+        up = direction / (np.linalg.norm(direction) + 1e-12)
+
+        for half, sign in [(upper, 1.0), (lower, -1.0)]:
+            verts = np.asarray(half.vertices, dtype=np.float64)
+            heights = (verts - center) @ up
+            near_mask = np.abs(heights) < depth * 1.5
+
+            if not np.any(near_mask):
+                continue
+
+            near_idx = np.where(near_mask)[0]
+            near_verts = verts[near_idx]
+
+            arb = np.array([1.0, 0, 0]) if abs(up[0]) < 0.9 else np.array([0, 1.0, 0])
+            u_ax = np.cross(up, arb)
+            u_ax /= np.linalg.norm(u_ax) + 1e-12
+
+            coords_u = (near_verts - center) @ u_ax
+
+            if style == "zigzag":
+                phase = (coords_u % pitch) / pitch
+                displacement = np.where(phase < 0.5, depth * (2 * phase), depth * (2 - 2 * phase))
+            elif style == "step":
+                phase = (coords_u % pitch) / pitch
+                displacement = np.where(phase < 0.5, depth, 0.0)
+            elif style == "dovetail":
+                phase = (coords_u % pitch) / pitch * 2.0 * np.pi
+                displacement = depth * 0.5 * (1.0 + np.sin(phase))
+            elif style == "tongue_groove":
+                phase = (coords_u % pitch) / pitch
+                displacement = np.where(
+                    (phase > 0.25) & (phase < 0.75), depth, 0.0,
+                )
+            else:
+                displacement = np.zeros(len(near_idx))
+
+            verts[near_idx] += (sign * displacement)[:, None] * up[None, :]
+            half.vertices = verts
+
+        logger.info("Parting interlock: vertex displacement applied (style=%s)", style)
         return upper, lower
 
     # ═══════════════ Flange Generation ════════════════════════════
@@ -1173,13 +1220,20 @@ class MoldBuilder:
             model_matrix, iterations=clearance_px,
         )
 
-        # Step 3: Pad with wall thickness + margin
+        # Step 3: Build outer shell
         wall_px = max(2, int(np.ceil((c.margin + c.wall_thickness) / pitch)))
         padded_cavity = np.pad(
             cavity_matrix, wall_px, mode="constant", constant_values=False,
         )
-        box_matrix = np.ones_like(padded_cavity, dtype=bool)
-        mold_matrix = box_matrix & ~padded_cavity
+
+        if c.shell_type == "conformal":
+            outer_matrix = ndimage.binary_dilation(
+                padded_cavity, iterations=wall_px,
+            )
+        else:
+            outer_matrix = np.ones_like(padded_cavity, dtype=bool)
+
+        mold_matrix = outer_matrix & ~padded_cavity
 
         # Step 4: Marching cubes to extract surface
         try:

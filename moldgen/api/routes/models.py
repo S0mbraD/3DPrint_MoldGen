@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from uuid import uuid4
@@ -405,12 +406,22 @@ class SimplifyRequest(BaseModel):
 @router.post("/{model_id}/simplify")
 async def simplify_model(model_id: str, req: SimplifyRequest):
     mesh = _get_mesh(model_id)
-    if req.target_faces:
-        result = _editor.simplify_qem(mesh, req.target_faces)
-    elif req.ratio:
-        result = _editor.simplify_ratio(mesh, req.ratio)
+    if req.target_faces and req.target_faces > 0:
+        target = req.target_faces
+    elif req.ratio and req.ratio > 0:
+        target = max(4, int(mesh.face_count * req.ratio))
     else:
         raise HTTPException(400, "Provide target_faces or ratio")
+
+    if target >= mesh.face_count:
+        raise HTTPException(400, f"目标面数 {target} 不少于当前面数 {mesh.face_count}")
+
+    try:
+        result = await asyncio.to_thread(_editor.simplify_qem, mesh, target)
+    except Exception as exc:
+        logger.exception("Simplify failed: %s", exc)
+        raise HTTPException(500, f"简化失败: {exc}") from exc
+
     _loaded_meshes[model_id] = result
     return {"model_id": model_id, "mesh_info": result.info()}
 

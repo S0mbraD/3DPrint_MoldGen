@@ -11,6 +11,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from moldgen.api.routes.models import _get_mesh
+from moldgen.core.mesh_data import MeshData
 from moldgen.core.mold_builder import MoldBuilder, MoldConfig, MoldResult
 from moldgen.core.orientation import (
     OrientationAnalyzer,
@@ -156,6 +157,9 @@ class MoldRequest(BaseModel):
     flange_thickness: float = 4.0
     screw_hole_diameter: float = 4.0
     n_flanges: int = 4
+    shrinkage_compensation: float = 0.0
+    add_ejectors: bool = False
+    n_ejectors: int = 4
 
 
 @router.post("/{model_id}/mold/generate")
@@ -176,6 +180,17 @@ async def generate_mold(model_id: str, req: MoldRequest | None = None):
                 "No direction specified. Run orientation analysis first or provide one.",
             )
         direction = ori.best_direction
+
+    # Apply shrinkage compensation by scaling the mesh
+    if req.shrinkage_compensation > 0:
+        scale = 1.0 + req.shrinkage_compensation / 100.0
+        scaled_verts = mesh.vertices * scale
+        mesh = MeshData(
+            vertices=scaled_verts, faces=mesh.faces.copy(),
+            unit=mesh.unit, source_path=mesh.source_path,
+            source_format=mesh.source_format,
+        )
+        logger.info("Applied shrinkage compensation: %.2f%% (scale=%.4f)", req.shrinkage_compensation, scale)
 
     config = MoldConfig(
         wall_thickness=req.wall_thickness,

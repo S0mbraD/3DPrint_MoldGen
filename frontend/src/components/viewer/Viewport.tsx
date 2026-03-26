@@ -16,6 +16,7 @@ import { MoldShellViewer } from "./MoldShellViewer";
 import { InsertPlateViewer } from "./InsertPlateViewer";
 import { HoleBrushPainter } from "./HoleBrushPainter";
 import { SimulationViewer, StreamlineViewer, DefectMarkers, SurfaceOverlayViewer, FEAViewer } from "./SimulationViewer";
+import { GatingViewer } from "./GatingViewer";
 import { SimFloatingBar } from "./SimFloatingBar";
 import { useInsertStore } from "../../stores/insertStore";
 import { useRepairModel, useSimplifyModel, useTransformModel } from "../../hooks/useModelApi";
@@ -38,6 +39,7 @@ export function Viewport() {
   const moldId = useMoldStore((s) => s.moldId);
   const hasVisualization = useSimStore((s) => !!s.visualizationData);
   const heatmapVisible = useSimStore((s) => s.heatmapVisible);
+  const hasGating = useSimStore((s) => !!s.gatingResult);
   const hasSurfaceMap = useSimStore((s) => !!s.surfaceMapData);
   const hasFEA = useSimStore((s) => !!s.feaVisualizationData);
   const moldVisible = useViewportStore((s) => s.moldVisible);
@@ -111,6 +113,7 @@ export function Viewport() {
             />
           )}
 
+          {hasGating && <GatingViewer />}
           {hasVisualization && <SimulationViewer />}
           {hasVisualization && <StreamlineViewer />}
           {hasVisualization && <DefectMarkers />}
@@ -196,6 +199,7 @@ function CameraAutoFit() {
 
 function FloatingEditToolbar() {
   const modelId = useModelStore((s) => s.modelId);
+  const currentStep = useAppStore((s) => s.currentStep);
   const updateInfo = useModelStore((s) => s.updateMeshInfo);
   const bumpGlb = useModelStore((s) => s.bumpGlbRevision);
   const repair = useRepairModel();
@@ -219,13 +223,15 @@ function FloatingEditToolbar() {
     }
   };
 
-  const tools: {
+  type ToolItem = {
     id: string;
     icon: React.ReactNode;
     label: string;
     action: () => void;
     divider?: boolean;
-  }[] = [
+  };
+
+  const repairTools: ToolItem[] = [
     {
       id: "repair", icon: <RotateCcw size={14} />, label: "自动修复",
       action: () => exec("修复", () => repair.mutateAsync(modelId)),
@@ -263,6 +269,19 @@ function FloatingEditToolbar() {
       action: () => exec("旋转Z", () => transform.mutateAsync({ modelId, operation: "rotate", axis: [0, 0, 1], angle_deg: 90 })),
     },
   ];
+
+  const commonTools: ToolItem[] = [
+    {
+      id: "center", icon: <Maximize2 size={14} />, label: "居中",
+      action: () => exec("居中", () => transform.mutateAsync({ modelId, operation: "center" })),
+    },
+    {
+      id: "floor", icon: <Move size={14} />, label: "落地",
+      action: () => exec("落地", () => transform.mutateAsync({ modelId, operation: "align_to_floor" })),
+    },
+  ];
+
+  const tools = currentStep === "repair" || currentStep === "import" ? repairTools : commonTools;
 
   return (
     <div className="absolute left-3 top-1/2 -translate-y-1/2 z-10">
@@ -560,6 +579,11 @@ const STEP_LABELS: Record<WorkflowStep, string> = {
 function ViewportOverlay() {
   const currentStep = useAppStore((s) => s.currentStep);
   const modelLoaded = useAppStore((s) => s.modelLoaded);
+  const orientationResult = useMoldStore((s) => s.orientationResult);
+  const moldResult = useMoldStore((s) => s.moldResult);
+  const gatingResult = useSimStore((s) => s.gatingResult);
+  const simResult = useSimStore((s) => s.simResult);
+  const meshInfo = useModelStore((s) => s.meshInfo);
 
   return (
     <>
@@ -570,14 +594,65 @@ function ViewportOverlay() {
         </div>
       </div>
 
-      {/* Current step badge (bottom-left) */}
-      <div className="absolute bottom-3 left-3 pointer-events-none">
+      {/* Step context info panel (bottom-left) */}
+      <div className="absolute bottom-3 left-3 pointer-events-none space-y-1.5 max-w-[220px]">
+        {/* Step badge */}
         <div className="px-2.5 py-1.5 rounded-md bg-bg-secondary/80 backdrop-blur-sm border border-border/50 text-[10px] text-text-secondary">
           <span className="text-accent font-medium mr-1.5">
             {STEP_LABELS[currentStep]}
           </span>
           {STEP_HINTS[currentStep]}
         </div>
+
+        {/* Orientation result overlay */}
+        {currentStep === "orientation" && orientationResult && (
+          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[9px] space-y-0.5">
+            <div className="text-accent font-semibold text-[10px] mb-1">方向分析结果</div>
+            <div className="flex justify-between"><span className="text-text-muted">方向</span><span className="font-mono">[{orientationResult.best_direction.map((v: number) => v.toFixed(2)).join(",")}]</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">评分</span><span className="text-accent font-bold">{(orientationResult.best_score.total_score * 100).toFixed(0)}%</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">可见率</span><span>{(orientationResult.best_score.visibility_ratio * 100).toFixed(0)}%</span></div>
+          </div>
+        )}
+
+        {/* Mold result overlay */}
+        {currentStep === "mold" && moldResult && (
+          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[9px] space-y-0.5">
+            <div className="text-accent font-semibold text-[10px] mb-1">模具信息</div>
+            <div className="flex justify-between"><span className="text-text-muted">壳体</span><span>{moldResult.n_shells} 片</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">型腔</span><span>{moldResult.cavity_volume.toFixed(0)} mm³</span></div>
+            {moldResult.pour_hole && <div className="flex justify-between"><span className="text-text-muted">浇口</span><span className="text-success">已放置</span></div>}
+            {moldResult.vent_holes.length > 0 && <div className="flex justify-between"><span className="text-text-muted">排气</span><span>{moldResult.vent_holes.length} 个</span></div>}
+          </div>
+        )}
+
+        {/* Gating result overlay */}
+        {currentStep === "gating" && gatingResult && (
+          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[9px] space-y-0.5">
+            <div className="text-accent font-semibold text-[10px] mb-1">浇注系统</div>
+            <div className="flex justify-between"><span className="text-text-muted">浇口评分</span><span className="text-accent font-bold">{(gatingResult.gate.score * 100).toFixed(0)}%</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">排气口</span><span>{gatingResult.vents.length} 个</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">预估充填</span><span>{gatingResult.estimated_fill_time.toFixed(1)}s</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">用料量</span><span>{gatingResult.estimated_material_volume.toFixed(0)} mm³</span></div>
+          </div>
+        )}
+
+        {/* Simulation result overlay */}
+        {currentStep === "simulation" && simResult && (
+          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[9px] space-y-0.5">
+            <div className="text-accent font-semibold text-[10px] mb-1">仿真结果</div>
+            <div className="flex justify-between"><span className="text-text-muted">充填率</span><span className={simResult.fill_fraction > 0.95 ? "text-success" : "text-warning"}>{(simResult.fill_fraction * 100).toFixed(1)}%</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">充填时间</span><span>{simResult.fill_time_seconds.toFixed(1)}s</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">缺陷数</span><span className={simResult.defects.length > 0 ? "text-danger" : "text-success"}>{simResult.defects.length}</span></div>
+          </div>
+        )}
+
+        {/* Mesh info for repair step */}
+        {currentStep === "repair" && meshInfo && (
+          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-border/50 text-[9px] space-y-0.5">
+            <div className="flex justify-between"><span className="text-text-muted">面数</span><span>{meshInfo.face_count.toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">水密</span><span className={meshInfo.is_watertight ? "text-success" : "text-warning"}>{meshInfo.is_watertight ? "是" : "否"}</span></div>
+          </div>
+        )}
       </div>
 
       {/* No-model prompt */}
