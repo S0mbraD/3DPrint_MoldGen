@@ -429,10 +429,11 @@ def generate_parting_surface_sdf(mesh, direction, parting_line, gpu_compute):
   3. mold_solid = _robust_boolean_subtract(外壳, 内腔)
      - 引擎优先级: manifold3d → trimesh(manifold) → trimesh(blender) → trimesh(default)
      - 始终尝试，不再要求模型水密
-  4. split(mold_solid, 分型面, cap=True) → 2 个水密半壳
+  4. split(mold_solid, 分型面) → 2 个半壳：`trimesh.slice_plane`（需 **shapely** + **rtree**）或回退到 **`slice_faces_plane`**（仅 numpy 裁剪，保留与剖切面相交的壳体外轮廓三角片），再由 `_seal_parting_plane_gaps` 封补分型开口。
+     - **仅**用 `(面心−质心)·n ≥ 0` 选三角片会在剖切面相交处丢掉跨面壳体墙，方块壳会退化成「分型盘 + 随形内腔」，切片器里看不见侧壁。
 
 策略 B — 体素化 + Marching Cubes (布尔失败时的可靠回退):
-  1. 体素化模型: trimesh.voxelized(pitch), pitch = max_extent / 80
+  1. 体素化模型: trimesh.voxelized(pitch)；pitch 由 ``min(0.55, max_extent/160, wall/4)`` 等与尺寸挂钩的目标步长推导，分辨率 clamp 在 96…320，较旧的 ``max_extent/80`` 更细以减轻视口台阶感。
   2. 膨胀 clearance: scipy.ndimage.binary_dilation(model_voxels, iterations=ceil(clearance/pitch))
   3. 填充外壳: np.pad(cavity_voxels, wall_px) → box_voxels & ~padded_cavity
   4. Marching Cubes: skimage.measure.marching_cubes(mold_voxels, 0.5) → 网格
@@ -440,8 +441,8 @@ def generate_parting_surface_sdf(mesh, direction, parting_line, gpu_compute):
   6. 分割半壳: slice_plane(center, direction, cap=True)
 
 策略 C — 直接拼接 (最后手段):
-  1. 外壳 Box 切半 + cavity.invert() 切半
-  2. concatenate(box_half, cavity_half) — 非水密，仅用于可视化
+  1. 外壳 Box 与内腔翻转网格均用与策略 A 相同的半空间剖切（`_safe_slice`），**不得**仅按面心点积二分三角片（参见策略 A）。
+  2. concatenate(box_half, cavity_half)，再经修复与 `_seal_parting_plane_gaps` 封补。
 
 自动选择: 始终 A → 失败 → B → 失败 → C
 ```
@@ -477,14 +478,27 @@ v4: 使用布尔差集将圆柱体从壳体中减去
 
 每个壳体生成后自动执行:
 ```python
-remove_degenerate_faces()       # 移除退化面
-remove_duplicate_faces()        # 移除重复面
-remove_unreferenced_vertices()  # 移除孤立顶点
-repair.fill_holes()             # 填充孔洞
+remove_degenerate_faces/更新面   # 移除退化面（nondegenerate_faces）
+repair.fill_holes()              # 填充孔洞
 repair.fix_normals()            # 修复法线
 repair.fix_winding()            # 修复面绕序
 repair.fix_inversion()          # 修复反转
+_dedupe_opposite_or_duplicate_tris()  # 仅在不增加开放边条数时去掉重合三角片
+_compact_mesh_vertex_indices()   # 将 faces 索引压到稠密 0…N-1，避免残留大索引
 ```
+
+### 6.4.1 脱模方向分层封补 — 解决切片「顶面未封闭 / 暗色缝隙」(v6)
+
+**现象**：布尔半壳在分型面附近除了一圈外轮廓外，往往还有内腔开口；若仅对分型面一层做「单环填盖」，会把外环与内环**各自**当成独立圆盘填充，顶视图在内外之间留下**环形无三角区**，切片软件显示深色缝并报告非封闭体。
+
+**改进**（`mold_builder._seal_parting_plane_gaps`）：
+
+1. 从当前三角网格用面边统计得到**全体**开放边（每条无向边仅属于一个三角形）。
+2. 按边中点在**脱模方向**（与 `MoldShell.direction` 一致）上的标高 **分桶**（桶宽约 1.25 mm 或模型尺寸的约 2%，避免同一平面开口的边被拆到多个桶里形不成闭坏）。
+3. 在每个桶内将开放边连成闭坏，按 2D 投影后的**嵌套关系**区分**外环**与**孔环**，使用 **`manifold3d.triangulate([外环.xy, 孔1.xy, …])`** 一次性填充**带孔的平面**（不依赖 shapely；与仅 `pip install trimesh` 的环境兼容）。
+4. 将新三角形并入网格后执行 **`_compact_mesh_vertex_indices`**，保证顶点索引与 `faces` 一致，便于后续导出 GLB/STL。
+
+**切片依赖（重要）**：`trimesh.slice_plane` 会链式依赖 **shapely** 与 **rtree**。二者缺任一都会令 `slice_plane` 失败并退回到 `slice_faces_plane`；MoldGen 已实现该回退以免丢失侧壁，但此时分型封补更依赖 `_seal_parting_plane_gaps`。为获得「自动加盖」的剖切与水密半壳，**请在 `mesh` 可选依赖中同时安装 `shapely` 与 `rtree`**（`pyproject.toml` / `environment.yml` 已列出）。
 
 ### 6.5 拔模角检查
 
@@ -515,12 +529,16 @@ step 阶梯形:    交替高低台阶 — 增加垂直方向锁定力
 tongue_groove 榫槽: 矩形凸凹配合 — 精确对位，易脱模
 
 算法:
-  1. 在分型平面上沿 u 轴 (垂直于 direction) 按 parting_pitch 间距排列特征
-  2. 每个特征构造为 trimesh.Trimesh (手动定义顶点/面)
-  3. 合并所有特征为 interlock_mesh
-  4. 上模: concatenate(upper_half, interlock_mesh) → 凸出部分
-  5. 下模: _robust_boolean_subtract(lower_half, interlock_mesh) → 凹槽
+  1. mold_solid.section(过模型质心的分型平面) → 多条 2D 折线（外壳截面 + 腔体截面）
+  2. **回路选取 (v6 修正)**：对每条路径计算 2D 鞋带头面积；**取面积最大者**为外壳分型轮廓（避免高面数内腔周长更长的误选）；面积退化时再按周长回退
+  3. 沿该轮廓按 parting_pitch 弧长采样（`_sample_outline_at_pitch`），得到切向一致的放置点
+  4. 每个特征为小型局部化互锁单元（`_make_interlock_unit`），在采样点处以切向/法向定向
+  5. 布尔：上模 union 互锁体，下模 subtract；失败则顶点位移回退
   6. 参数: parting_depth (特征深度 mm), parting_pitch (间距 mm)
+
+**半壳分割**: `_safe_slice` 优先 `slice_plane`（需 shapely+rtree）；失败则 `intersections.slice_faces_plane`（几何裁剪）；**最后手段**才按 `(面心−质心)·n` 选三角片 (`_extract_submesh`)。内腔翻转网格的拼接半壳同样走 `_safe_slice`，避免方块壳只剩顶底而无侧壁。
+
+**说明文档 / 故障记录**: 误选内腔回路问题见 `docs/error-log.md` **ERR-020**。
 ```
 
 ### 6.8 螺丝固定法兰 (v5 新增)

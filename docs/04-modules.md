@@ -244,6 +244,12 @@ class OrientationConfig:
 2. **体素回退** (`_build_shells_voxel`): 体素化 + marching cubes, 依赖 scikit-image
 3. **直接拼接** (`_build_direct_shells`): box_half + cavity_inv_half, 仅可视化用
 
+### 横截面与分型轮廓 (v6)
+
+- `solid.section()` 在**过导入模型质心**、法向为脱模方向的分型面上截取 `mold_solid`，得到若干条 2D 折线。
+- **外壳分型轮廓**取闭合回路中 **2D 面积最大** 的一条（鞋带头公式），而非周长最长——否则高面数腔体内表面常被误判为「主轮廓」，导致互锁特征沿腔体走线（ERR-020）。
+- 面积均接近零时再按周长回退；轮廓点序保持 `discrete` 原始顺序供切向采样。
+
 ### 分型面互锁样式 (v5 新增)
 
 `MoldConfig.parting_style` 支持 5 种样式:
@@ -270,6 +276,7 @@ class OrientationConfig:
 ### 依赖
 
 - `trimesh>=4.0.0` (核心网格操作)
+- `shapely>=2.0.0` 与 `rtree>=1.0.0` (``trimesh.slice_plane`` 分型剖切加盖；缺省时回退到 `slice_faces_plane`）
 - `manifold3d>=2.5.0` (布尔运算首选引擎)
 - `scikit-image>=0.22.0` (marching cubes 体素回退)
 - `scipy` (ndimage 体素膨胀)
@@ -678,6 +685,8 @@ def validate_assembly(parts: list[(name, mesh)], min_clearance) -> AssemblyCheck
 | POST | `/api/v1/advanced/sdf/variable-shell` | 场驱动变厚度壳 |
 
 ## 8. gating_system 模块 — 浇注系统
+
+**API 行为（与导出一致）**：`POST /api/v1/simulation/gating/design` 在返回 `gate_mesh` / `vent_meshes` 预览数据的同时，会调用 `apply_gating_boolean_to_mold` 将浇口圆柱与排气工具体从内存中的 `MoldResult.shells` **布尔差集** 切除，并重置为生成模具时的壳体快照后再切割，避免重复设计叠刀。导出 ZIP / `shell/{id}/glb` 与切片即用该网格。自动优化 `POST .../optimize` 在产出 `final_gating` 时同样会重切壳体。
 
 ### 8.1 核心接口（更新 — 含插板适配）
 

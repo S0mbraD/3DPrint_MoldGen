@@ -406,8 +406,8 @@ class InsertGenerator:
         # Interlocking features (post-hoc for all plate types)
         if cfg.add_interlocking:
             interlock_type = cfg.add_interlocking
-            n_feat = max(3, int(plate_mesh.area * 0.2 / (cfg.interlock_feature_size ** 2)))
-            n_feat = min(n_feat, 6)
+            n_feat = max(6, int(plate_mesh.area * 0.15 / (cfg.interlock_feature_size ** 2)))
+            n_feat = min(n_feat, 36)
             if interlock_type == "dovetail":
                 plate_mesh, _ = self._add_dovetail(plate_mesh, n_feat, cfg.interlock_feature_size)
             elif interlock_type == "diamond":
@@ -446,8 +446,12 @@ class InsertGenerator:
                 elif f == "mesh_holes":
                     anchor_type_name = "mesh_holes"
             if anchor_type_name != "none":
+                try:
+                    at = AnchorType(anchor_type_name)
+                except ValueError:
+                    at = AnchorType.MESH_HOLES
                 plate.anchor = AnchorFeature(
-                    type=AnchorType(anchor_type_name) if anchor_type_name in AnchorType.__members__.values() else AnchorType.MESH_HOLES,
+                    type=at,
                     positions=np.array([]),
                     feature_size=cfg.anchor_feature_size,
                     count=len(plate.features),
@@ -780,7 +784,9 @@ class InsertGenerator:
         """
         targets: list[float] = []
         if cfg.add_mesh_holes and cfg.mesh_hole_size > 0:
-            edge = cfg.mesh_hole_size / 14
+            from moldgen.core.tpms import TPMS_REGISTRY
+            div = 18 if cfg.hole_pattern in TPMS_REGISTRY else 14
+            edge = cfg.mesh_hole_size / div
             targets.append(edge * edge * 0.433)
         if cfg.add_ribs and cfg.rib_width > 0:
             edge = cfg.rib_width / 5
@@ -844,15 +850,13 @@ class InsertGenerator:
                 return plate
 
         holes_arr = np.array(holes, dtype=np.float64)
+        from moldgen.core.tpms import TPMS_REGISTRY
 
+        pattern = cfg.hole_pattern
         # ── Phase 0: adaptive pre-subdivision near hole boundaries ────
-        # Subdivide faces whose edges straddle a hole boundary (within
-        # ±1.3r) so that the subsequent face-removal produces smoother
-        # circular edges.  Up to 2 passes; each pass only subdivides
-        # the narrow ring, keeping total face count reasonable.
         plate = self._subdivide_near_holes(plate, holes_arr, u_ax, v_ax, centroid, passes=2)
 
-        # ── Phase 1: face removal (centroid distance test) ────────────
+        # ── Phase 1: face removal — shape depends on pattern (nTopology-style distinction)
         fc = plate.triangles_center
         fc_c = fc - centroid
         fu = fc_c @ u_ax
@@ -860,7 +864,18 @@ class InsertGenerator:
 
         keep = np.ones(len(plate.faces), dtype=bool)
         for hu, hv, hr in holes:
-            keep &= (fu - hu) ** 2 + (fv - hv) ** 2 >= hr * hr
+            safe_r = max(float(hr), 1e-6)
+            if pattern in TPMS_REGISTRY:
+                du = (fu - hu) / safe_r
+                dv = (fv - hv) / safe_r
+                keep &= (np.abs(du) ** 2.15 + np.abs(dv) ** 2.15) >= 1.0
+            elif pattern == "grid":
+                keep &= np.maximum(np.abs(fu - hu), np.abs(fv - hv)) >= safe_r * 0.96
+            elif pattern == "diamond":
+                du, dv = (fu - hu) / safe_r, (fv - hv) / safe_r
+                keep &= (np.abs(du) + np.abs(dv)) >= 1.02
+            else:
+                keep &= (fu - hu) ** 2 + (fv - hv) ** 2 >= hr * hr
 
         n_removed = int(np.sum(~keep))
         if n_removed == 0:
@@ -870,15 +885,16 @@ class InsertGenerator:
         result.update_faces(keep)
         result.remove_unreferenced_vertices()
 
-        # ── Phase 2: snap boundary vertices to ideal circles ──────────
-        result = self._snap_hole_boundaries(result, holes_arr, u_ax, v_ax, centroid)
+        # ── Phase 2: circular snap only when holes are rotationally symmetric ──────────
+        if pattern not in TPMS_REGISTRY and pattern not in ("grid", "diamond"):
+            result = self._snap_hole_boundaries(result, holes_arr, u_ax, v_ax, centroid)
 
-        # ── Phase 3: Laplacian smoothing of boundary ring ─────────────
+        # ── Phase 3: boundary smoothing ─────────────
         result = self._smooth_boundary_ring(result, iterations=3)
 
         logger.info(
-            "Carved %d faces for %d holes (%.1f%% removed, pre-subdivided, snapped)",
-            n_removed, len(holes), 100 * n_removed / len(plate.faces),
+            "Carved %d faces for %d holes pattern=%s (%.1f%% removed)",
+            n_removed, len(holes), pattern, 100 * n_removed / len(plate.faces),
         )
         return result
 
@@ -1906,58 +1922,211 @@ class InsertGenerator:
             pass
         return None
 
+    @staticmethod
+    def _manifold_union(
+        mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh,
+    ) -> trimesh.Trimesh | None:
+        try:
+            import manifold3d
+            m_a = manifold3d.Manifold(manifold3d.Mesh(
+                vert_properties=np.asarray(mesh_a.vertices, dtype=np.float32),
+                tri_verts=np.asarray(mesh_a.faces, dtype=np.uint32),
+            ))
+            m_b = manifold3d.Manifold(manifold3d.Mesh(
+                vert_properties=np.asarray(mesh_b.vertices, dtype=np.float32),
+                tri_verts=np.asarray(mesh_b.faces, dtype=np.uint32),
+            ))
+            uni = m_a + m_b
+            out = uni.to_mesh()
+            tm = trimesh.Trimesh(
+                vertices=np.asarray(out.vert_properties[:, :3]),
+                faces=np.asarray(out.tri_verts), process=True,
+            )
+            if len(tm.faces) > 4:
+                return tm
+        except Exception:
+            pass
+        try:
+            r = mesh_a.union(mesh_b)
+            if r is not None and len(r.faces) > 4:
+                return r
+        except Exception:
+            pass
+        return None
+
+    def _interlock_surface_frames(
+        self, plate: trimesh.Trimesh, points: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Per sample: surface anchor, inward axis (into plate solid), tangent, bitangent."""
+        pts = np.asarray(points, dtype=np.float64)
+        n_pts = len(pts)
+        if n_pts == 0:
+            z = np.zeros((0, 3))
+            return z, z, z, z
+        verts = np.asarray(plate.vertices, dtype=np.float64)
+        faces = np.asarray(plate.faces, dtype=np.int64)
+        tree = cKDTree(verts)
+        _, vi = tree.query(pts, k=1)
+        vi = np.atleast_1d(np.asarray(vi, dtype=np.int64))
+        closest = verts[vi]
+        c = np.asarray(plate.centroid, dtype=np.float64)
+        fn = np.asarray(plate.face_normals, dtype=np.float64)
+        n_out = np.zeros((n_pts, 3), dtype=np.float64)
+        for i in range(n_pts):
+            v = int(vi[i])
+            inc = np.where((faces == v).any(axis=1))[0]
+            if len(inc) == 0:
+                n = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+            else:
+                n = fn[int(inc[0])].copy()
+            outv = closest[i] - c
+            if np.dot(n, outv) < 0:
+                n = -n
+            nn = float(np.linalg.norm(n))
+            n_out[i] = n / nn if nn > 1e-12 else np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        inward = -n_out
+        arb = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        t = np.cross(inward, np.tile(arb, (n_pts, 1)))
+        bad = np.linalg.norm(t, axis=1) < 1e-9
+        if np.any(bad):
+            arb2 = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            t[bad] = np.cross(inward[bad], arb2)
+        t /= np.linalg.norm(t, axis=1, keepdims=True) + 1e-12
+        bit = np.cross(t, inward)
+        bit /= np.linalg.norm(bit, axis=1, keepdims=True) + 1e-12
+        return closest, inward, t, bit
+
+    def _oriented_box_cutter(
+        self,
+        center: np.ndarray,
+        tangent: np.ndarray,
+        bitangent: np.ndarray,
+        inward: np.ndarray,
+        ext_t: float,
+        ext_b: float,
+        ext_in: float,
+    ) -> trimesh.Trimesh:
+        b = trimesh.creation.box(extents=[ext_t, ext_b, ext_in])
+        T = np.eye(4)
+        T[:3, 0] = tangent
+        T[:3, 1] = bitangent
+        T[:3, 2] = inward
+        T[:3, 3] = center
+        b.apply_transform(T)
+        return b
+
+    def _trapezoid_cutter_mesh(
+        self,
+        center: np.ndarray,
+        tangent: np.ndarray,
+        bitangent: np.ndarray,
+        inward: np.ndarray,
+        top_w: float,
+        bot_w: float,
+        d: float,
+        h: float,
+    ) -> trimesh.Trimesh:
+        half_h = h / 2
+        verts = np.array([
+            [-top_w / 2, -d / 2, -half_h], [top_w / 2, -d / 2, -half_h],
+            [bot_w / 2, -d / 2, half_h], [-bot_w / 2, -d / 2, half_h],
+            [-top_w / 2, d / 2, -half_h], [top_w / 2, d / 2, -half_h],
+            [bot_w / 2, d / 2, half_h], [-bot_w / 2, d / 2, half_h],
+        ], dtype=np.float64)
+        faces = np.array([
+            [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+            [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
+            [0, 3, 2], [0, 2, 1], [4, 5, 6], [4, 6, 7],
+        ], dtype=np.int64)
+        T = np.eye(4)
+        T[:3, 0] = tangent
+        T[:3, 1] = bitangent
+        T[:3, 2] = inward
+        T[:3, 3] = center
+        m = trimesh.Trimesh(vertices=verts, faces=faces, process=True)
+        m.apply_transform(T)
+        return m
+
     def _add_bumps(self, plate: trimesh.Trimesh, n: int, size: float) -> tuple[trimesh.Trimesh, np.ndarray]:
-        points = self._sample_pts(plate, n * 3)
-        selected = self._farthest_point_sampling(points, n)
+        points = self._sample_pts(plate, max(n * 6, 24))
+        selected = self._farthest_point_sampling(points, min(n, len(points)))
+        closest, inward, _, _ = self._interlock_surface_frames(plate, selected)
+        outward = -inward
         result = plate
-        for pt in selected:
-            bump = trimesh.creation.icosphere(radius=size / 2, subdivisions=1)
-            bump.apply_translation(pt)
-            with contextlib.suppress(Exception):
-                r = result.union(bump)
-                if r is not None and len(r.faces) > 4:
-                    result = r
+        for i in range(len(selected)):
+            ctr = closest[i] + outward[i] * (size * 0.35)
+            bump = trimesh.creation.icosphere(radius=size * 0.45, subdivisions=1)
+            bump.apply_translation(ctr)
+            nu = self._manifold_union(result, bump)
+            if nu is not None and len(nu.faces) > 4:
+                result = nu
+            else:
+                with contextlib.suppress(Exception):
+                    r = result.union(bump)
+                    if r is not None and len(r.faces) > 4:
+                        result = r
         return result, selected
 
     def _add_grooves(self, plate: trimesh.Trimesh, n: int, size: float) -> tuple[trimesh.Trimesh, np.ndarray]:
-        points = self._sample_pts(plate, n * 2)
+        points = self._sample_pts(plate, max(n * 8, 32))
         selected = self._farthest_point_sampling(points, min(n, len(points)))
+        closest, inward, t, bit = self._interlock_surface_frames(plate, selected)
+        depth = max(self.config.thickness * 0.95, size * 1.1)
+        L, W = size * 5.0, size * 0.5
         result = plate
-        for pt in selected:
-            groove = trimesh.creation.box(extents=[size * 3, size * 0.5, self.config.thickness * 1.5])
-            groove.apply_translation(pt)
-            with contextlib.suppress(Exception):
-                r = result.difference(groove)
-                if r is not None and len(r.faces) > 4:
-                    result = r
+        for i in range(len(selected)):
+            ctr = closest[i] + inward[i] * (depth * 0.48)
+            cutter = self._oriented_box_cutter(
+                ctr, t[i], bit[i], inward[i], L, W, depth,
+            )
+            nu = self._manifold_subtract(result, cutter)
+            if nu is not None and len(nu.faces) > 4:
+                result = nu
         return result, selected
 
     def _add_dovetail(self, plate: trimesh.Trimesh, n: int, size: float) -> tuple[trimesh.Trimesh, np.ndarray]:
-        points = self._sample_pts(plate, n * 2)
+        """Carve dovetail pockets into the outer face (silicone interlock), not protrusions."""
+        points = self._sample_pts(plate, max(n * 8, 32))
         selected = self._farthest_point_sampling(points, min(n, len(points)))
+        closest, inward, t, bit = self._interlock_surface_frames(plate, selected)
+        depth = max(self.config.thickness * 0.9, size * 1.2)
+        top_w, bot_w, d = size * 1.15, size * 0.42, size * 0.65
         result = plate
-        for pt in selected:
-            trap = trimesh.creation.box(extents=[size, size * 0.6, self.config.thickness * 0.4])
-            trap.apply_translation(pt + np.array([0, 0, self.config.thickness * 0.3]))
-            with contextlib.suppress(Exception):
-                r = result.union(trap)
-                if r is not None and len(r.faces) > 4:
-                    result = r
+        for i in range(len(selected)):
+            ctr = closest[i] + inward[i] * (depth * 0.48)
+            cutter = self._trapezoid_cutter_mesh(
+                ctr, t[i], bit[i], inward[i], top_w, bot_w, d, depth,
+            )
+            nu = self._manifold_subtract(result, cutter)
+            if nu is not None and len(nu.faces) > 4:
+                result = nu
         return result, selected
 
     def _add_diamond(self, plate: trimesh.Trimesh, n: int, size: float) -> tuple[trimesh.Trimesh, np.ndarray]:
-        points = self._sample_pts(plate, n * 2)
+        points = self._sample_pts(plate, max(n * 8, 32))
         selected = self._farthest_point_sampling(points, min(n, len(points)))
+        closest, inward, t, bit = self._interlock_surface_frames(plate, selected)
+        h = max(self.config.thickness * 0.55, size * 0.75)
+        s = size * 0.55
         result = plate
-        for pt in selected:
-            diamond = trimesh.creation.box(extents=[size * 0.5, size * 0.5, self.config.thickness * 0.3])
-            rot = trimesh.transformations.rotation_matrix(np.pi / 4, [0, 0, 1])
-            diamond.apply_transform(rot)
-            diamond.apply_translation(pt)
-            with contextlib.suppress(Exception):
-                r = result.union(diamond)
-                if r is not None and len(r.faces) > 4:
-                    result = r
+        for i in range(len(selected)):
+            ctr = closest[i] + inward[i] * (h * 0.45)
+            diamond = trimesh.creation.box(extents=[s, s, h])
+            rot_loc = trimesh.transformations.rotation_matrix(np.pi / 4, [0, 0, 1])
+            T = np.eye(4)
+            T[:3, 0] = t[i]
+            T[:3, 1] = bit[i]
+            T[:3, 2] = inward[i]
+            T[:3, 3] = ctr
+            diamond.apply_transform(T @ rot_loc)
+            nu = self._manifold_union(result, diamond)
+            if nu is not None and len(nu.faces) > 4:
+                result = nu
+            else:
+                with contextlib.suppress(Exception):
+                    r = result.union(diamond)
+                    if r is not None and len(r.faces) > 4:
+                        result = r
         return result, selected
 
     # ═══════════════════════ Helpers ════════════════════════════════════

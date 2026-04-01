@@ -17,6 +17,7 @@ import { StepToolbar as StepToolbarOverlay } from "./components/layout/StepToolb
 import { PanelLeftOpen, PanelRightOpen, Settings, Terminal } from "lucide-react";
 import { useAppStore } from "./stores/appStore";
 import { toastSuccess, toastWarning, toastError } from "./stores/toastStore";
+import { flog } from "./stores/logStore";
 
 /* ── Global Error Boundary ───────────────────────────────────────── */
 
@@ -66,12 +67,15 @@ export default function App() {
   const { status: backendStatus } = useBackendStatus();
   useKeyboardShortcuts();
 
-  /* global unhandled error / promise rejection → toast */
+  /* global unhandled error / promise rejection → toast + log */
   useEffect(() => {
+    flog.info("System", "MoldGen 前端启动中...");
     const onError = (e: ErrorEvent) => {
+      flog.error("JS", e.message, `文件: ${e.filename ?? "?"} 行: ${e.lineno ?? "?"}`);
       toastError("JS 错误", e.message);
     };
     const onReject = (e: PromiseRejectionEvent) => {
+      flog.error("Promise", String(e.reason));
       toastError("未捕获 Promise", String(e.reason));
     };
     window.addEventListener("error", onError);
@@ -83,13 +87,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (backendStatus === "online") {
+      flog.success("System", "后端服务已连接");
+    } else if (backendStatus === "offline") {
+      flog.error("System", "后端服务离线 — 请检查 moldgen 后端是否正在运行");
+    }
+  }, [backendStatus]);
+
+  useEffect(() => {
     if (sysInfo) {
       console.log(
         `MoldGen v${sysInfo.version} | GPU: ${sysInfo.gpu.device_name} | VRAM: ${sysInfo.gpu.vram_total_mb}MB`,
       );
       if (sysInfo.gpu.available) {
+        flog.success("GPU", `GPU 已就绪: ${sysInfo.gpu.device_name}`, `VRAM: ${sysInfo.gpu.vram_total_mb}MB | CUDA: ${sysInfo.gpu.cuda_version ?? "N/A"}`);
         toastSuccess("GPU 已就绪", `${sysInfo.gpu.device_name} (${sysInfo.gpu.vram_total_mb}MB)`);
       } else {
+        flog.warn("GPU", "GPU 不可用 — 使用 CPU 模式运行");
         toastWarning("GPU 不可用", "将使用 CPU 模式运行");
       }
     }

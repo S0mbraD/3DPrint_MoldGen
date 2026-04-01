@@ -15,6 +15,54 @@ from moldgen.core.mold_builder import MoldResult
 logger = logging.getLogger(__name__)
 
 
+def _combined_mold_bounds(mold: MoldResult) -> tuple[np.ndarray, np.ndarray] | None:
+    """Axis-aligned bounds enclosing all mold shell meshes."""
+    if not mold.shells:
+        return None
+    mins = np.min(np.stack([s.mesh.bounds[0] for s in mold.shells], axis=0), axis=0)
+    maxs = np.max(np.stack([s.mesh.bounds[1] for s in mold.shells], axis=0), axis=0)
+    return mins, maxs
+
+
+def apply_gating_boolean_to_mold(mold: MoldResult, gating: GatingResult) -> None:
+    """Subtract gate cylinder and vent tool meshes from each stored shell (in place).
+
+    The gating **design** step only produced preview geometry for the viewport; exported
+    shells come from ``_mold_results`` and were unchanged. This updates shell ``MeshData``
+    so ZIP/STL export and ``/shell/{id}/glb`` include pour / vent holes.
+    """
+    from moldgen.core.mold_builder import MoldBuilder, MoldShell, _repair_mesh
+    from moldgen.core.mesh_data import MeshData
+
+    cutters = _rebuild_subtraction_tools(gating, mold)
+    if not cutters:
+        logger.warning("apply_gating_boolean_to_mold: could not build subtraction tools")
+        return
+
+    builder = MoldBuilder()
+    new_shells: list[MoldShell] = []
+    for sh in mold.shells:
+        tm = sh.mesh.to_trimesh()
+        tm = _repair_mesh(tm)
+        for ti, cut in enumerate(cutters):
+            tm = _subtract_gating_tool(builder, tm, cut, sh.shell_id, ti)
+        tm = _repair_mesh(tm)
+        new_shells.append(MoldShell(
+            shell_id=sh.shell_id,
+            mesh=MeshData.from_trimesh(tm),
+            direction=np.asarray(sh.direction, dtype=np.float64),
+            volume=float(tm.volume) if tm.is_watertight else sh.volume,
+            surface_area=float(tm.area),
+            is_printable=sh.is_printable,
+            min_draft_angle=sh.min_draft_angle,
+        ))
+    mold.shells = new_shells
+    logger.info(
+        "Applied gating booleans to mold: %d cutters × %d shells",
+        len(cutters), len(new_shells),
+    )
+
+
 @dataclass
 class GatingConfig:
     gate_diameter: float = 12.0  # mm
@@ -90,6 +138,71 @@ class GatingResult:
                 for m in self.vent_meshes
             ]
         return result
+
+
+def _rebuild_subtraction_tools(gating: GatingResult, mold: MoldResult) -> list[trimesh.Trimesh]:
+    """Rebuild gate / vent cutters against the **current** mold bounds (pristine shells).
+
+    Preview meshes on ``GatingResult`` can be stale or too tight after shell refresh; boolean
+    subtract always uses freshly built tools with a small diameter epsilon for robust overlap.
+    """
+    n_v = len(gating.vents) if gating.vents else 4
+    cfg = GatingConfig(
+        gate_diameter=float(gating.gate_diameter) + 0.4,
+        runner_width=float(gating.runner_width),
+        n_vents=max(1, n_v),
+    )
+    designer = GatingSystem(cfg)
+    tools: list[trimesh.Trimesh] = [designer._build_gate_mesh(gating.gate, mold)]
+    if gating.vents:
+        tools.extend(designer._build_vent_meshes(gating.vents, mold))
+    return tools
+
+
+def _subtract_gating_tool(
+    builder: object,
+    tm: trimesh.Trimesh,
+    cut: trimesh.Trimesh,
+    shell_id: int,
+    tool_index: int,
+) -> trimesh.Trimesh:
+    """Boolean subtract with scale retries and direct trimesh fallback."""
+    for scale in (1.0, 1.08, 1.18):
+        ctool = cut
+        if scale != 1.0:
+            ctool = cut.copy()
+            c = np.asarray(ctool.centroid, dtype=np.float64)
+            ctool.vertices = c + (ctool.vertices - c) * scale
+        try:
+            res = builder._robust_boolean_subtract(tm, ctool)
+            if res is not None and len(res.faces) > 4:
+                return res
+        except Exception as exc:
+            logger.debug(
+                "Gating subtract shell=%d tool=%d scale=%.2f: %s",
+                shell_id,
+                tool_index,
+                scale,
+                exc,
+            )
+    ctool = cut.copy()
+    c = np.asarray(ctool.centroid, dtype=np.float64)
+    ctool.vertices = c + (ctool.vertices - c) * 1.18
+    for engine in ("manifold", None):
+        try:
+            kw = {"engine": engine} if engine else {}
+            r = tm.difference(ctool, **kw)
+            if r is not None and len(r.faces) > 4:
+                return r
+        except Exception as exc:
+            logger.debug("trimesh.difference fallback failed (%s): %s", engine, exc)
+    logger.warning(
+        "Gating subtract could not cut shell_id=%d tool_index=%d (faces=%d)",
+        shell_id,
+        tool_index,
+        len(tm.faces),
+    )
+    return tm
 
 
 class GatingSystem:
@@ -266,14 +379,20 @@ class GatingSystem:
         return float(max(fill_time_s, 0.1))
 
     def _build_gate_mesh(self, gate: GatePosition, mold: MoldResult) -> trimesh.Trimesh:
-        """Build a cylindrical gate mesh."""
+        """Build a cylindrical gate mesh long enough to pierce the full mold envelope."""
         up = np.array([0.0, 0.0, 1.0])
         if mold.shells:
             up = np.asarray(mold.shells[0].direction, dtype=np.float64)
+        up = up / (np.linalg.norm(up) + 1e-12)
+
+        span = 48.0
+        ob = _combined_mold_bounds(mold)
+        if ob is not None:
+            span = float(np.linalg.norm(ob[1] - ob[0]))
 
         r = self.config.gate_diameter / 2
-        height = max(self.config.gate_diameter * 1.5, 15.0)
-        cyl = trimesh.creation.cylinder(radius=r, height=height, sections=24)
+        height = max(span * 1.55, self.config.gate_diameter * 2.5, 28.0)
+        cyl = trimesh.creation.cylinder(radius=r, height=height, sections=48)
 
         z_axis = np.array([0.0, 0.0, 1.0])
         if not np.allclose(up, z_axis):
@@ -291,14 +410,19 @@ class GatingSystem:
     def _build_vent_meshes(
         self, vents: list[VentPosition], mold: MoldResult,
     ) -> list[trimesh.Trimesh]:
-        """Build small box meshes for each vent."""
+        """Build vent tool meshes that reach through the shell wall."""
         meshes: list[trimesh.Trimesh] = []
         w = self.config.vent_width
         d = max(self.config.vent_depth * 100, 2.0)
-        h = 8.0
+
+        span = 32.0
+        ob = _combined_mold_bounds(mold)
+        if ob is not None:
+            span = float(np.linalg.norm(ob[1] - ob[0]))
+        h = max(14.0, span * 0.52)
 
         for vent in vents:
-            box = trimesh.creation.box(extents=[w, d, h])
+            box = trimesh.creation.box(extents=[w + 0.6, d + 0.4, h])
 
             normal = np.asarray(vent.normal, dtype=np.float64)
             normal /= max(np.linalg.norm(normal), 1e-9)

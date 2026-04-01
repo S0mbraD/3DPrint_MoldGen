@@ -330,6 +330,23 @@ def test_gating_design():
     return model_id, mold_id, data["gating_id"]
 
 
+def test_gating_design_updates_exported_shell_glb():
+    """Design gating must boolean-cut stored shells so export/viewport mesh changes."""
+    model_id, mold_id = _setup_mold_and_model()
+    faces0 = client.get(f"/api/v1/molds/result/{mold_id}").json()["result"]["shells"]
+    fc0 = sum(int(s["face_count"]) for s in faces0)
+    glb0 = client.get(f"/api/v1/molds/result/{mold_id}/shell/0/glb").content
+    resp = client.post(
+        "/api/v1/simulation/gating/design",
+        json={"model_id": model_id, "mold_id": mold_id, "material": "silicone_a30"},
+    )
+    assert resp.status_code == 200
+    faces1 = client.get(f"/api/v1/molds/result/{mold_id}").json()["result"]["shells"]
+    fc1 = sum(int(s["face_count"]) for s in faces1)
+    glb1 = client.get(f"/api/v1/molds/result/{mold_id}/shell/0/glb").content
+    assert fc1 != fc0 or glb0 != glb1
+
+
 def test_run_simulation_l1():
     model_id, mold_id, gating_id = test_gating_design()
     resp = client.post(

@@ -200,6 +200,56 @@ class TestMoldBuilder:
 
         assert len(result.shells) >= 1
 
+    def test_two_part_shells_closed_for_slicing(self):
+        """Export meshes must have no open boundary edges (FDM slicers)."""
+        from collections import Counter
+
+        mesh = _make_box()
+        builder = MoldBuilder(MoldConfig(
+            add_pour_hole=False,
+            add_vent_holes=False,
+            add_alignment_pins=False,
+        ))
+        result = builder.build_two_part_mold(mesh, np.array([0, 0, 1]))
+        for sh in result.shells:
+            fe = trimesh.geometry.faces_to_edges(np.asarray(sh.mesh.faces, dtype=np.int64))
+            fe = np.sort(fe, axis=1)
+            n_open = sum(1 for _, v in Counter(map(tuple, fe)).items() if v == 1)
+            assert n_open == 0, f"shell {sh.shell_id} has {n_open} open boundary edges"
+
+    def test_direct_fallback_box_shell_keeps_outer_extent(self):
+        """When boolean+voxel fail, box shell must still include outer block walls (regression)."""
+        mesh = _make_sphere()
+        direction = (
+            np.array([0.18, 0.22, 0.959], dtype=np.float64)
+            / np.linalg.norm([0.18, 0.22, 0.959])
+        )
+        cfg = MoldConfig(
+            shell_type="box",
+            add_pour_hole=False,
+            add_vent_holes=False,
+            add_alignment_pins=False,
+        )
+        builder = MoldBuilder(cfg)
+
+        orig_sub = MoldBuilder._robust_boolean_subtract
+        orig_vox = MoldBuilder._build_shells_voxel
+        try:
+            MoldBuilder._robust_boolean_subtract = lambda self, o, c: None  # type: ignore[assignment]
+            MoldBuilder._build_shells_voxel = lambda self, *a, **k: None  # type: ignore[misc]
+            result = builder.build_two_part_mold(mesh, direction)
+        finally:
+            MoldBuilder._robust_boolean_subtract = orig_sub
+            MoldBuilder._build_shells_voxel = orig_vox
+
+        assert len(result.shells) == 2
+        for sh in result.shells:
+            ext = sh.mesh.extents
+            assert float(np.max(ext)) >= 44.0, (
+                f"shell {sh.shell_id} too small (extents {ext.tolist()}); "
+                "missing outer box walls in direct fallback?"
+            )
+
     def test_mold_to_dict(self):
         mesh = _make_box()
         builder = MoldBuilder()

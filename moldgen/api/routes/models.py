@@ -36,6 +36,8 @@ def _get_mesh(model_id: str) -> MeshData:
 @router.post("/upload")
 async def upload_model(file: UploadFile):
     """Upload a 3D model file, parse it, and return mesh info."""
+    import time as _time
+    t0 = _time.perf_counter()
     config = get_config()
     config.ensure_dirs()
 
@@ -44,10 +46,12 @@ async def upload_model(file: UploadFile):
 
     suffix = Path(file.filename).suffix.lower()
     if suffix not in SUPPORTED_IMPORT:
+        logger.warning("Upload rejected: unsupported format %s", suffix)
         raise HTTPException(400, f"Unsupported format: {suffix}")
 
     content = await file.read()
     size_mb = len(content) / (1024 * 1024)
+    logger.info("Upload: %s (%.2f MB, %s)", file.filename, size_mb, suffix)
     if size_mb > config.max_upload_size_mb:
         raise HTTPException(413, f"File too large: {size_mb:.1f}MB (max {config.max_upload_size_mb}MB)")
 
@@ -60,14 +64,22 @@ async def upload_model(file: UploadFile):
         _loaded_meshes[model_id] = mesh
     except Exception as e:
         dest.unlink(missing_ok=True)
+        logger.error("Failed to parse model %s: %s", file.filename, e)
         raise HTTPException(422, f"Failed to parse model: {e}") from e
+
+    info = mesh.info()
+    elapsed = _time.perf_counter() - t0
+    logger.info(
+        "Upload OK: id=%s faces=%d verts=%d watertight=%s (%.2fs)",
+        model_id, info["face_count"], info["vertex_count"], info["is_watertight"], elapsed,
+    )
 
     return {
         "model_id": model_id,
         "filename": file.filename,
         "format": suffix,
         "size_mb": round(size_mb, 2),
-        "mesh_info": mesh.info(),
+        "mesh_info": info,
     }
 
 
@@ -382,10 +394,20 @@ async def analyze_curvature(model_id: str, req: CurvatureAnalysisRequest):
 
 @router.post("/{model_id}/repair")
 async def repair_model(model_id: str):
+    import time as _time
+    t0 = _time.perf_counter()
     mesh = _get_mesh(model_id)
+    logger.info("Repair: model=%s faces=%d", model_id, mesh.face_count)
     result = MeshRepair.repair(mesh)
+    elapsed = _time.perf_counter() - t0
     if result.success:
         _loaded_meshes[model_id] = result.mesh
+        logger.info(
+            "Repair OK: model=%s actions=%s faces_after=%d (%.2fs)",
+            model_id, result.actions, result.mesh.face_count, elapsed,
+        )
+    else:
+        logger.warning("Repair: no changes applied for model=%s (%.2fs)", model_id, elapsed)
     return {
         "model_id": model_id,
         "success": result.success,
@@ -405,6 +427,8 @@ class SimplifyRequest(BaseModel):
 
 @router.post("/{model_id}/simplify")
 async def simplify_model(model_id: str, req: SimplifyRequest):
+    import time as _time
+    t0 = _time.perf_counter()
     mesh = _get_mesh(model_id)
     if req.target_faces and req.target_faces > 0:
         target = req.target_faces
@@ -416,12 +440,15 @@ async def simplify_model(model_id: str, req: SimplifyRequest):
     if target >= mesh.face_count:
         raise HTTPException(400, f"目标面数 {target} 不少于当前面数 {mesh.face_count}")
 
+    logger.info("Simplify: model=%s %d→%d faces (ratio=%.2f)", model_id, mesh.face_count, target, target / mesh.face_count)
     try:
         result = await asyncio.to_thread(_editor.simplify_qem, mesh, target)
     except Exception as exc:
         logger.exception("Simplify failed: %s", exc)
         raise HTTPException(500, f"简化失败: {exc}") from exc
 
+    elapsed = _time.perf_counter() - t0
+    logger.info("Simplify OK: model=%s %d→%d faces (%.2fs)", model_id, mesh.face_count, result.face_count, elapsed)
     _loaded_meshes[model_id] = result
     return {"model_id": model_id, "mesh_info": result.info()}
 

@@ -4,7 +4,7 @@ import numpy as np
 import trimesh
 
 from moldgen.core.flow_sim import FlowSimulator, SimConfig
-from moldgen.core.gating import GatingConfig, GatingSystem
+from moldgen.core.gating import GatingConfig, GatingSystem, apply_gating_boolean_to_mold
 from moldgen.core.material import MATERIAL_PRESETS, MaterialProperties
 from moldgen.core.mesh_data import MeshData
 from moldgen.core.mold_builder import MoldBuilder, MoldConfig
@@ -104,6 +104,26 @@ class TestGatingSystem:
             for j in range(i + 1, len(positions)):
                 dist = np.linalg.norm(positions[i] - positions[j])
                 assert dist > 1.0, "Vents too close together"
+
+    def test_apply_gating_boolean_updates_shell_meshes(self):
+        """Gating preview meshes must be subtracted from stored shells for export."""
+        model = _make_box()
+        mold = MoldBuilder(
+            MoldConfig(
+                wall_thickness=4.0,
+                add_pour_hole=False,
+                add_vent_holes=False,
+                add_alignment_pins=False,
+            )
+        ).build_two_part_mold(model, np.array([0, 0, 1]))
+        mat = MaterialProperties.silicone_shore_a30()
+        result = GatingSystem(GatingConfig(gate_diameter=10.0, n_vents=2)).design(
+            mold, model, mat,
+        )
+        area_before = sum(s.mesh.surface_area for s in mold.shells)
+        apply_gating_boolean_to_mold(mold, result)
+        area_after = sum(s.mesh.surface_area for s in mold.shells)
+        assert area_after > area_before * 1.02, "expected extra surface from through-holes"
 
 
 # ── FlowSimulator ────────────────────────────────────────────────────

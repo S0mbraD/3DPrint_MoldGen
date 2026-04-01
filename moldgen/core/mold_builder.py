@@ -14,6 +14,7 @@ from __future__ import annotations
 import heapq
 import logging
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -66,6 +67,8 @@ class MoldConfig:
     # Draft
     draft_angle_check: bool = True
     min_draft_angle: float = 1.0      # degrees
+    # Mold input mesh: subdivide model before shell / voxel ops for smoother cavities
+    min_input_faces: int = 12000
 
 
 @dataclass
@@ -211,6 +214,412 @@ def _ensure_min_faces(
     return tm
 
 
+def _laplacian_smooth_vertex_normals(tm: trimesh.Trimesh) -> np.ndarray:
+    """Blend each vertex normal with its neighbors (one iteration).
+
+    Reduces divergent normals at high-curvature tips so normal-offset
+    shells (cavity clearance, conformal outer wall) stay closed.
+    """
+    normals = np.asarray(tm.vertex_normals, dtype=np.float64)
+    smooth_n = normals.copy()
+    try:
+        adj_list = tm.vertex_neighbors
+        for vi in range(len(smooth_n)):
+            nbrs = adj_list[vi]
+            if nbrs:
+                avg = np.mean(normals[nbrs], axis=0)
+                smooth_n[vi] = 0.5 * normals[vi] + 0.5 * avg
+        row_n = np.linalg.norm(smooth_n, axis=1, keepdims=True)
+        safe_n = np.where(row_n > 1e-8, row_n, 1.0)
+        smooth_n = np.where(row_n > 1e-8, smooth_n / safe_n, normals)
+    except Exception:
+        smooth_n = normals
+    return smooth_n
+
+
+def _edges_to_closed_loops(edges: np.ndarray) -> list[np.ndarray]:
+    """Extract closed vertex loops from an undirected 2-manifold boundary edge list."""
+    if edges.size == 0:
+        return []
+    e = np.asarray(edges, dtype=np.int64)
+    from collections import defaultdict
+
+    adj: dict[int, set[int]] = defaultdict(set)
+    undirected: set[tuple[int, int]] = set()
+    for a, b in e:
+        a, b = int(a), int(b)
+        if a == b:
+            continue
+        adj[a].add(b)
+        adj[b].add(a)
+        undirected.add((a, b) if a < b else (b, a))
+
+    loops: list[np.ndarray] = []
+    while undirected:
+        v0, v1 = undirected.pop()
+        loop: list[int] = [v0, v1]
+        prev, curr = v0, v1
+        while True:
+            nbrs = sorted(x for x in adj[curr] if x != prev)
+            if not nbrs:
+                break
+            others = [x for x in nbrs if x != v0]
+            nxt = others[0] if others else v0
+            ek = (curr, nxt) if curr < nxt else (nxt, curr)
+            if nxt == v0:
+                if ek in undirected:
+                    undirected.discard(ek)
+                break
+            if ek in undirected:
+                undirected.discard(ek)
+            loop.append(int(nxt))
+            prev, curr = curr, int(nxt)
+            if len(loop) > e.shape[0] + 20:
+                break
+        if len(loop) >= 3:
+            loops.append(np.array(loop, dtype=np.int64))
+    return loops
+
+
+def _signed_shoelace_2d(poly_xy: np.ndarray) -> float:
+    """Signed area; positive ⇒ CCW in an (x,y) right-handed frame."""
+    if poly_xy.ndim != 2 or len(poly_xy) < 3:
+        return 0.0
+    x = poly_xy[:, 0].astype(np.float64, copy=False)
+    y = poly_xy[:, 1].astype(np.float64, copy=False)
+    return 0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+
+def _point_in_polygon_2d(pt: np.ndarray, poly_xy: np.ndarray) -> bool:
+    """Ray cast; *poly_xy* is an open ring (first vertex not repeated at end)."""
+    if poly_xy.ndim != 2 or len(poly_xy) < 3:
+        return False
+    x, y = float(pt[0]), float(pt[1])
+    inside = False
+    n = len(poly_xy)
+    j = n - 1
+    for i in range(n):
+        yi = float(poly_xy[i, 1])
+        yj = float(poly_xy[j, 1])
+        xi = float(poly_xy[i, 0])
+        xj = float(poly_xy[j, 0])
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi + 1e-30) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _orthonormal_basis_perpendicular(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    d = np.asarray(d, dtype=np.float64).reshape(3)
+    d = d / (np.linalg.norm(d) + 1e-12)
+    a = (
+        np.array([1.0, 0.0, 0.0])
+        if abs(float(d[0])) < 0.9
+        else np.array([0.0, 1.0, 0.0])
+    )
+    u = np.cross(d, a)
+    u = u / (np.linalg.norm(u) + 1e-12)
+    v = np.cross(d, u)
+    return u, v
+
+
+def _project_to_plane_2d(
+    pts: np.ndarray,
+    origin: np.ndarray,
+    u: np.ndarray,
+    v: np.ndarray,
+) -> np.ndarray:
+    q = pts - origin.reshape(1, 3)
+    return np.column_stack([q @ u, q @ v])
+
+
+def _nest_planar_loops_for_triangulation(
+    prepared: list[tuple[np.ndarray, np.ndarray]],
+    *,
+    area_eps: float,
+) -> list[tuple[np.ndarray, list[np.ndarray]]]:
+    """Pick outer boundary + hole loops per connected nesting (single hole level).
+
+    Each item is ``(vertex_indices, xy_projected)`` for one closed loop.
+    Returns ``[(outer_idx, [hole_idx, ...]), ...]`` (one component per root loop).
+    """
+    if not prepared:
+        return []
+    n = len(prepared)
+    centroids = np.array([xy.mean(axis=0) for _, xy in prepared], dtype=np.float64)
+    abs_areas = np.array(
+        [abs(_signed_shoelace_2d(xy)) for _, xy in prepared], dtype=np.float64,
+    )
+    parent = np.full(n, -1, dtype=np.int32)
+    for i in range(n):
+        ci = centroids[i]
+        best_j = -1
+        best_area = np.inf
+        for j in range(n):
+            if j == i:
+                continue
+            if abs_areas[j] <= abs_areas[i] + area_eps:
+                continue
+            if not _point_in_polygon_2d(ci, prepared[j][1]):
+                continue
+            if abs_areas[j] < best_area:
+                best_area = abs_areas[j]
+                best_j = j
+        parent[i] = int(best_j)
+
+    roots = [i for i in range(n) if parent[i] == -1]
+    out: list[tuple[np.ndarray, list[np.ndarray]]] = []
+    for r in roots:
+        holes = [prepared[i][0] for i in range(n) if parent[i] == r]
+        out.append((prepared[r][0], holes))
+    return out
+
+
+def _rings_xy_for_manifold(
+    outer_xy: np.ndarray, holes_xy: list[np.ndarray],
+) -> list[np.ndarray]:
+    """Exterior CCW, holes CW (manifold3d ``triangulate`` convention)."""
+    rings: list[np.ndarray] = []
+    o = np.asarray(outer_xy, dtype=np.float64, copy=True)
+    if _signed_shoelace_2d(o) < 0:
+        o = o[::-1].copy()
+    rings.append(o)
+    for h in holes_xy:
+        hh = np.asarray(h, dtype=np.float64, copy=True)
+        if _signed_shoelace_2d(hh) > 0:
+            hh = hh[::-1].copy()
+        rings.append(hh)
+    return rings
+
+
+def _triangulate_nested_planar_rings(
+    outer_idx: np.ndarray,
+    hole_indices: list[np.ndarray],
+    verts: np.ndarray,
+    origin_plane: np.ndarray,
+    u_ax: np.ndarray,
+    v_ax: np.ndarray,
+) -> np.ndarray | None:
+    """Return (m,3) int face indices into *verts* using stacked loop vertices."""
+    import manifold3d
+
+    outer_xy = _project_to_plane_2d(verts[outer_idx], origin_plane, u_ax, v_ax)
+    holes_xy = [
+        _project_to_plane_2d(verts[hi], origin_plane, u_ax, v_ax)
+        for hi in hole_indices
+    ]
+    rings_xy = _rings_xy_for_manifold(outer_xy, holes_xy)
+    try:
+        loc = manifold3d.triangulate(rings_xy).astype(np.int64)
+    except Exception:
+        return None
+    if loc.size == 0:
+        return None
+    idx_parts = [outer_idx] + [hi for hi in hole_indices]
+    idx_map = np.concatenate(idx_parts)
+    return idx_map[loc]
+
+
+def _seal_parting_plane_gaps(
+    tm: trimesh.Trimesh,
+    plane_origin: np.ndarray,
+    slice_plane_normal: np.ndarray,
+    *,
+    z_tol: float | None = None,
+) -> trimesh.Trimesh:
+    """Close open boundary edges with planar caps (parting face, top rim, etc.).
+
+    Previous logic only considered edges whose endpoints lay near a single
+    parting plane in a fixed frame. Real mold halves still have **other** open
+    rims (e.g. the annular “lid” between the outer box and the cavity). Worse,
+    merging **all** coplanar boundary edges into one walk can zig-zag between
+    two different heights, producing a non-planar bogus loop. Slicers then
+    show a dark ring between the outer rim and the inner disc.
+
+    Fix:
+      1. Take **all** one-sided boundary edges.
+      2. Cluster them by average height along **slice_plane_normal** (the shell
+         opening / parting axis stored in ``MoldShell.direction``).
+      3. Within each cluster, extract closed loops, drop degenerate (near-zero
+         area) rings, **nest** outer vs holes, and triangulate with
+         ``manifold3d.triangulate([outer, *holes])`` — one annulus per component.
+    """
+    _ = z_tol  # retained for API compatibility; height bins replace plane z filter
+
+    if tm is None or len(tm.faces) < 4:
+        return tm
+
+    normal = np.asarray(slice_plane_normal, dtype=np.float64)
+    nrm = float(np.linalg.norm(normal))
+    if nrm < 1e-12:
+        return tm
+    d = normal / nrm
+    origin = np.asarray(plane_origin, dtype=np.float64).reshape(3)
+
+    verts = np.asarray(tm.vertices, dtype=np.float64)
+    faces = np.reshape(np.asarray(tm.faces, dtype=np.int64), (-1, 3))
+    if faces.size and int(faces.max()) >= len(verts):
+        logger.warning("Seal: face indices out of range; skipping seal")
+        return tm
+
+    ext_float = float(np.max(np.ptp(verts, axis=0))) if len(verts) else 1.0
+    area_eps = max(1e-9, 1e-12 * ext_float * ext_float)
+    min_loop_area = max(0.08, 1e-10 * ext_float * ext_float)
+    # Wide height bins so every edge of one planar opening groups together
+    # (narrow bins split a single loop across buckets → incomplete caps).
+    bin_w = max(1.25, 0.02 * ext_float)
+
+    fe = trimesh.geometry.faces_to_edges(faces)
+    fe = np.sort(np.asarray(fe, dtype=np.int64), axis=1)
+    edge_count = Counter(map(tuple, fe))
+    bedges = np.array([list(k) for k, v in edge_count.items() if v == 1], dtype=np.int64)
+    if len(bedges) == 0:
+        return tm
+    h_v = (verts - origin) @ d
+    h_e = (h_v[bedges[:, 0]] + h_v[bedges[:, 1]]) * 0.5
+    bins = np.round(h_e / bin_w).astype(np.int64)
+
+    u_ax, v_ax = _orthonormal_basis_perpendicular(d)
+
+    new_faces: list[np.ndarray] = [faces]
+    max_holes = 48
+
+    for b in np.unique(bins):
+        sub = bedges[bins == b]
+        if len(sub) < 3:
+            continue
+        h0 = float(np.mean(h_e[bins == b]))
+        origin_plane = origin + d * h0
+
+        loops_v = _edges_to_closed_loops(sub)
+        prepared: list[tuple[np.ndarray, np.ndarray]] = []
+        for loop in loops_v:
+            if len(loop) < 3:
+                continue
+            xy = _project_to_plane_2d(verts[loop], origin_plane, u_ax, v_ax)
+            if abs(_signed_shoelace_2d(xy)) < min_loop_area:
+                continue
+            prepared.append((loop, xy))
+
+        if not prepared:
+            continue
+
+        for outer_idx, hole_list in _nest_planar_loops_for_triangulation(
+            prepared, area_eps=area_eps,
+        ):
+            if len(hole_list) > max_holes:
+                logger.warning(
+                    "Skipping planar seal with %d holes (max %d)",
+                    len(hole_list), max_holes,
+                )
+                continue
+            holes_idx = [np.asarray(h, dtype=np.int64) for h in hole_list]
+            nf = _triangulate_nested_planar_rings(
+                outer_idx, holes_idx, verts, origin_plane, u_ax, v_ax,
+            )
+            if nf is None:
+                continue
+            nf_ok = (nf[:, 1:] != nf[:, :1]).all(axis=1) & (nf[:, 1] != nf[:, 2])
+            new_faces.append(nf.astype(np.int64)[nf_ok])
+
+    if len(new_faces) <= 1:
+        return tm
+
+    all_f = np.vstack(new_faces)
+    out = trimesh.Trimesh(vertices=verts, faces=all_f, process=False)
+    try:
+        out.remove_duplicate_faces()
+    except Exception:
+        pass
+    try:
+        _compact_mesh_vertex_indices(out)
+    except Exception:
+        pass
+    return out
+
+
+def _compact_mesh_vertex_indices(tm: trimesh.Trimesh) -> None:
+    """Remap ``faces`` to a dense 0…N-1 range and drop unreferenced vertices.
+
+    Some repair steps leave a compact *set* of vertex IDs in ``faces`` while
+    ``vertices`` still spans 0…K-1 (K>N). ``trimesh.remove_unreferenced_vertices``
+    may fail to rewrite ``faces`` in isolated cases, leaving stale indices.
+    """
+    if tm is None or len(tm.faces) == 0:
+        return
+    faces = np.asarray(tm.faces, dtype=np.int64)
+    verts = np.asarray(tm.vertices, dtype=np.float64)
+    ok = (faces >= 0).all(axis=1) & (faces < len(verts)).all(axis=1)
+    if not np.all(ok):
+        faces = faces[ok]
+        tm.faces = faces
+        if len(faces) == 0:
+            return
+    used = np.unique(faces.ravel())
+    if used.size == 0:
+        return
+    if len(used) == len(verts) and int(used[0]) == 0 and int(used[-1]) == len(verts) - 1:
+        return
+    remap = -np.ones(len(verts), dtype=np.int64)
+    remap[used] = np.arange(len(used), dtype=np.int64)
+    tm.vertices = verts[used]
+    tm.faces = remap[faces]
+    try:
+        tm._cache.clear()
+    except Exception:
+        pass
+
+
+def _boundary_undirected_edge_count(tm: trimesh.Trimesh) -> int:
+    if tm is None or len(tm.faces) == 0:
+        return 0
+    fe = trimesh.geometry.faces_to_edges(np.asarray(tm.faces, dtype=np.int64))
+    fe = np.sort(fe, axis=1)
+    return sum(1 for _, v in Counter(map(tuple, fe)).items() if v == 1)
+
+
+def _dedupe_opposite_or_duplicate_tris(tm: trimesh.Trimesh) -> None:
+    """Remove duplicate triangles sharing the same 3 vertices (any winding).
+
+    Slice caps plus our planar seal can introduce back-to-back copies that
+    confuse slicers.  If removing extras would *increase* open boundary length,
+    the edit is skipped (some coincident triangles are structurally required).
+    """
+    if tm is None or len(tm.faces) < 2:
+        return
+    from collections import defaultdict
+
+    f = np.asarray(tm.faces, dtype=np.int64)
+    b0 = _boundary_undirected_edge_count(tm)
+    groups: dict[tuple[int, ...], list[int]] = defaultdict(list)
+    for i in range(len(f)):
+        tri = f[i]
+        if len(set(int(x) for x in tri)) < 3:
+            continue
+        key = tuple(sorted(int(x) for x in tri))
+        groups[key].append(i)
+    drop: set[int] = set()
+    for idxs in groups.values():
+        if len(idxs) <= 1:
+            continue
+        drop.update(idxs[1:])
+    if not drop:
+        return
+    keep = np.array([i for i in range(len(f)) if i not in drop], dtype=np.int64)
+    trial = f[keep]
+    tm.faces = trial
+    try:
+        tm._cache.clear()
+    except Exception:
+        pass
+    if _boundary_undirected_edge_count(tm) > b0:
+        tm.faces = f
+        try:
+            tm._cache.clear()
+        except Exception:
+            pass
+
+
 def _repair_mesh(tm: trimesh.Trimesh) -> trimesh.Trimesh:
     """Aggressive mesh repair: remove degenerates, fix normals, fill holes."""
     try:
@@ -219,10 +628,6 @@ def _repair_mesh(tm: trimesh.Trimesh) -> trimesh.Trimesh:
         pass
     try:
         tm.remove_duplicate_faces()
-    except Exception:
-        pass
-    try:
-        tm.remove_unreferenced_vertices()
     except Exception:
         pass
     for fn in (trimesh.repair.fill_holes,
@@ -234,6 +639,14 @@ def _repair_mesh(tm: trimesh.Trimesh) -> trimesh.Trimesh:
             pass
     try:
         trimesh.repair.fix_inversion(tm)
+    except Exception:
+        pass
+    try:
+        _dedupe_opposite_or_duplicate_tris(tm)
+    except Exception:
+        pass
+    try:
+        _compact_mesh_vertex_indices(tm)
     except Exception:
         pass
     return tm
@@ -254,16 +667,82 @@ def _extract_submesh(
     )
 
 
+def _shoelace_area_2d(poly_xy: np.ndarray) -> float:
+    """Signed absolute area of a simple polygon in 2D (shoelace)."""
+    if poly_xy.ndim != 2 or len(poly_xy) < 3:
+        return 0.0
+    x = poly_xy[:, 0].astype(np.float64, copy=False)
+    y = poly_xy[:, 1].astype(np.float64, copy=False)
+    if float(np.linalg.norm(poly_xy[0] - poly_xy[-1])) > 1e-12:
+        x = np.concatenate([x, x[:1]])
+        y = np.concatenate([y, y[:1]])
+    return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _path_perimeter_2d(arr: np.ndarray) -> float:
+    if arr.ndim != 2 or len(arr) < 2:
+        return 0.0
+    loop = np.vstack([arr, arr[:1]])
+    return float(np.linalg.norm(np.diff(loop, axis=0), axis=1).sum())
+
+
+def _shell_is_conformal(shell_type: str | None) -> bool:
+    return (shell_type or "box").strip().lower() == "conformal"
+
+
+def _slice_keep_positive_halfspace(
+    mesh: trimesh.Trimesh,
+    plane_origin: np.ndarray,
+    plane_normal: np.ndarray,
+) -> trimesh.Trimesh | None:
+    """Keep the portion on the positive side of a plane (same contract as trimesh.slice_plane).
+
+    ``Trimesh.slice_plane`` imports ``path.polygons`` which **requires shapely**.  Without it,
+    every call raises and MoldGen fell back to ``_extract_submesh`` (triangle centers),
+    which drops faces that straddle the cut — **square shells lose side walls** and slicers
+    only see a flat cap plus cavity.
+
+    ``trimesh.intersections.slice_faces_plane`` is numpy-only for the cut; combine with
+    ``_seal_parting_plane_gaps`` for caps.
+    """
+    if mesh is None or len(mesh.faces) < 1:
+        return None
+    try:
+        from trimesh.intersections import slice_faces_plane
+
+        po = np.asarray(plane_origin, dtype=np.float64).reshape(3)
+        pn = np.asarray(plane_normal, dtype=np.float64).reshape(3)
+        nrm = float(np.linalg.norm(pn))
+        if nrm < 1e-12:
+            return None
+        pn = pn / nrm
+        v, f, _ = slice_faces_plane(
+            np.asarray(mesh.vertices, dtype=np.float64),
+            np.asarray(mesh.faces, dtype=np.int64),
+            pn,
+            po,
+        )
+        if f is None or len(f) < 4:
+            return None
+        return trimesh.Trimesh(vertices=v, faces=f, process=False)
+    except Exception:
+        return None
+
+
 def _safe_slice(
     mesh: trimesh.Trimesh, origin: np.ndarray, normal: np.ndarray,
 ) -> trimesh.Trimesh | None:
+    # Prefer capped trimesh slice when shapely is available (clean parting cap).
     for cap in (True, False):
         try:
             r = mesh.slice_plane(origin, normal, cap=cap)
-            if r is not None and len(r.faces) > 0:
+            if r is not None and len(r.faces) >= 4:
                 return r
         except Exception:
             continue
+    half = _slice_keep_positive_halfspace(mesh, origin, normal)
+    if half is not None and len(half.faces) >= 4:
+        return half
     dots = (mesh.triangles_center - origin) @ normal
     sub = _extract_submesh(mesh, dots >= 0)
     return sub if len(sub.faces) > 0 else None
@@ -347,7 +826,7 @@ class MoldBuilder:
         tm_model = _repair_mesh(tm_model)
 
         # Subdivide low-poly models so mold shells have enough resolution
-        tm_model = _ensure_min_faces(tm_model, min_faces=4000)
+        tm_model = _ensure_min_faces(tm_model, min_faces=self.config.min_input_faces)
 
         logger.info(
             "Repaired: %d faces, watertight=%s",
@@ -361,6 +840,18 @@ class MoldBuilder:
         cavity = self._create_cavity(tm_model)
         outer = self._create_outer_shell(cavity)
         solid = self._robust_boolean_subtract(outer, cavity)
+        # Inverted cavity / bad CSG can yield only the inner skin (~n_cav faces) with no box.
+        if (
+            solid is not None
+            and len(solid.faces) > 10
+            and not _shell_is_conformal(self.config.shell_type)
+            and len(solid.faces) < len(cavity.faces) + 6
+        ):
+            logger.warning(
+                "Boolean result suspicious (faces=%d, cavity=%d); using fallbacks",
+                len(solid.faces), len(cavity.faces),
+            )
+            solid = None
         if solid is not None and len(solid.faces) > 10:
             shells = self._split_solid_to_shells(solid, center, direction)
             if shells and len(shells) >= 2:
@@ -384,6 +875,10 @@ class MoldBuilder:
         # ── Repair all shells ──
         for sh in shells:
             tm_sh = sh.mesh.to_trimesh()
+            tm_sh = _repair_mesh(tm_sh)
+            dn = np.asarray(sh.direction, dtype=np.float64)
+            dn = dn / (np.linalg.norm(dn) + 1e-12)
+            tm_sh = _seal_parting_plane_gaps(tm_sh, center, dn)
             tm_sh = _repair_mesh(tm_sh)
             sh.mesh = MeshData.from_trimesh(tm_sh)
 
@@ -461,7 +956,7 @@ class MoldBuilder:
         self, model: MeshData, directions: list[np.ndarray],
     ) -> MoldResult:
         if len(directions) < 2:
-            raise ValueError("Multi-part mold requires >= 2 directions")
+            raise ValueError("Multi-part mold requires at least 2 directions")
 
         logger.info(
             "Building multi-part mold with %d directions", len(directions),
@@ -472,7 +967,7 @@ class MoldBuilder:
         build_mesh, _ = _auto_decimate(model, MOLD_MAX_FACES)
         tm_model = build_mesh.to_trimesh()
         tm_model = _repair_mesh(tm_model)
-        tm_model = _ensure_min_faces(tm_model, min_faces=4000)
+        tm_model = _ensure_min_faces(tm_model, min_faces=self.config.min_input_faces)
         cavity = self._create_cavity(tm_model)
         center = np.asarray(tm_model.centroid, dtype=np.float64)
 
@@ -603,9 +1098,14 @@ class MoldBuilder:
 
         cavity_inv = cavity.copy()
         cavity_inv.invert()
-        cav_dots = (cavity_inv.triangles_center - center) @ direction
-        upper_cav = _extract_submesh(cavity_inv, cav_dots >= 0)
-        lower_cav = _extract_submesh(cavity_inv, cav_dots < 0)
+        upper_cav = _safe_slice(cavity_inv, center, direction)
+        lower_cav = _safe_slice(cavity_inv, center, -direction)
+        if upper_cav is None or len(upper_cav.faces) < 4:
+            cav_dots = (cavity_inv.triangles_center - center) @ direction
+            upper_cav = _extract_submesh(cavity_inv, cav_dots >= 0)
+        if lower_cav is None or len(lower_cav.faces) < 4:
+            cav_dots = (cavity_inv.triangles_center - center) @ direction
+            lower_cav = _extract_submesh(cavity_inv, cav_dots < 0)
 
         shells: list[MoldShell] = []
         for i, (box_h, cav_h, d) in enumerate([
@@ -619,6 +1119,9 @@ class MoldBuilder:
                 combined = trimesh.util.concatenate(parts)
             except Exception:
                 combined = box_h
+            sn = np.asarray(d, dtype=np.float64)
+            sn = sn / (np.linalg.norm(sn) + 1e-12)
+            combined = _seal_parting_plane_gaps(combined, center, sn)
             shells.append(MoldShell(
                 shell_id=i, mesh=MeshData.from_trimesh(combined),
                 direction=np.asarray(d, dtype=np.float64),
@@ -808,30 +1311,63 @@ class MoldBuilder:
     def _get_parting_outline(
         self, solid: trimesh.Trimesh, center: np.ndarray, up: np.ndarray,
     ) -> np.ndarray | None:
-        """Get 3D vertices along the mold cross-section at the parting plane.
+        """Get **ordered** 3D polyline on the **outer mold wall** section at the parting plane.
 
-        Points are shifted slightly inward toward the cross-section centroid
-        so that features don't protrude beyond the mold boundary.
+        ``trimesh`` section of a hollow mold yields multiple 2D loops: the
+        outer box silhouette and one or more inner loops from the cavity
+        (often much longer in perimeter on high-res organ meshes).  Choosing
+        the **longest perimeter** wrongly locks dovetail/zigzag to the cavity
+        contour.  We pick the loop with the **largest absolute 2D area**
+        (outer shell boundary) and fall back to longest perimeter only if
+        areas are degenerate.
         """
         try:
+            up = np.asarray(up, dtype=np.float64)
+            up = up / (np.linalg.norm(up) + 1e-12)
             section = solid.section(plane_origin=center, plane_normal=up)
             if section is None:
+                logger.debug("Parting outline: solid.section returned None")
                 return None
             section_2d, to_3D = section.to_planar()
             if section_2d is None:
                 return None
 
-            all_pts: list[np.ndarray] = []
+            candidates: list[tuple[float, float, np.ndarray]] = []
             for path_pts in section_2d.discrete:
-                for pt_2d in path_pts:
-                    homog = np.array([pt_2d[0], pt_2d[1], 0.0, 1.0])
-                    pt_3d = (to_3D @ homog)[:3]
-                    all_pts.append(pt_3d)
+                arr = np.asarray(path_pts, dtype=np.float64)
+                if arr.ndim != 2 or len(arr) < 3:
+                    continue
+                area = _shoelace_area_2d(arr)
+                perim = _path_perimeter_2d(arr)
+                candidates.append((area, perim, arr))
 
-            if len(all_pts) < 6:
+            if not candidates:
                 return None
 
-            pts = np.array(all_pts)
+            max_area = max(c[0] for c in candidates)
+            area_tol = max(1e-6, 0.001 * max_area)
+            if max_area > area_tol:
+                best_2d = max(candidates, key=lambda c: c[0])[2]
+                logger.debug(
+                    "Parting outline: chose loop by max area=%.2f (n_cands=%d)",
+                    max_area, len(candidates),
+                )
+            else:
+                best_2d = max(candidates, key=lambda c: c[1])[2]
+                logger.debug(
+                    "Parting outline: areas degenerate — fallback max perimeter=%.2f",
+                    max(candidates, key=lambda c: c[1])[1],
+                )
+
+            if len(best_2d) < 4:
+                return None
+
+            pts_list: list[np.ndarray] = []
+            for pt_2d in best_2d:
+                homog = np.array([pt_2d[0], pt_2d[1], 0.0, 1.0])
+                pts_list.append((to_3D @ homog)[:3])
+            pts = np.array(pts_list, dtype=np.float64)
+
             centroid = pts.mean(axis=0)
             inward_offset = min(self.config.parting_pitch * 0.3, 3.0)
             for i in range(len(pts)):
@@ -847,31 +1383,43 @@ class MoldBuilder:
     def _sample_outline_at_pitch(
         self, outline_pts: np.ndarray, pitch: float,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Sample points along the outline at approximately *pitch* intervals."""
-        diffs = np.diff(outline_pts, axis=0)
+        """Sample points on a **closed** polyline at ~pitch spacing with valid tangents."""
+        if len(outline_pts) < 3:
+            return np.zeros((0, 3)), np.zeros((0, 3))
+
+        loop = np.vstack([outline_pts, outline_pts[:1]])
+        diffs = np.diff(loop, axis=0)
         seg_lengths = np.linalg.norm(diffs, axis=1)
-        cum_length = np.concatenate([[0.0], np.cumsum(seg_lengths)])
-        total_length = cum_length[-1]
+        total_length = float(seg_lengths.sum())
+        if total_length < 1e-9:
+            return outline_pts[:1], np.zeros_like(outline_pts[:1])
 
-        if total_length < pitch:
-            step = max(1, len(outline_pts) // 4)
-            pts = outline_pts[::step]
-            tans = np.zeros_like(pts)
-            return pts, tans
-
+        pitch = max(float(pitch), 1e-3)
         n_features = max(4, int(total_length / pitch))
-        sample_dists = np.linspace(0, total_length, n_features, endpoint=False)
+        sample_dists = np.linspace(0.0, total_length, n_features, endpoint=False)
+
+        cum_length = np.concatenate([[0.0], np.cumsum(seg_lengths)])
 
         points: list[np.ndarray] = []
         tangents: list[np.ndarray] = []
         for d in sample_dists:
+            d = d % total_length
             idx = int(np.searchsorted(cum_length, d, side="right")) - 1
-            idx = max(0, min(idx, len(outline_pts) - 2))
-            frac = (d - cum_length[idx]) / (seg_lengths[idx] + 1e-10)
-            pt = outline_pts[idx] + frac * diffs[idx]
-            tan = diffs[idx] / (seg_lengths[idx] + 1e-10)
+            idx = max(0, min(idx, len(diffs) - 1))
+            frac = (d - cum_length[idx]) / (seg_lengths[idx] + 1e-12)
+            pt = loop[idx] + frac * diffs[idx]
+            tan = diffs[idx] / (seg_lengths[idx] + 1e-12)
+            tn = np.linalg.norm(tan)
+            if tn < 1e-12:
+                nv = len(outline_pts)
+                tan = outline_pts[(idx + 1) % nv] - outline_pts[idx % nv]
+                tn = np.linalg.norm(tan)
+                tan = tan / tn if tn > 1e-12 else np.array([1.0, 0.0, 0.0])
+            else:
+                tan = tan / tn
             points.append(pt)
             tangents.append(tan)
+
         return np.array(points), np.array(tangents)
 
     def _make_interlock_unit(
@@ -1146,6 +1694,9 @@ class MoldBuilder:
                 (upper, direction.copy()), (lower, -direction.copy()),
             ]):
                 if half is not None and len(half.faces) >= 4:
+                    sn = np.asarray(d, dtype=np.float64)
+                    sn = sn / (np.linalg.norm(sn) + 1e-12)
+                    half = _seal_parting_plane_gaps(half, center, sn)
                     shells.append(MoldShell(
                         shell_id=i,
                         mesh=MeshData.from_trimesh(half),
@@ -1161,20 +1712,11 @@ class MoldBuilder:
             (direction, direction.copy()),
             (-direction, -direction.copy()),
         ]):
-            half = None
-            try:
-                half = solid.slice_plane(center, normal, cap=True)
-            except Exception:
-                pass
-            if half is None or len(half.faces) < 4:
-                try:
-                    half = solid.slice_plane(center, normal, cap=False)
-                except Exception:
-                    pass
-            if half is None or len(half.faces) < 4:
-                dots = (solid.triangles_center - center) @ normal
-                half = _extract_submesh(solid, dots >= 0)
+            sn = np.asarray(normal, dtype=np.float64)
+            sn = sn / (np.linalg.norm(sn) + 1e-12)
+            half = _safe_slice(solid, center, normal)
             if half is not None and len(half.faces) >= 4:
+                half = _seal_parting_plane_gaps(half, center, sn)
                 shells.append(MoldShell(
                     shell_id=i,
                     mesh=MeshData.from_trimesh(half),
@@ -1195,7 +1737,15 @@ class MoldBuilder:
         if max_ext < 1e-6:
             return None
 
-        resolution = max(80, min(160, int(max_ext / 1.2)))
+        # Uniform pitch from longest extent only; use finer cells than max_ext/80 so
+        # marching-cubes cavity surfaces are less visibly stair-stepped in the viewport.
+        target_pitch = min(
+            0.55,
+            max_ext / 160.0,
+            max(0.18, float(c.wall_thickness) / 4.0),
+        )
+        resolution = int(np.ceil(max_ext / max(target_pitch, max_ext / 320.0)))
+        resolution = int(np.clip(resolution, 96, 320))
         pitch = max_ext / resolution
         logger.info("Voxel mold: pitch=%.3f mm, res=%d", pitch, resolution)
 
@@ -1226,7 +1776,7 @@ class MoldBuilder:
             cavity_matrix, wall_px, mode="constant", constant_values=False,
         )
 
-        if c.shell_type == "conformal":
+        if _shell_is_conformal(c.shell_type):
             outer_matrix = ndimage.binary_dilation(
                 padded_cavity, iterations=wall_px,
             )
@@ -1277,25 +1827,7 @@ class MoldBuilder:
         if clearance <= 0:
             return tm_model.copy()
         try:
-            normals = np.asarray(tm_model.vertex_normals, dtype=np.float64)
-            # Laplacian smooth the normals to avoid divergent offsets
-            # at sharp concavities (1 iteration, lambda=0.5)
-            smooth_n = normals.copy()
-            try:
-                adj_list = tm_model.vertex_neighbors
-                for vi in range(len(smooth_n)):
-                    nbrs = adj_list[vi]
-                    if nbrs:
-                        avg = np.mean(normals[nbrs], axis=0)
-                        smooth_n[vi] = 0.5 * normals[vi] + 0.5 * avg
-                row_n = np.linalg.norm(smooth_n, axis=1, keepdims=True)
-                safe_n = np.where(row_n > 1e-8, row_n, 1.0)
-                smooth_n = np.where(
-                    row_n > 1e-8, smooth_n / safe_n, normals,
-                )
-            except Exception:
-                smooth_n = normals
-
+            smooth_n = _laplacian_smooth_vertex_normals(tm_model)
             new_verts = tm_model.vertices + smooth_n * clearance
             return trimesh.Trimesh(
                 vertices=new_verts, faces=tm_model.faces.copy(),
@@ -1310,10 +1842,19 @@ class MoldBuilder:
         bounds = cavity.bounds
         margin = c.margin + c.wall_thickness
 
-        if c.shell_type == "conformal":
+        if _shell_is_conformal(c.shell_type):
             try:
-                normals = cavity.vertex_normals
-                new_v = cavity.vertices + normals * c.wall_thickness
+                normals = _laplacian_smooth_vertex_normals(cavity)
+                t = float(c.wall_thickness)
+                new_v = cavity.vertices + normals * t
+                disp = new_v - cavity.vertices
+                dlen = np.linalg.norm(disp, axis=1)
+                bad = (dlen < 0.35 * t) | (dlen > 2.5 * t) | ~np.isfinite(dlen)
+                if np.any(bad):
+                    nn = normals[bad]
+                    nn /= np.linalg.norm(nn, axis=1, keepdims=True) + 1e-12
+                    new_v = np.asarray(new_v, dtype=np.float64, order="C")
+                    new_v[bad] = cavity.vertices[bad] + nn * t
                 return trimesh.Trimesh(
                     vertices=new_v, faces=cavity.faces.copy(), process=True,
                 )

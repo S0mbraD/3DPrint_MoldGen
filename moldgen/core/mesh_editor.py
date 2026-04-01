@@ -110,76 +110,200 @@ class MeshEditor:
 
     # ─── Simplification ─────────────────────────────────
 
-    def simplify_qem(self, mesh: MeshData, target_faces: int) -> MeshData:
-        """QEM-based decimation with multiple fallback strategies."""
-        result = None
-
-        # Strategy 1: Open3D QEM (best quality)
+    @staticmethod
+    def _clean_trimesh(tm: trimesh.Trimesh) -> trimesh.Trimesh:
+        """Remove degenerate faces and unreferenced vertices, keep largest component."""
+        # Remove degenerate faces (zero-area or collapsed)
         try:
-            import open3d as o3d
-            o3d_mesh = o3d.geometry.TriangleMesh()
-            o3d_mesh.vertices = o3d.utility.Vector3dVector(mesh.vertices)
-            o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces)
-            o3d_mesh.compute_vertex_normals()
-            simplified = o3d_mesh.simplify_quadric_decimation(
-                target_number_of_triangles=target_faces,
-            )
-            if len(simplified.triangles) >= 4:
-                result = MeshData(
-                    vertices=np.asarray(simplified.vertices, dtype=np.float64),
-                    faces=np.asarray(simplified.triangles, dtype=np.int64),
-                    unit=mesh.unit,
-                    source_path=mesh.source_path,
-                    source_format=mesh.source_format,
-                )
-        except ImportError:
+            mask = tm.nondegenerate_faces()
+            if mask is not None and not mask.all():
+                tm.update_faces(mask)
+        except Exception:
             pass
-        except Exception as exc:
-            logger.warning("Open3D simplify failed: %s", exc)
 
-        # Strategy 2: Trimesh QEM
+        tm.remove_unreferenced_vertices()
+
+        # Remove duplicate faces
+        try:
+            unique_idx = tm.unique_faces()
+            if len(unique_idx) < len(tm.faces):
+                mask = np.zeros(len(tm.faces), dtype=bool)
+                mask[unique_idx] = True
+                tm.update_faces(mask)
+        except Exception:
+            pass
+
+        # Keep only the largest connected component to avoid scattered fragments
+        if len(tm.faces) > 0:
+            try:
+                components = tm.split(only_watertight=False)
+                if components and len(components) > 1:
+                    largest = max(components, key=lambda c: len(c.faces))
+                    if len(largest.faces) >= 4:
+                        tm = largest
+            except Exception:
+                pass
+
+        tm.remove_unreferenced_vertices()
+        return tm
+
+    def simplify_qem(self, mesh: MeshData, target_faces: int) -> MeshData:
+        """QEM-based decimation with robust validation and multiple fallbacks."""
+        result = None
+        target_faces = max(4, target_faces)
+        reduction_ratio = 1.0 - target_faces / max(mesh.face_count, 1)
+
+        # Strategy 1: fast_simplification directly (most reliable)
+        if result is None:
+            try:
+                import fast_simplification
+                points = np.asarray(mesh.vertices, dtype=np.float32)
+                triangles = np.asarray(mesh.faces, dtype=np.int32)
+                pts_out, tri_out = fast_simplification.simplify(
+                    points, triangles, target_reduction=reduction_ratio,
+                )
+                if len(tri_out) >= 4:
+                    tm_clean = self._clean_trimesh(
+                        trimesh.Trimesh(vertices=pts_out, faces=tri_out, process=False)
+                    )
+                    if len(tm_clean.faces) >= 4:
+                        result = MeshData.from_trimesh(tm_clean, mesh.source_path, mesh.source_format)
+                        result.unit = mesh.unit
+                        logger.info("fast_simplification: %d → %d faces", mesh.face_count, result.face_count)
+            except ImportError:
+                logger.debug("fast_simplification not available")
+            except Exception as exc:
+                logger.warning("fast_simplification failed: %s", exc)
+
+        # Strategy 2: Open3D QEM
+        if result is None:
+            try:
+                import open3d as o3d
+                o3d_mesh = o3d.geometry.TriangleMesh()
+                o3d_mesh.vertices = o3d.utility.Vector3dVector(mesh.vertices.copy())
+                o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces.copy())
+                o3d_mesh.compute_vertex_normals()
+                simplified = o3d_mesh.simplify_quadric_decimation(
+                    target_number_of_triangles=target_faces,
+                )
+                verts = np.asarray(simplified.vertices, dtype=np.float64)
+                faces = np.asarray(simplified.triangles, dtype=np.int64)
+                if len(faces) >= 4 and len(verts) >= 4:
+                    tm_clean = self._clean_trimesh(
+                        trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+                    )
+                    if len(tm_clean.faces) >= 4:
+                        result = MeshData.from_trimesh(tm_clean, mesh.source_path, mesh.source_format)
+                        result.unit = mesh.unit
+                        logger.info("Open3D QEM: %d → %d faces", mesh.face_count, result.face_count)
+            except ImportError:
+                logger.debug("Open3D not available")
+            except Exception as exc:
+                logger.warning("Open3D QEM failed: %s", exc)
+
+        # Strategy 3: Trimesh QEM wrapper
         if result is None:
             try:
                 tm = mesh.to_trimesh()
                 simplified = tm.simplify_quadric_decimation(face_count=target_faces)
                 if simplified is not None and len(simplified.faces) >= 4:
-                    result = MeshData.from_trimesh(
-                        simplified, mesh.source_path, mesh.source_format,
-                    )
-                    result.unit = mesh.unit
+                    tm_clean = self._clean_trimesh(simplified)
+                    if len(tm_clean.faces) >= 4:
+                        result = MeshData.from_trimesh(tm_clean, mesh.source_path, mesh.source_format)
+                        result.unit = mesh.unit
+                        logger.info("Trimesh QEM: %d → %d faces", mesh.face_count, result.face_count)
             except Exception as exc:
-                logger.warning("Trimesh QEM simplify failed: %s", exc)
+                logger.warning("Trimesh QEM failed: %s", exc)
 
-        # Strategy 3: Vertex clustering (fast, lower quality)
+        # Strategy 4: Open3D vertex clustering
         if result is None:
             try:
                 import open3d as o3d
                 o3d_mesh = o3d.geometry.TriangleMesh()
-                o3d_mesh.vertices = o3d.utility.Vector3dVector(mesh.vertices)
-                o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces)
+                o3d_mesh.vertices = o3d.utility.Vector3dVector(mesh.vertices.copy())
+                o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces.copy())
                 ratio = max(0.01, target_faces / max(mesh.face_count, 1))
-                voxel_size = mesh.to_trimesh().bounding_box.extents.max() * (1.0 - ratio) * 0.02
+                bbox_extent = float(np.max(mesh.extents))
+                voxel_size = bbox_extent * (1.0 - ratio) * 0.05
+                voxel_size = max(voxel_size, bbox_extent * 0.005)
                 simplified = o3d_mesh.simplify_vertex_clustering(voxel_size)
-                if len(simplified.triangles) >= 4:
-                    result = MeshData(
-                        vertices=np.asarray(simplified.vertices, dtype=np.float64),
-                        faces=np.asarray(simplified.triangles, dtype=np.int64),
-                        unit=mesh.unit,
-                        source_path=mesh.source_path,
-                        source_format=mesh.source_format,
+                verts = np.asarray(simplified.vertices, dtype=np.float64)
+                faces = np.asarray(simplified.triangles, dtype=np.int64)
+                if len(faces) >= 4:
+                    tm_clean = self._clean_trimesh(
+                        trimesh.Trimesh(vertices=verts, faces=faces, process=False)
                     )
-            except Exception:
-                pass
+                    if len(tm_clean.faces) >= 4:
+                        result = MeshData.from_trimesh(tm_clean, mesh.source_path, mesh.source_format)
+                        result.unit = mesh.unit
+                        logger.info("Vertex clustering: %d → %d faces", mesh.face_count, result.face_count)
+            except Exception as exc:
+                logger.warning("Vertex clustering failed: %s", exc)
 
-        # Strategy 4: Random face subset (last resort)
+        # Strategy 5: Scipy spatial vertex merging (no external deps beyond scipy)
         if result is None:
-            tm = mesh.to_trimesh()
-            n = min(target_faces, len(tm.faces))
-            indices = np.random.choice(len(tm.faces), n, replace=False)
-            sub = tm.submesh([indices], append=True)
-            result = MeshData.from_trimesh(sub, mesh.source_path, mesh.source_format)
-            result.unit = mesh.unit
-            logger.warning("Used random subset fallback for simplification")
+            try:
+                from scipy.spatial import cKDTree
+                tm = mesh.to_trimesh()
+                verts = np.asarray(tm.vertices, dtype=np.float64)
+                faces = np.asarray(tm.faces, dtype=np.int64)
+                bbox_extent = float(np.max(mesh.extents))
+
+                merge_dist = bbox_extent * 0.005
+                for _ in range(20):
+                    tree = cKDTree(verts)
+                    pairs = tree.query_pairs(merge_dist)
+                    if not pairs:
+                        merge_dist *= 1.5
+                        continue
+
+                    remap = np.arange(len(verts))
+                    for i, j in pairs:
+                        root_i, root_j = i, j
+                        while remap[root_i] != root_i:
+                            root_i = remap[root_i]
+                        while remap[root_j] != root_j:
+                            root_j = remap[root_j]
+                        if root_i != root_j:
+                            remap[max(root_i, root_j)] = min(root_i, root_j)
+
+                    for idx in range(len(remap)):
+                        root = idx
+                        while remap[root] != root:
+                            root = remap[root]
+                        remap[idx] = root
+
+                    unique_ids, inverse = np.unique(remap, return_inverse=True)
+                    new_verts = verts[unique_ids]
+                    new_faces = inverse[faces]
+                    degenerate = (
+                        (new_faces[:, 0] == new_faces[:, 1])
+                        | (new_faces[:, 1] == new_faces[:, 2])
+                        | (new_faces[:, 0] == new_faces[:, 2])
+                    )
+                    new_faces = new_faces[~degenerate]
+
+                    if len(new_faces) <= target_faces:
+                        break
+                    verts = new_verts
+                    faces = new_faces
+                    merge_dist *= 1.3
+
+                if len(new_faces) >= 4:
+                    tm_clean = self._clean_trimesh(
+                        trimesh.Trimesh(vertices=new_verts, faces=new_faces, process=False)
+                    )
+                    if len(tm_clean.faces) >= 4:
+                        result = MeshData.from_trimesh(tm_clean, mesh.source_path, mesh.source_format)
+                        result.unit = mesh.unit
+                        logger.info("Vertex merging: %d → %d faces", mesh.face_count, result.face_count)
+            except Exception as exc:
+                logger.warning("Vertex merging fallback failed: %s", exc)
+
+        if result is None:
+            raise RuntimeError(
+                f"所有简化策略均失败 (目标: {target_faces} 面, 当前: {mesh.face_count} 面)"
+            )
 
         return self._record(mesh, "simplify_qem", {"target_faces": target_faces}, result)
 
@@ -195,12 +319,10 @@ class MeshEditor:
             if ratio >= 1.0:
                 results.append(mesh.copy())
             else:
-                target = max(4, int(mesh.face_count * ratio))
-                tm = mesh.to_trimesh()
-                simplified = tm.simplify_quadric_decimation(face_count=target)
-                lod = MeshData.from_trimesh(simplified, mesh.source_path, mesh.source_format)
-                lod.unit = mesh.unit
-                results.append(lod)
+                try:
+                    results.append(self.simplify_ratio(mesh, ratio))
+                except Exception:
+                    results.append(mesh.copy())
         return results
 
     # ─── Transforms ──────────────────────────────────────

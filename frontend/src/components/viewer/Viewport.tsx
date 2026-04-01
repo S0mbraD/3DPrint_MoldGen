@@ -2,6 +2,9 @@ import { Canvas, useThree } from "@react-three/fiber";
 import {
   OrbitControls, Grid, Environment, GizmoHelper, GizmoViewport, Line,
 } from "@react-three/drei";
+
+/** Local CC0 HDR in `public/hdri/` — avoids CDN fetch (offline / Tauri safe). */
+const VIEWPORT_HDRI = `${import.meta.env.BASE_URL}hdri/potsdamer_platz_1k.hdr`;
 import { Suspense, useMemo, useState, useRef, useEffect } from "react";
 import { useModelStore } from "../../stores/modelStore";
 import { useMoldStore } from "../../stores/moldStore";
@@ -62,11 +65,17 @@ export function Viewport() {
         <color attach="background" args={["#13131a"]} />
         <fog attach="fog" args={["#13131a", 1000, 3000]} />
 
-        <ambientLight intensity={0.4} />
-        <directionalLight position={[300, 500, 200]} intensity={1.2} castShadow />
+        <ambientLight intensity={0.32} />
+        <hemisphereLight color="#5a5d7a" groundColor="#13131a" intensity={0.4} />
+        <directionalLight position={[300, 500, 200]} intensity={1.15} castShadow />
         <directionalLight position={[-200, 300, -100]} intensity={0.3} />
 
         <Suspense fallback={null}>
+          <Environment
+            files={VIEWPORT_HDRI}
+            background={false}
+            environmentIntensity={0.95}
+          />
           <Grid
             args={[1000, 1000]}
             cellSize={gridConfig.cellSize}
@@ -134,8 +143,6 @@ export function Viewport() {
         <GizmoHelper alignment="bottom-right" margin={[60, 60]}>
           <GizmoViewport labelColor="white" axisHeadScale={0.8} />
         </GizmoHelper>
-
-        <Environment preset="city" background={false} />
       </Canvas>
 
       {/* Floating edit toolbar (left) */}

@@ -3,6 +3,7 @@ import { Component, Suspense, useMemo, type ReactNode } from "react";
 import type { Mesh } from "three";
 import * as THREE from "three";
 import { useViewportStore } from "../../stores/viewportStore";
+import { useMoldStore } from "../../stores/moldStore";
 
 const SHELL_COLORS: [number, number, number][] = [
   [1.0, 0.56, 0.72],  // pink  — shell 0
@@ -36,9 +37,11 @@ export function MoldShellViewer({
   moldId: string;
   shellId: number;
 }) {
+  const shellMeshRevision = useMoldStore((s) => s.shellMeshRevision);
   const url = useMemo(
-    () => `/api/v1/molds/result/${moldId}/shell/${shellId}/glb`,
-    [moldId, shellId],
+    () =>
+      `/api/v1/molds/result/${moldId}/shell/${shellId}/glb?v=${shellMeshRevision}`,
+    [moldId, shellId, shellMeshRevision],
   );
 
   return (
@@ -66,19 +69,26 @@ function ShellModel({ url, shellId }: { url: string; shellId: number }) {
     clone.traverse((child) => {
       if ((child as Mesh).isMesh) {
         const mesh = child as Mesh;
+        const a = Math.max(0.15, opacity);
+        /* Default mold opacity (≈0.35) used to set depthWrite=false + transmission,
+         * which breaks transparent sort order and reads as missing faces / floating planes. */
         mesh.material = new THREE.MeshPhysicalMaterial({
           color,
-          roughness: 0.25,
+          roughness: 0.35,
           metalness: 0.0,
-          transparent: true,
-          opacity: Math.max(0.15, opacity),
+          transparent: a < 0.99,
+          opacity: a,
           side: THREE.DoubleSide,
-          depthWrite: opacity >= 0.85,
-          transmission: 0.3,
-          thickness: 2.0,
-          clearcoat: 0.4,
-          clearcoatRoughness: 0.2,
+          depthWrite: true,
+          depthTest: true,
+          transmission: 0,
+          clearcoat: 0.15,
+          clearcoatRoughness: 0.35,
         });
+        mesh.renderOrder = 2;
+        mesh.material.polygonOffset = true;
+        mesh.material.polygonOffsetFactor = 1;
+        mesh.material.polygonOffsetUnits = 1;
       }
     });
     return clone;

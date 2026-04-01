@@ -16,6 +16,7 @@ import { useExportModel, useExportMold, useExportInsert, useExportAll } from "..
 import { cn } from "../../lib/utils";
 import { toastSuccess, toastError, toastInfo } from "../../stores/toastStore";
 import { useHistoryStore } from "../../stores/historyStore";
+import { flog } from "../../stores/logStore";
 
 export function LeftPanel() {
   const { leftPanelOpen, toggleLeftPanel, currentStep } = useAppStore();
@@ -74,8 +75,11 @@ function ImportPanel() {
   const pushHistory = useHistoryStore((s) => s.push);
   const handleFile = useCallback(
     async (file: File) => {
+      const t0 = performance.now();
+      flog.info("Import", `开始上传 ${file.name}`, `大小: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
       try {
         const data = await upload.mutateAsync(file);
+        const ms = Math.round(performance.now() - t0);
         setModel(data.model_id, data.filename, data.mesh_info);
         markStepCompleted("import");
         setStep("repair");
@@ -85,8 +89,12 @@ function ImportPanel() {
           detail: `${data.mesh_info.face_count.toLocaleString()} 面, ${data.mesh_info.is_watertight ? "水密" : "非水密"}`,
           modelId: data.model_id,
         });
+        flog.success("Import", `模型已导入: ${data.filename}`,
+          `ID: ${data.model_id} | 面数: ${data.mesh_info.face_count} | 顶点: ${data.mesh_info.vertex_count} | 水密: ${data.mesh_info.is_watertight ? "是" : "否"} | 体积: ${data.mesh_info.volume?.toFixed(1) ?? "N/A"} mm³`,
+          ms);
         toastSuccess("模型已导入", `${data.filename} — ${data.mesh_info.face_count.toLocaleString()} 面`);
       } catch (e) {
+        flog.error("Import", `导入失败: ${(e as Error)?.message ?? "未知错误"}`);
         toastError("导入失败", (e as Error)?.message ?? "未知错误");
       }
     },
@@ -267,15 +275,24 @@ function EditPanel() {
   const toolbarRef = useRef<(id: string) => void>(() => {});
 
   const handleAction = async (label: string, action: () => Promise<{ mesh_info?: unknown }>) => {
+    const t0 = performance.now();
+    flog.info("Edit", `执行: ${label}...`);
     try {
       const data = await action();
+      const ms = Math.round(performance.now() - t0);
       if (data && (data as { mesh_info?: unknown }).mesh_info) {
-        updateInfo((data as { mesh_info: typeof meshInfo }).mesh_info!);
+        const mi = (data as { mesh_info: typeof meshInfo }).mesh_info!;
+        updateInfo(mi);
         bumpGlb();
+        flog.success("Edit", `${label}完成`, `面数: ${mi.face_count} | 顶点: ${mi.vertex_count} | 水密: ${mi.is_watertight ? "是" : "否"}`, ms);
+      } else {
+        flog.success("Edit", `${label}完成`, undefined, ms);
       }
       pushHistory({ type: "repair", label, modelId: modelId ?? undefined });
       toastSuccess(`${label}完成`);
     } catch (e) {
+      const ms = Math.round(performance.now() - t0);
+      flog.error("Edit", `${label}失败: ${(e as Error)?.message}`, `耗时: ${ms}ms`);
       toastError(`${label}失败`, (e as Error)?.message);
     }
   };
@@ -1041,13 +1058,21 @@ function OrientationPanel() {
           label={isAnalyzing ? "分析中..." : "分析最优脱模方向"}
           loading={isAnalyzing}
           variant="primary"
-          onClick={() => orientation.mutate({ modelId, nSamples, nFinal }, {
-            onSuccess: (r) => {
-              pushHistory({ type: "orientation", label: "方向分析", detail: `评分 ${(r.best_score.total_score * 100).toFixed(0)}%`, modelId });
-              toastSuccess("方向分析完成", `评分 ${(r.best_score.total_score * 100).toFixed(0)}%`);
-            },
-            onError: (e) => toastError("分析失败", (e as Error).message),
-          })}
+          onClick={() => {
+            const t0 = performance.now();
+            flog.info("Orient", `开始方向分析 (采样: ${nSamples}, 候选: ${nFinal})`);
+            orientation.mutate({ modelId, nSamples, nFinal }, {
+              onSuccess: (r) => {
+                const ms = Math.round(performance.now() - t0);
+                const dir = r.best_direction.map((v: number) => v.toFixed(2)).join(", ");
+                flog.success("Orient", `方向分析完成 — 评分 ${(r.best_score.total_score * 100).toFixed(1)}%`,
+                  `最佳方向: [${dir}] | 可见率: ${(r.best_score.visibility_ratio * 100).toFixed(1)}% | 倒扣: ${(r.best_score.undercut_ratio * 100).toFixed(1)}% | 候选: ${r.top_candidates.length} 个`, ms);
+                pushHistory({ type: "orientation", label: "方向分析", detail: `评分 ${(r.best_score.total_score * 100).toFixed(0)}%`, modelId });
+                toastSuccess("方向分析完成", `评分 ${(r.best_score.total_score * 100).toFixed(0)}%`);
+              },
+              onError: (e) => { flog.error("Orient", `方向分析失败: ${(e as Error).message}`); toastError("分析失败", (e as Error).message); },
+            });
+          }}
         />
       </Section>
 
@@ -1282,10 +1307,14 @@ function MoldPanel() {
           icon={<SplitSquareVertical size={13} />}
           label={isGeneratingParting ? "生成中..." : "生成分型面"}
           loading={isGeneratingParting}
-          onClick={() => parting.mutate({ modelId }, {
-            onSuccess: () => { pushHistory({ type: "parting", label: "生成分型面", modelId }); toastSuccess("分型面已生成"); },
-            onError: (e) => toastError("分型面生成失败", (e as Error).message),
-          })}
+          onClick={() => {
+            const t0 = performance.now();
+            flog.info("Mold", "生成分型面...");
+            parting.mutate({ modelId }, {
+              onSuccess: () => { const ms = Math.round(performance.now() - t0); flog.success("Mold", "分型面已生成", undefined, ms); pushHistory({ type: "parting", label: "生成分型面", modelId }); toastSuccess("分型面已生成"); },
+              onError: (e) => { flog.error("Mold", `分型面生成失败: ${(e as Error).message}`); toastError("分型面生成失败", (e as Error).message); },
+            });
+          }}
         />
         {partingResult && (
           <motion.div
@@ -1495,7 +1524,9 @@ function MoldPanel() {
           icon={<Box size={13} />}
           label={isGeneratingMold ? "生成中..." : "生成模具"}
           loading={isGeneratingMold}
-          onClick={() =>
+          onClick={() => {
+            const t0 = performance.now();
+            flog.info("Mold", `开始模具生成 (壳: ${shellType}, 分型: ${partingStyle}, 壁厚: ${wallThickness}mm)`);
             moldGen.mutate({
               modelId,
               wallThickness,
@@ -1509,6 +1540,9 @@ function MoldPanel() {
               direction: orientationResult?.best_direction,
             }, {
               onSuccess: ({ moldId: newMoldId, result }) => {
+                const ms = Math.round(performance.now() - t0);
+                flog.success("Mold", `模具生成完成 — ${result.n_shells} 壳体`,
+                  `模具ID: ${newMoldId} | 壳类型: ${shellType} | 分型: ${partingStyle} | 壁厚: ${wallThickness}mm | 法兰: ${addFlanges ? flangeCount + "个" : "无"} | 收缩: ${shrinkagePct}%`, ms);
                 pushHistory({
                   type: "mold", label: "生成模具",
                   detail: `${shellType} 壳 / ${partingStyle} 分型 / ${result.n_shells} 壳体`,
@@ -1522,9 +1556,9 @@ function MoldPanel() {
                   });
                 }
               },
-              onError: (e) => toastError("模具生成失败", (e as Error).message),
-            })
-          }
+              onError: (e) => { flog.error("Mold", `模具生成失败: ${(e as Error).message}`); toastError("模具生成失败", (e as Error).message); },
+            });
+          }}
         />
         {moldResult && (
           <motion.div
@@ -1877,6 +1911,9 @@ function InsertPanel() {
                    holePattern === "iwp" ? "Schoen I-WP — 双通道互穿网络" :
                    holePattern === "frd" ? "Fischer-Koch S — 复杂互连孔隙" :
                    ""}
+                </div>
+                <div className="text-[8px] text-text-muted/55 mt-1 leading-snug">
+                  蜂窝 / Voronoi 为圆孔切口；网格为方孔；TPMS 为超椭圆孔形 + 隐式场布孔（与纯体素 TPMS 实体不同，更适配薄仿形板）。
                 </div>
               </div>
 
@@ -2333,14 +2370,23 @@ function GatingPanel() {
           label={isDesigningGating ? "设计中..." : "自动设计浇注系统"}
           loading={isDesigningGating}
           variant="primary"
-          onClick={() => gatingDesign.mutate({
-            modelId, moldId,
-            gateDiameter: gateDiam,
-            nVents,
-          }, {
-            onSuccess: () => { pushHistory({ type: "gating", label: "设计浇注系统", detail: `浇口 ⌀${gateDiam}mm / ${nVents} 排气孔`, modelId, moldId }); toastSuccess("浇注系统设计完成"); },
-            onError: (e) => toastError("设计失败", (e as Error).message),
-          })}
+          onClick={() => {
+            const t0 = performance.now();
+            flog.info("Gating", `开始浇注系统设计 (浇口: ⌀${gateDiam}mm, 排气: ${nVents}个, 流道: ${runnerType})`);
+            gatingDesign.mutate({
+              modelId, moldId,
+              gateDiameter: gateDiam,
+              nVents,
+            }, {
+              onSuccess: () => {
+                const ms = Math.round(performance.now() - t0);
+                flog.success("Gating", `浇注系统设计完成`, `浇口: ⌀${gateDiam}mm | 排气孔: ${nVents}个 | 流道: ${runnerType}`, ms);
+                pushHistory({ type: "gating", label: "设计浇注系统", detail: `浇口 ⌀${gateDiam}mm / ${nVents} 排气孔`, modelId, moldId });
+                toastSuccess("浇注系统设计完成");
+              },
+              onError: (e) => { flog.error("Gating", `浇注设计失败: ${(e as Error).message}`); toastError("设计失败", (e as Error).message); },
+            });
+          }}
         />
       </Section>
 
@@ -2390,7 +2436,7 @@ function SimPanel() {
   const moldId = useMoldStore((s) => s.moldId);
   const {
     selectedMaterial, gatingId, gatingResult, simId, simResult,
-    optimizationResult, isDesigningGating, isSimulating, isOptimizing,
+    optimizationResult, isSimulating, isOptimizing,
     setMaterial, visualizationData, isLoadingVisualization,
     heatmapField,
     particleDensity,
@@ -2400,7 +2446,6 @@ function SimPanel() {
     surfaceMapData, surfaceMapLoading,
     feaResult, feaVisualizationData, feaRunning,
   } = useSimStore();
-  const gatingDesign = useGatingDesign();
   const runSim = useRunSimulation();
   const runOpt = useRunOptimization();
   const fetchVis = useFetchVisualization();
@@ -2440,21 +2485,25 @@ function SimPanel() {
         <MaterialLibrary selected={selectedMaterial} onSelect={setMaterial} />
       </Section>
 
-      {/* 2. Gating */}
-      <Section title="2. 浇注系统" icon={<Droplets size={11} />}
+      {/* 2. Gating — design only in「浇注系统」step; avoid duplicate API calls here */}
+      <Section title="2. 浇注状态" icon={<Droplets size={11} />}
         badge={gatingId ? <span className="text-[8px] text-success font-medium">✓</span> : undefined}>
-        <ActionButton
-          icon={<Droplets size={13} />}
-          label={isDesigningGating ? "设计中..." : "设计浇注系统"}
-          loading={isDesigningGating}
-          onClick={() => gatingDesign.mutate({ modelId, moldId }, {
-            onSuccess: () => toastSuccess("浇注系统设计完成"),
-            onError: (e) => toastError("浇注系统设计失败", (e as Error).message),
-          })}
-        />
-        {gatingResult && (
+        {!gatingId ? (
+          <div className="space-y-2">
+            <p className="text-[10px] text-text-muted leading-relaxed">
+              浇注口与排气孔请在左侧「浇注系统」步骤中设计；本步骤仅运行灌注仿真与优化，避免重复触发浇注接口。
+            </p>
+            <button
+              type="button"
+              onClick={() => setStep("gating")}
+              className="text-[10px] text-accent hover:underline"
+            >
+              前往浇注系统 →
+            </button>
+          </div>
+        ) : gatingResult ? (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-            className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+            className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
             <div className="flex justify-between">
               <span className="text-text-muted">浇口评分</span>
               <span className="text-accent">{(gatingResult.gate.score * 100).toFixed(1)}%</span>
@@ -2472,6 +2521,8 @@ function SimPanel() {
               <span>{gatingResult.estimated_fill_time.toFixed(1)} s</span>
             </div>
           </motion.div>
+        ) : (
+          <p className="text-[10px] text-text-muted">浇注已关联（gatingId）。若摘要未显示，请返回浇注步骤重新设计一次。</p>
         )}
       </Section>
 
@@ -2503,16 +2554,24 @@ function SimPanel() {
           icon={<Zap size={13} />}
           label={isSimulating ? "仿真中..." : `运行仿真 (L${simLevel})`}
           loading={isSimulating}
-          onClick={() => gatingId && runSim.mutate({ modelId, gatingId, level: simLevel }, {
+          onClick={() => {
+            if (!gatingId) return;
+            const t0 = performance.now();
+            flog.info("Sim", `开始充模仿真 (等级: L${simLevel})`);
+            runSim.mutate({ modelId, gatingId, level: simLevel }, {
             onSuccess: ({ simId: newSimId, result: r }) => {
+              const ms = Math.round(performance.now() - t0);
+              flog.success("Sim", `充模仿真完成 — 充填率 ${(r.fill_fraction * 100).toFixed(1)}%`,
+                `仿真ID: ${newSimId} | 充填时间: ${r.fill_time_seconds?.toFixed(2) ?? "?"}s | 最大压力: ${r.max_pressure?.toFixed(2) ?? "?"} | 缺陷: ${r.defects?.length ?? 0}个`, ms);
               pushHistory({ type: "simulation", label: "充模仿真", detail: `充填率 ${(r.fill_fraction * 100).toFixed(1)}%`, modelId });
               toastSuccess("仿真完成", `充填率 ${(r.fill_fraction * 100).toFixed(1)}%`);
               if (r.has_visualization && newSimId) {
                 fetchVis.mutate(newSimId);
               }
             },
-            onError: (e) => toastError("仿真失败", (e as Error).message),
-          })}
+            onError: (e) => { flog.error("Sim", `仿真失败: ${(e as Error).message}`); toastError("仿真失败", (e as Error).message); },
+          });
+          }}
         />
         {simResult && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
@@ -2809,14 +2868,20 @@ function SimPanel() {
             label={feaRunning ? "分析中..." : "运行结构分析"}
             loading={feaRunning}
             variant="primary"
-            onClick={() => runFEA.mutate({ modelId, materialPreset: feaMaterial }, {
+            onClick={() => {
+              const t0 = performance.now();
+              flog.info("FEA", `开始 FEA 结构分析 (材料: ${feaMaterial})`);
+              runFEA.mutate({ modelId, materialPreset: feaMaterial }, {
               onSuccess: ({ feaId: fid }) => {
+                const ms = Math.round(performance.now() - t0);
+                flog.success("FEA", `FEA 分析完成`, `FEA ID: ${fid} | 材料: ${feaMaterial}`, ms);
                 pushHistory({ type: "simulation", label: "FEA 结构分析", detail: `材料: ${feaMaterial}`, modelId });
                 toastSuccess("FEA 分析完成");
                 fetchFEAVis.mutate(fid);
               },
-              onError: (e) => toastError("FEA 分析失败", (e as Error).message),
-            })}
+              onError: (e) => { flog.error("FEA", `FEA 分析失败: ${(e as Error).message}`); toastError("FEA 分析失败", (e as Error).message); },
+            });
+            }}
           />
           {feaResult && (() => {
             const r = feaResult as Record<string, number>;
@@ -3119,33 +3184,26 @@ function ExportPanel() {
             icon={<Download size={13} />}
             label="导出模型"
             loading={exportModel.isPending}
-            onClick={() =>
-              modelId &&
+            onClick={() => {
+              if (!modelId) return;
+              flog.info("Export", `导出模型 (${format.toUpperCase()})...`);
               exportModel.mutate(
                 { model_id: modelId, format },
                 {
                   onSuccess: () => {
+                    flog.success("Export", `模型导出成功`, `格式: ${format.toUpperCase()} | 模型: ${modelId}`);
                     pushHistory({ type: "export", label: `导出模型 (${format.toUpperCase()})`, modelId });
                     toastSuccess("模型已导出", `${format.toUpperCase()} 格式`);
-                    setLastExport({
-                      label: "模型",
-                      ok: true,
-                      at: Date.now(),
-                      detail: format.toUpperCase(),
-                    });
+                    setLastExport({ label: "模型", ok: true, at: Date.now(), detail: format.toUpperCase() });
                   },
                   onError: (e) => {
+                    flog.error("Export", `模型导出失败: ${(e as Error).message}`);
                     toastError("导出失败", (e as Error).message);
-                    setLastExport({
-                      label: "模型",
-                      ok: false,
-                      at: Date.now(),
-                      detail: (e as Error).message,
-                    });
+                    setLastExport({ label: "模型", ok: false, at: Date.now(), detail: (e as Error).message });
                   },
                 },
-              )
-            }
+              );
+            }}
           />
           {moldId && (
             <ActionButton

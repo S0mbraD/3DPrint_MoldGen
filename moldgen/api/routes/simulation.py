@@ -9,10 +9,15 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from moldgen.api.routes.models import _get_mesh
-from moldgen.api.routes.molds import _mold_results
+from moldgen.api.routes.molds import _mold_results, restore_mold_shells_to_pristine
 from moldgen.core.fea import FEAConfig, FEAResult, FEASolver
 from moldgen.core.flow_sim import FlowSimulator, SimConfig, SimulationResult
-from moldgen.core.gating import GatingConfig, GatingResult, GatingSystem
+from moldgen.core.gating import (
+    GatingConfig,
+    GatingResult,
+    GatingSystem,
+    apply_gating_boolean_to_mold,
+)
 from moldgen.core.material import MATERIAL_PRESETS
 from moldgen.core.optimizer import AutoOptimizer, OptimizationConfig
 
@@ -47,6 +52,8 @@ class GatingRequest(BaseModel):
 @router.post("/gating/design")
 async def design_gating(req: GatingRequest):
     """设计浇注系统"""
+    import time as _time
+    t0 = _time.perf_counter()
     mesh = _get_mesh(req.model_id)
     mold = _mold_results.get(req.mold_id)
     if mold is None:
@@ -56,6 +63,7 @@ async def design_gating(req: GatingRequest):
     if mat is None:
         raise HTTPException(400, f"Unknown material: {req.material}. Use /simulation/materials to list.")
 
+    logger.info("Gating design: model=%s mold=%s gate_diam=%.1fmm vents=%d", req.model_id, req.mold_id, req.gate_diameter, req.n_vents)
     config = GatingConfig(gate_diameter=req.gate_diameter, n_vents=req.n_vents)
     gating = GatingSystem(config)
 
@@ -65,13 +73,19 @@ async def design_gating(req: GatingRequest):
         logger.exception("Gating design failed")
         raise HTTPException(500, f"Gating design error: {e}") from e
 
+    try:
+        restore_mold_shells_to_pristine(req.mold_id, mold)
+        apply_gating_boolean_to_mold(mold, result)
+    except Exception as e:
+        logger.exception("Applying gating cuts to mold shells failed")
+        raise HTTPException(500, f"Gating mesh update error: {e}") from e
+
     gating_id = str(uuid4())[:8]
     _gating_results[gating_id] = result
+    elapsed = _time.perf_counter() - t0
+    logger.info("Gating design OK: id=%s score=%.2f (%.2fs)", gating_id, result.gate.score, elapsed)
 
-    return {
-        "gating_id": gating_id,
-        "result": result.to_dict(),
-    }
+    return {"gating_id": gating_id, "result": result.to_dict()}
 
 
 # ── Flow Simulation ──────────────────────────────────────────────────
@@ -87,6 +101,8 @@ class SimulationRequest(BaseModel):
 @router.post("/run")
 async def run_simulation(req: SimulationRequest):
     """运行灌注仿真"""
+    import time as _time
+    t0 = _time.perf_counter()
     mesh = _get_mesh(req.model_id)
     gating = _gating_results.get(req.gating_id)
     if gating is None:
@@ -96,6 +112,7 @@ async def run_simulation(req: SimulationRequest):
     if mat is None:
         raise HTTPException(400, f"Unknown material: {req.material}")
 
+    logger.info("Simulation: model=%s gating=%s level=%d voxel=%d", req.model_id, req.gating_id, req.level, req.voxel_resolution)
     config = SimConfig(level=req.level, voxel_resolution=req.voxel_resolution)
     simulator = FlowSimulator(config)
 
@@ -107,11 +124,14 @@ async def run_simulation(req: SimulationRequest):
 
     sim_id = str(uuid4())[:8]
     _sim_results[sim_id] = result
+    elapsed = _time.perf_counter() - t0
+    rd = result.to_dict()
+    logger.info(
+        "Simulation OK: id=%s fill=%.1f%% time=%.2fs defects=%d (%.2fs)",
+        sim_id, rd["fill_fraction"] * 100, rd.get("fill_time_seconds", 0), len(rd.get("defects", [])), elapsed,
+    )
 
-    return {
-        "sim_id": sim_id,
-        "result": result.to_dict(),
-    }
+    return {"sim_id": sim_id, "result": rd}
 
 
 # ── Visualization Data ───────────────────────────────────────────────
@@ -249,6 +269,12 @@ async def run_optimization(req: OptimizeRequest):
     gating_id = None
     sim_id = None
     if result.final_gating:
+        try:
+            restore_mold_shells_to_pristine(req.mold_id, mold)
+            apply_gating_boolean_to_mold(mold, result.final_gating)
+        except Exception as e:
+            logger.exception("Applying optimized gating cuts failed")
+            raise HTTPException(500, f"Optimized gating mesh update error: {e}") from e
         gating_id = str(uuid4())[:8]
         _gating_results[gating_id] = result.final_gating
     if result.final_simulation:
