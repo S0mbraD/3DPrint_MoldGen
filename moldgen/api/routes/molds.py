@@ -6,14 +6,13 @@ import asyncio
 import logging
 from uuid import uuid4
 
-import numpy as np
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 from moldgen.api.routes.models import _get_mesh
 from moldgen.core.mesh_data import MeshData
-from moldgen.core.mold_builder import MoldBuilder, MoldConfig, MoldResult, MoldShell
+from moldgen.core.mold_builder import MoldBuilder, MoldConfig, MoldResult
 from moldgen.core.orientation import (
     OrientationAnalyzer,
     OrientationConfig,
@@ -25,41 +24,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _mold_results: dict[str, MoldResult] = {}
-_mold_pristine_shells: dict[str, list[MoldShell]] = {}
 _orientation_results: dict[str, OrientationResult] = {}
 _parting_results: dict[str, PartingResult] = {}
-
-
-def _clone_shell_list(shells: list[MoldShell]) -> list[MoldShell]:
-    return [
-        MoldShell(
-            shell_id=s.shell_id,
-            mesh=s.mesh.copy(),
-            direction=np.asarray(s.direction, dtype=np.float64).copy(),
-            volume=s.volume,
-            surface_area=s.surface_area,
-            is_printable=s.is_printable,
-            min_draft_angle=s.min_draft_angle,
-        )
-        for s in shells
-    ]
-
-
-def restore_mold_shells_to_pristine(mold_id: str, mold: MoldResult) -> None:
-    """Reset shell meshes to post-generation state (before gating booleans)."""
-    snap = _mold_pristine_shells.get(mold_id)
-    if not snap:
-        logger.warning(
-            "No pristine shell snapshot for mold %s; gating cuts stack on current mesh",
-            mold_id,
-        )
-        return
-    mold.shells = _clone_shell_list(snap)
-
-
-def refresh_mold_pristine_shells(mold_id: str, mold: MoldResult) -> None:
-    """Refresh snapshot after other geometry edits (e.g. pillar holes)."""
-    _mold_pristine_shells[mold_id] = _clone_shell_list(mold.shells)
 
 
 # ── Orientation Analysis ─────────────────────────────────────────────
@@ -266,7 +232,6 @@ async def generate_mold(model_id: str, req: MoldRequest | None = None):
 
     mold_id = str(uuid4())[:8]
     _mold_results[mold_id] = result
-    _mold_pristine_shells[mold_id] = _clone_shell_list(result.shells)
     elapsed = _time.perf_counter() - t0
     rd = result.to_dict()
     logger.info(
@@ -313,7 +278,6 @@ async def generate_multi_part_mold(model_id: str, req: MultiPartMoldRequest):
 
     mold_id = str(uuid4())[:8]
     _mold_results[mold_id] = result
-    _mold_pristine_shells[mold_id] = _clone_shell_list(result.shells)
 
     return {
         "model_id": model_id,

@@ -418,7 +418,27 @@ def generate_parting_surface_sdf(mesh, direction, parting_line, gpu_compute):
 3. 验证：每个壳可沿对应方向无碰撞脱模
 ```
 
-## 6. 模具壳体生成算法 (v4 实现)
+## 6. 模具壳体生成算法 (v4 → v8 实现)
+
+### 6.0 预处理：单位自适应 + 模型保证 (v8 新增)
+
+```
+1. 单位自适应 (_auto_rescale_to_mm):
+   - 检测模型最大尺寸 max_extent
+   - max_extent < 2  → 推定为米, ×1000 缩放到 mm
+   - max_extent < 25 → 推定为厘米, ×10 缩放到 mm
+   - 也支持 MeshData.unit 显式声明 ("m"/"cm"/"in")
+   - 确保模具参数 (wall=4mm, clearance=0.3mm, margin=10mm) 与模型尺度匹配
+
+2. 最低面数保证 (_ensure_min_faces):
+   - 低面模型自动细分至 ≥ 12,000 面 (旧值 4000)
+   - 确保空腔曲面有足够三角片分辨率
+
+3. 非水密模型修复:
+   - _create_cavity 中先尝试 _repair_mesh
+   - 修复后仍非水密则记录 WARNING 但不阻断
+   - 空腔偏移后再次 _repair_mesh 减少自相交
+```
 
 ### 6.1 三级策略壳体构造
 
@@ -461,17 +481,26 @@ def generate_parting_surface_sdf(mesh, direction, parting_line, gpu_compute):
   效果: 邻域法线方向收敛, 大幅降低自相交
 ```
 
-### 6.3 浇筑口/排气口切割 (v4 新增)
+### 6.3 浇筑口/排气口切割 (v4 → v7 增强)
 
 ```
-v4 之前: 孔位仅作为元数据存储，壳体网格无实际孔洞
 v4: 使用布尔差集将圆柱体从壳体中减去
+v7: 浇注设计阶段 (GatingSystem.apply_to_mold) 二次切割 + AABB 预检
 
-流程:
+模具生成阶段 (_cut_holes_in_shells):
   1. 为每个浇筑口/排气口创建圆柱体 (_make_cylinder)
-  2. 对每个壳体逐个执行 _robust_boolean_subtract(shell, cylinder)
-  3. 成功 → 壳体含实际通孔; 失败 → 保留原始壳体
-  4. 修复结果网格 (_repair_mesh)
+     - 圆柱高度 = max((wall + margin) × 4, 壳体沿方向总跨度 × 2)
+     - 确保无论孔位在壳体内外，圆柱都能贯穿壳壁
+  2. AABB 预检: 跳过与壳体不重叠的圆柱 (避免空运算)
+  3. 对每个壳体逐个执行 _robust_boolean_subtract(shell, cylinder)
+  4. 失败时记录 WARNING 日志 (不再静默跳过)
+  5. 修复结果网格 (_repair_mesh)
+
+浇注设计阶段 (GatingSystem.apply_to_mold):
+  1. 浇注系统独立计算浇口/排气位置 (可能与模具阶段不同)
+  2. 为每个浇口/排气位置创建贯穿圆柱
+  3. 布尔差集切入已有壳体, 原地更新 MoldResult.shells
+  4. 后续导出/GLB 接口自动返回含通孔的壳体
 ```
 
 ### 6.4 网格修复 (v4 增强)
@@ -831,6 +860,8 @@ Score(v) = 0.40 · Height(v) + 0.25 · Centrality(v) + 0.20 · Access(v) + 0.15 
 - Lee & Kim (1996): Optimal gate via mold fill balance
 
 **实际几何体**: 自动生成漏斗形网格 (圆柱 + 圆锥) 用于 3D 可视化
+
+**v7 应用到壳体**: `GatingSystem.apply_to_mold()` 在设计完成后自动将浇口/排气口的通孔布尔减入壳体，确保导出的 STL/GLB 文件包含物理通孔。该方法使用 manifold3d (优先) 或 trimesh.boolean 执行差集运算。
 
 ### 8.2 排气口位置优化 — 流前BFS仿真 + 气穴检测
 

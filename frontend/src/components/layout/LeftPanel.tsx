@@ -18,6 +18,27 @@ import { toastSuccess, toastError, toastInfo } from "../../stores/toastStore";
 import { useHistoryStore } from "../../stores/historyStore";
 import { flog } from "../../stores/logStore";
 
+const STEP_ICON_MAP: Record<string, React.ReactNode> = {
+  import: <Upload size={12} />,
+  repair: <Scissors size={12} />,
+  orientation: <Compass size={12} />,
+  mold: <Box size={12} />,
+  insert: <Layers size={12} />,
+  gating: <Droplets size={12} />,
+  simulation: <Zap size={12} />,
+  export: <Download size={12} />,
+};
+const STEP_LABEL_MAP: Record<string, string> = {
+  import: "模型导入",
+  repair: "编辑修复",
+  orientation: "方向分析",
+  mold: "模具设计",
+  insert: "内骨骼",
+  gating: "浇注系统",
+  simulation: "仿真分析",
+  export: "文件导出",
+};
+
 export function LeftPanel() {
   const { leftPanelOpen, toggleLeftPanel, currentStep } = useAppStore();
 
@@ -26,29 +47,37 @@ export function LeftPanel() {
       {leftPanelOpen && (
         <motion.div
           initial={{ width: 0, opacity: 0 }}
-          animate={{ width: 280, opacity: 1 }}
+          animate={{ width: 290, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={{ type: "spring", stiffness: 300, damping: 30 }}
           className="h-full bg-bg-panel border-r border-border overflow-hidden flex flex-col"
         >
-          <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
-            <span className="text-xs font-semibold text-text-secondary uppercase tracking-wider">
-              参数面板
-            </span>
-            <div className="flex items-center gap-1">
+          {/* Panel header */}
+          <div className="flex items-center justify-between px-3 h-8 border-b border-border shrink-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-accent">{STEP_ICON_MAP[currentStep]}</span>
+              <span className="text-[11px] font-semibold text-text-primary tracking-tight">
+                {STEP_LABEL_MAP[currentStep] ?? "参数面板"}
+              </span>
+            </div>
+            <div className="flex items-center gap-0.5">
               <button
                 onClick={() => useAppStore.getState().toggleSettings()}
-                className="p-1 rounded hover:bg-bg-hover text-text-muted"
+                className="p-1 rounded-[4px] hover:bg-bg-hover/60 text-text-muted/50 transition-colors"
                 title="设置"
               >
-                <Settings size={13} />
+                <Settings size={12} />
               </button>
-              <button onClick={toggleLeftPanel} className="p-1 rounded hover:bg-bg-hover text-text-muted">
-                <ChevronLeft size={14} />
+              <button
+                onClick={toggleLeftPanel}
+                className="p-1 rounded-[4px] hover:bg-bg-hover/60 text-text-muted/50 transition-colors"
+              >
+                <ChevronLeft size={13} />
               </button>
             </div>
           </div>
 
+          {/* Step content */}
           <div className="flex-1 overflow-y-auto p-3 space-y-4">
             {currentStep === "import" && <ImportPanel />}
             {currentStep === "repair" && <EditPanel />}
@@ -2436,7 +2465,7 @@ function SimPanel() {
   const moldId = useMoldStore((s) => s.moldId);
   const {
     selectedMaterial, gatingId, gatingResult, simId, simResult,
-    optimizationResult, isSimulating, isOptimizing,
+    optimizationResult, isDesigningGating, isSimulating, isOptimizing,
     setMaterial, visualizationData, isLoadingVisualization,
     heatmapField,
     particleDensity,
@@ -2446,6 +2475,7 @@ function SimPanel() {
     surfaceMapData, surfaceMapLoading,
     feaResult, feaVisualizationData, feaRunning,
   } = useSimStore();
+  const gatingDesign = useGatingDesign();
   const runSim = useRunSimulation();
   const runOpt = useRunOptimization();
   const fetchVis = useFetchVisualization();
@@ -2485,25 +2515,21 @@ function SimPanel() {
         <MaterialLibrary selected={selectedMaterial} onSelect={setMaterial} />
       </Section>
 
-      {/* 2. Gating — design only in「浇注系统」step; avoid duplicate API calls here */}
-      <Section title="2. 浇注状态" icon={<Droplets size={11} />}
+      {/* 2. Gating */}
+      <Section title="2. 浇注系统" icon={<Droplets size={11} />}
         badge={gatingId ? <span className="text-[8px] text-success font-medium">✓</span> : undefined}>
-        {!gatingId ? (
-          <div className="space-y-2">
-            <p className="text-[10px] text-text-muted leading-relaxed">
-              浇注口与排气孔请在左侧「浇注系统」步骤中设计；本步骤仅运行灌注仿真与优化，避免重复触发浇注接口。
-            </p>
-            <button
-              type="button"
-              onClick={() => setStep("gating")}
-              className="text-[10px] text-accent hover:underline"
-            >
-              前往浇注系统 →
-            </button>
-          </div>
-        ) : gatingResult ? (
+        <ActionButton
+          icon={<Droplets size={13} />}
+          label={isDesigningGating ? "设计中..." : "设计浇注系统"}
+          loading={isDesigningGating}
+          onClick={() => gatingDesign.mutate({ modelId, moldId }, {
+            onSuccess: () => toastSuccess("浇注系统设计完成"),
+            onError: (e) => toastError("浇注系统设计失败", (e as Error).message),
+          })}
+        />
+        {gatingResult && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-            className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+            className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1">
             <div className="flex justify-between">
               <span className="text-text-muted">浇口评分</span>
               <span className="text-accent">{(gatingResult.gate.score * 100).toFixed(1)}%</span>
@@ -2521,8 +2547,6 @@ function SimPanel() {
               <span>{gatingResult.estimated_fill_time.toFixed(1)} s</span>
             </div>
           </motion.div>
-        ) : (
-          <p className="text-[10px] text-text-muted">浇注已关联（gatingId）。若摘要未显示，请返回浇注步骤重新设计一次。</p>
         )}
       </Section>
 

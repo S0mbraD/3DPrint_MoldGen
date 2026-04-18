@@ -3,7 +3,6 @@ import { Component, Suspense, useMemo, type ReactNode } from "react";
 import type { Mesh } from "three";
 import * as THREE from "three";
 import { useViewportStore } from "../../stores/viewportStore";
-import { useMoldStore } from "../../stores/moldStore";
 
 const SHELL_COLORS: [number, number, number][] = [
   [1.0, 0.56, 0.72],  // pink  — shell 0
@@ -37,11 +36,9 @@ export function MoldShellViewer({
   moldId: string;
   shellId: number;
 }) {
-  const shellMeshRevision = useMoldStore((s) => s.shellMeshRevision);
   const url = useMemo(
-    () =>
-      `/api/v1/molds/result/${moldId}/shell/${shellId}/glb?v=${shellMeshRevision}`,
-    [moldId, shellId, shellMeshRevision],
+    () => `/api/v1/molds/result/${moldId}/shell/${shellId}/glb`,
+    [moldId, shellId],
   );
 
   return (

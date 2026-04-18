@@ -164,7 +164,7 @@ async def generate_inserts(req: GenerateInsertRequest):
     # Cut pillar holes in mold shells if both inserts and mold exist
     if req.mold_id and result.plates:
         try:
-            from moldgen.api.routes.molds import _mold_results, refresh_mold_pristine_shells
+            from moldgen.api.routes.molds import _mold_results
             from moldgen.core.mold_builder import MoldBuilder
             mold_result = _mold_results.get(req.mold_id)
             if mold_result and mold_result.shells:
@@ -177,7 +177,6 @@ async def generate_inserts(req: GenerateInsertRequest):
                     mold_result.shells = builder.cut_pillar_holes(
                         mold_result.shells, all_pillars,
                     )
-                    refresh_mold_pristine_shells(req.mold_id, mold_result)
                     logger.info("Cut %d pillar holes in mold shells", len(all_pillars))
         except Exception as e:
             logger.warning("Failed to cut pillar holes in mold: %s", e)

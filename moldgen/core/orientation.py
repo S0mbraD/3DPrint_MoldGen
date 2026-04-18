@@ -249,12 +249,10 @@ def _batch_evaluate(
     s_cnt = xp.sum(side_mask, axis=0).astype(areas.dtype)
     h_sum = xp.sum(heights * side_mask, axis=0)
     h_sq = xp.sum(heights * heights * side_mask, axis=0)
-    valid_side = s_cnt > 2
-    s_mean = xp.zeros_like(h_sum, dtype=xp.float64)
-    xp.divide(h_sum, s_cnt, out=s_mean, where=valid_side)
-    mean_sq = xp.zeros_like(h_sum, dtype=xp.float64)
-    xp.divide(h_sq, s_cnt, out=mean_sq, where=valid_side)
-    s_var = xp.where(valid_side, mean_sq - s_mean * s_mean, zero.astype(xp.float64))
+    s_mean = xp.where(s_cnt > 2, h_sum / s_cnt, zero)
+    s_var = xp.where(
+        s_cnt > 2, h_sq / s_cnt - s_mean * s_mean, zero,
+    )
     s_std = xp.sqrt(xp.maximum(s_var, zero))
     v_max = xp.max(vertices, axis=0)
     v_min = xp.min(vertices, axis=0)

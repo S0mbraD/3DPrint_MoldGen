@@ -113,55 +113,61 @@ export default function App() {
     <ErrorBoundary>
       <div className="h-screen flex flex-col bg-bg-primary">
         {/* Title Bar */}
-        <div className="flex items-center h-9 px-3 bg-bg-secondary border-b border-border select-none shrink-0">
+        <div className="flex items-center h-8 px-3 bg-bg-primary border-b border-border select-none shrink-0" data-tauri-drag-region>
           <div className="flex items-center gap-2">
-            <span className="text-sm font-bold text-accent">MoldGen</span>
-            <span className="text-[10px] text-text-muted">
+            <div className="flex items-center gap-1.5">
+              <div className="w-5 h-5 rounded bg-accent/15 flex items-center justify-center">
+                <span className="text-[10px] font-black text-accent">M</span>
+              </div>
+              <span className="text-[12px] font-bold text-text-primary tracking-tight">MoldGen</span>
+            </div>
+            <div className="h-3 w-px bg-border/40" />
+            <span className="text-[10px] text-text-muted/60 font-medium">
               AI 医学教具模具工作站
             </span>
             <div
-              className={`w-1.5 h-1.5 rounded-full ml-1 ${
+              className={`w-1.5 h-1.5 rounded-full ${
                 backendStatus === "online"
-                  ? "bg-green-400"
+                  ? "bg-success"
                   : backendStatus === "checking"
-                    ? "bg-yellow-400 animate-pulse"
-                    : "bg-red-400"
+                    ? "bg-warning animate-pulse"
+                    : "bg-danger"
               }`}
               title={`后端: ${backendStatus === "online" ? "在线" : backendStatus === "checking" ? "检测中" : "离线"}`}
             />
           </div>
           <div className="flex-1" />
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-0.5">
             <button
               onClick={toggleConsole}
-              className={`p-1 rounded hover:bg-bg-hover ${consoleOpen ? "text-accent" : "text-text-muted"}`}
+              className={`p-1 rounded-[4px] hover:bg-bg-hover/60 transition-colors ${consoleOpen ? "text-accent bg-accent/10" : "text-text-muted/50"}`}
               title="控制台 (Ctrl+`)"
             >
-              <Terminal size={14} />
+              <Terminal size={13} />
             </button>
             <button
               onClick={toggleSettings}
-              className="p-1 rounded hover:bg-bg-hover text-text-muted"
+              className="p-1 rounded-[4px] hover:bg-bg-hover/60 text-text-muted/50 transition-colors"
               title="设置 (Ctrl+,)"
             >
-              <Settings size={14} />
+              <Settings size={13} />
             </button>
             {!leftPanelOpen && (
               <button
                 onClick={toggleLeftPanel}
-                className="p-1 rounded hover:bg-bg-hover text-text-muted"
+                className="p-1 rounded-[4px] hover:bg-bg-hover/60 text-text-muted/50 transition-colors"
                 title="显示参数面板"
               >
-                <PanelLeftOpen size={14} />
+                <PanelLeftOpen size={13} />
               </button>
             )}
             {!rightPanelOpen && (
               <button
                 onClick={toggleRightPanel}
-                className="p-1 rounded hover:bg-bg-hover text-text-muted"
+                className="p-1 rounded-[4px] hover:bg-bg-hover/60 text-text-muted/50 transition-colors"
                 title="显示信息面板"
               >
-                <PanelRightOpen size={14} />
+                <PanelRightOpen size={13} />
               </button>
             )}
           </div>

@@ -9,15 +9,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from moldgen.api.routes.models import _get_mesh
-from moldgen.api.routes.molds import _mold_results, restore_mold_shells_to_pristine
+from moldgen.api.routes.molds import _mold_results
 from moldgen.core.fea import FEAConfig, FEAResult, FEASolver
 from moldgen.core.flow_sim import FlowSimulator, SimConfig, SimulationResult
-from moldgen.core.gating import (
-    GatingConfig,
-    GatingResult,
-    GatingSystem,
-    apply_gating_boolean_to_mold,
-)
+from moldgen.core.gating import GatingConfig, GatingResult, GatingSystem
 from moldgen.core.material import MATERIAL_PRESETS
 from moldgen.core.optimizer import AutoOptimizer, OptimizationConfig
 
@@ -74,11 +69,9 @@ async def design_gating(req: GatingRequest):
         raise HTTPException(500, f"Gating design error: {e}") from e
 
     try:
-        restore_mold_shells_to_pristine(req.mold_id, mold)
-        apply_gating_boolean_to_mold(mold, result)
-    except Exception as e:
-        logger.exception("Applying gating cuts to mold shells failed")
-        raise HTTPException(500, f"Gating mesh update error: {e}") from e
+        gating.apply_to_mold(mold, result)
+    except Exception:
+        logger.exception("apply_to_mold failed (non-fatal)")
 
     gating_id = str(uuid4())[:8]
     _gating_results[gating_id] = result
@@ -269,12 +262,6 @@ async def run_optimization(req: OptimizeRequest):
     gating_id = None
     sim_id = None
     if result.final_gating:
-        try:
-            restore_mold_shells_to_pristine(req.mold_id, mold)
-            apply_gating_boolean_to_mold(mold, result.final_gating)
-        except Exception as e:
-            logger.exception("Applying optimized gating cuts failed")
-            raise HTTPException(500, f"Optimized gating mesh update error: {e}") from e
         gating_id = str(uuid4())[:8]
         _gating_results[gating_id] = result.final_gating
     if result.final_simulation:

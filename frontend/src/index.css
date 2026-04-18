@@ -1,19 +1,43 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg-primary: #0f0f14;
-  --color-bg-secondary: #1a1a24;
-  --color-bg-panel: #1e1e2e;
-  --color-bg-hover: #2a2a3e;
-  --color-border: #2e2e42;
+  /* ── Base surfaces ── */
+  --color-bg-primary: #0d0d12;
+  --color-bg-secondary: #14141e;
+  --color-bg-panel: #191924;
+  --color-bg-hover: #22223a;
+  --color-bg-active: #2a2a48;
+  --color-bg-inset: #111118;
+
+  /* ── Borders ── */
+  --color-border: #262640;
+  --color-border-subtle: #1e1e34;
+  --color-border-accent: #4f46e5;
+
+  /* ── Brand / accent ── */
   --color-accent: #6366f1;
   --color-accent-hover: #818cf8;
-  --color-success: #22c55e;
+  --color-accent-muted: #4338ca;
+
+  /* ── Semantic ── */
+  --color-success: #10b981;
   --color-warning: #f59e0b;
   --color-danger: #ef4444;
-  --color-text-primary: #e2e8f0;
-  --color-text-secondary: #94a3b8;
-  --color-text-muted: #64748b;
+  --color-info: #38bdf8;
+
+  /* ── Text ── */
+  --color-text-primary: #e8ecf4;
+  --color-text-secondary: #9ca3b4;
+  --color-text-muted: #5c6478;
+
+  /* ── Scene object type colors ── */
+  --color-obj-model: #60a5fa;
+  --color-obj-mold: #22d3ee;
+  --color-obj-shell: #67e8f9;
+  --color-obj-insert: #4ade80;
+  --color-obj-gate: #fb923c;
+  --color-obj-sim: #f472b6;
+  --color-obj-gating: #fbbf24;
 }
 
 html, body, #root {
@@ -22,22 +46,60 @@ html, body, #root {
   padding: 0;
   font-family: "Inter", system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
+/* ── Scrollbar ── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
-
 ::-webkit-scrollbar-track {
-  background: var(--color-bg-secondary);
+  background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
   background: var(--color-border);
-  border-radius: 3px;
+  border-radius: 4px;
 }
-
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
+}
+
+/* ── Range input (opacity sliders) ── */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  background: var(--color-border);
+  border-radius: 2px;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  cursor: pointer;
+  border: 1.5px solid var(--color-bg-panel);
+  box-shadow: 0 0 4px rgba(99, 102, 241, 0.4);
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  background: var(--color-accent-hover);
+  transform: scale(1.15);
+}
+
+/* ── Selection highlight ── */
+::selection {
+  background: rgba(99, 102, 241, 0.3);
+}
+
+/* ── Tooltip animation ── */
+@keyframes tooltip-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.tooltip-anim {
+  animation: tooltip-in 0.15s ease-out;
 }

@@ -69,8 +69,6 @@ export interface MoldResultInfo {
 }
 
 interface MoldState {
-  /** Bumped after server-side shell mesh updates (e.g. gating booleans) to bust GLB cache. */
-  shellMeshRevision: number;
   orientationResult: OrientationResult | null;
   partingResult: PartingResult | null;
   moldId: string | null;
@@ -90,12 +88,10 @@ interface MoldState {
   setAnalyzing: (v: boolean) => void;
   setGeneratingParting: (v: boolean) => void;
   setGeneratingMold: (v: boolean) => void;
-  bumpShellMeshRevision: () => void;
   clearMold: () => void;
 }
 
 export const useMoldStore = create<MoldState>((set) => ({
-  shellMeshRevision: 0,
   orientationResult: null,
   partingResult: null,
   moldId: null,
@@ -116,11 +112,8 @@ export const useMoldStore = create<MoldState>((set) => ({
   setAnalyzing: (v) => set({ isAnalyzing: v }),
   setGeneratingParting: (v) => set({ isGeneratingParting: v }),
   setGeneratingMold: (v) => set({ isGeneratingMold: v }),
-  bumpShellMeshRevision: () =>
-    set((s) => ({ shellMeshRevision: s.shellMeshRevision + 1 })),
   clearMold: () =>
     set({
-      shellMeshRevision: 0,
       orientationResult: null,
       partingResult: null,
       moldId: null,

@@ -234,9 +234,15 @@ class OrientationConfig:
 
 （接口设计同前版本，此处省略重复内容）
 
-## 6. mold_builder 模块 — 模具壳体生成 (v5)
+## 6. mold_builder 模块 — 模具壳体生成 (v8)
 
-**核心改进**: 三级策略壳体构造 + 分型面互锁样式 + 螺丝固定法兰。
+**核心改进**: 单位自适应 + 三级策略壳体构造 + 分型面互锁样式 + 螺丝固定法兰。
+
+### 预处理 (v8 新增)
+
+- **单位自适应** (`_auto_rescale_to_mm`): 自动检测模型单位 (m/cm/in)，缩放到 mm。扫描模型常以米为单位 (extents < 2)，不缩放会导致壁厚/间距参数远超模型尺寸，壳体几何完全错误。
+- **最低面数** (`_ensure_min_faces`): 低面模型自动细分至 ≥ 12,000 面，保证空腔曲面有足够分辨率。
+- **非水密修复**: `_create_cavity` 先修复模型再偏移，减少法线偏移后的自相交。
 
 ### 构造策略优先级
 
@@ -685,8 +691,6 @@ def validate_assembly(parts: list[(name, mesh)], min_clearance) -> AssemblyCheck
 | POST | `/api/v1/advanced/sdf/variable-shell` | 场驱动变厚度壳 |
 
 ## 8. gating_system 模块 — 浇注系统
-
-**API 行为（与导出一致）**：`POST /api/v1/simulation/gating/design` 在返回 `gate_mesh` / `vent_meshes` 预览数据的同时，会调用 `apply_gating_boolean_to_mold` 将浇口圆柱与排气工具体从内存中的 `MoldResult.shells` **布尔差集** 切除，并重置为生成模具时的壳体快照后再切割，避免重复设计叠刀。导出 ZIP / `shell/{id}/glb` 与切片即用该网格。自动优化 `POST .../optimize` 在产出 `final_gating` 时同样会重切壳体。
 
 ### 8.1 核心接口（更新 — 含插板适配）
 

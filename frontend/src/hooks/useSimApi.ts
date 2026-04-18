@@ -7,7 +7,6 @@ import {
   type VisualizationData,
   type CrossSectionData,
 } from "../stores/simStore";
-import { useMoldStore } from "../stores/moldStore";
 
 const API = "/api/v1/simulation";
 
@@ -56,10 +55,7 @@ export function useGatingDesign() {
       const data = await resp.json();
       return { gatingId: data.gating_id as string, result: data.result as GatingResultInfo };
     },
-    onSuccess: ({ gatingId, result }) => {
-      store.setGatingResult(gatingId, result);
-      useMoldStore.getState().bumpShellMeshRevision();
-    },
+    onSuccess: ({ gatingId, result }) => store.setGatingResult(gatingId, result),
     onError: () => store.setDesigningGating(false),
   });
 }
@@ -130,10 +126,7 @@ export function useRunOptimization() {
       if (!resp.ok) throw new Error(await resp.text());
       return (await resp.json()).result as OptimizationResultInfo;
     },
-    onSuccess: (result) => {
-      store.setOptimizationResult(result);
-      useMoldStore.getState().bumpShellMeshRevision();
-    },
+    onSuccess: (result) => store.setOptimizationResult(result),
     onError: () => store.setOptimizing(false),
   });
 }

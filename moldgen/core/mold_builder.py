@@ -26,6 +26,7 @@ from moldgen.core.mesh_data import MeshData
 logger = logging.getLogger(__name__)
 
 MOLD_MAX_FACES = 300_000
+MOLD_MIN_FACES = 12_000
 
 
 # ═══════════════════════ Data Classes ═══════════════════════════════════
@@ -67,8 +68,6 @@ class MoldConfig:
     # Draft
     draft_angle_check: bool = True
     min_draft_angle: float = 1.0      # degrees
-    # Mold input mesh: subdivide model before shell / voxel ops for smoother cavities
-    min_input_faces: int = 12000
 
 
 @dataclass
@@ -190,7 +189,7 @@ class MoldResult:
 # ═══════════════════════ Helpers ════════════════════════════════════════
 
 def _ensure_min_faces(
-    tm: trimesh.Trimesh, min_faces: int = 4000,
+    tm: trimesh.Trimesh, min_faces: int = 12_000,
 ) -> trimesh.Trimesh:
     """Subdivide a mesh until it has at least *min_faces* faces.
 
@@ -199,7 +198,7 @@ def _ensure_min_faces(
     parting features have enough geometry for clean boolean operations.
     """
     iters = 0
-    while len(tm.faces) < min_faces and iters < 4:
+    while len(tm.faces) < min_faces and iters < 5:
         try:
             new_v, new_f = trimesh.remesh.subdivide(tm.vertices, tm.faces)
             tm = trimesh.Trimesh(vertices=new_v, faces=new_f, process=True)
@@ -212,6 +211,52 @@ def _ensure_min_faces(
             iters, len(tm.faces), min_faces,
         )
     return tm
+
+
+def _auto_rescale_to_mm(
+    tm: trimesh.Trimesh, unit_hint: str = "mm",
+) -> tuple[trimesh.Trimesh, float]:
+    """Detect if a mesh is in metres/cm and rescale to millimetres.
+
+    Many 3D-scanned models use metres (extents < 2 on a face model)
+    or centimetres (extents < 20). Mold parameters assume mm, so we
+    must auto-scale.  Returns *(rescaled_mesh, scale_factor)*.
+    A factor of 1.0 means no scaling was applied.
+    """
+    max_ext = float(np.max(tm.extents))
+    if max_ext < 1e-12:
+        return tm, 1.0
+
+    hint = unit_hint.lower().strip()
+    if hint in ("m", "meter", "meters"):
+        scale = 1000.0
+    elif hint in ("cm", "centimeter", "centimeters"):
+        scale = 10.0
+    elif hint in ("in", "inch", "inches"):
+        scale = 25.4
+    elif max_ext < 2.0:
+        scale = 1000.0
+        logger.info(
+            "Model max extent %.4f << typical mm range; assuming metres → mm (×1000)",
+            max_ext,
+        )
+    elif max_ext < 25.0:
+        scale = 10.0
+        logger.info(
+            "Model max extent %.2f < 25; assuming cm → mm (×10)", max_ext,
+        )
+    else:
+        return tm, 1.0
+
+    scaled = tm.copy()
+    scaled.vertices = tm.vertices * scale
+    logger.info(
+        "Rescaled model ×%.0f: extents %s → %s",
+        scale,
+        np.array2string(tm.extents, precision=2),
+        np.array2string(scaled.extents, precision=1),
+    )
+    return scaled, scale
 
 
 def _laplacian_smooth_vertex_normals(tm: trimesh.Trimesh) -> np.ndarray:
@@ -823,10 +868,16 @@ class MoldBuilder:
             )
 
         tm_model = build_mesh.to_trimesh()
+
+        # Auto-detect non-mm units and rescale
+        tm_model, self._scale_factor = _auto_rescale_to_mm(
+            tm_model, model.unit,
+        )
+
         tm_model = _repair_mesh(tm_model)
 
         # Subdivide low-poly models so mold shells have enough resolution
-        tm_model = _ensure_min_faces(tm_model, min_faces=self.config.min_input_faces)
+        tm_model = _ensure_min_faces(tm_model, min_faces=MOLD_MIN_FACES)
 
         logger.info(
             "Repaired: %d faces, watertight=%s",
@@ -966,8 +1017,9 @@ class MoldBuilder:
         from moldgen.core.orientation import _auto_decimate
         build_mesh, _ = _auto_decimate(model, MOLD_MAX_FACES)
         tm_model = build_mesh.to_trimesh()
+        tm_model, self._scale_factor = _auto_rescale_to_mm(tm_model, model.unit)
         tm_model = _repair_mesh(tm_model)
-        tm_model = _ensure_min_faces(tm_model, min_faces=self.config.min_input_faces)
+        tm_model = _ensure_min_faces(tm_model, min_faces=MOLD_MIN_FACES)
         cavity = self._create_cavity(tm_model)
         center = np.asarray(tm_model.centroid, dtype=np.float64)
 
@@ -1826,16 +1878,29 @@ class MoldBuilder:
         clearance = self.config.clearance
         if clearance <= 0:
             return tm_model.copy()
+
+        base = tm_model
+        if not base.is_watertight:
+            base = _repair_mesh(base)
+            if not base.is_watertight:
+                logger.warning(
+                    "Model not watertight after repair (%d open edges); "
+                    "cavity offset may be inaccurate",
+                    len(base.faces) - base.referenced_vertices.sum()
+                    if hasattr(base, "referenced_vertices") else -1,
+                )
+
         try:
-            smooth_n = _laplacian_smooth_vertex_normals(tm_model)
-            new_verts = tm_model.vertices + smooth_n * clearance
-            return trimesh.Trimesh(
-                vertices=new_verts, faces=tm_model.faces.copy(),
-                process=True,
+            smooth_n = _laplacian_smooth_vertex_normals(base)
+            new_verts = base.vertices + smooth_n * clearance
+            cav = trimesh.Trimesh(
+                vertices=new_verts, faces=base.faces.copy(), process=True,
             )
+            cav = _repair_mesh(cav)
+            return cav
         except Exception:
             logger.warning("Vertex offset failed, using original")
-            return tm_model.copy()
+            return base.copy()
 
     def _create_outer_shell(self, cavity: trimesh.Trimesh) -> trimesh.Trimesh:
         c = self.config
@@ -2266,42 +2331,54 @@ class MoldBuilder:
         vent_holes: list[HoleFeature],
         direction: np.ndarray,
     ) -> list[MoldShell]:
-        """Boolean-subtract pour/vent hole cylinders from shell meshes."""
+        """Boolean-subtract pour/vent hole cylinders from shell meshes.
+
+        Each hole cylinder is centered at the hole *position* and oriented along
+        *direction*.  The cylinder must be long enough to span the full shell
+        extent along that axis so it always creates a through-hole — even when
+        the hole position is outside the shell AABB.
+        """
         c = self.config
-        hole_cyls: list[trimesh.Trimesh] = []
+        all_bounds = np.vstack([sh.mesh.bounds for sh in shells])
+        shell_extent_along_dir = float(np.ptp(all_bounds @ direction))
+        cyl_height = max(
+            (c.wall_thickness + c.margin) * 4,
+            shell_extent_along_dir * 2.0,
+        )
 
+        hole_specs: list[tuple[np.ndarray, float, str]] = []
         if pour_hole:
-            cyl = _make_cylinder(
-                pour_hole.position, direction,
-                radius=pour_hole.diameter / 2.0,
-                height=(c.wall_thickness + c.margin) * 4,
-            )
-            hole_cyls.append(cyl)
-
+            hole_specs.append((pour_hole.position, pour_hole.diameter / 2.0, "pour"))
         for vh in vent_holes:
-            cyl = _make_cylinder(
-                vh.position, direction,
-                radius=vh.diameter / 2.0,
-                height=(c.wall_thickness + c.margin) * 4,
-            )
-            hole_cyls.append(cyl)
-
-        if not hole_cyls:
+            hole_specs.append((vh.position, vh.diameter / 2.0, "vent"))
+        if not hole_specs:
             return shells
 
         updated: list[MoldShell] = []
         for sh in shells:
             tm_shell = sh.mesh.to_trimesh()
-            cut_ok = False
-
-            for hole_cyl in hole_cyls:
-                result = self._robust_boolean_subtract(tm_shell, hole_cyl)
+            n_cut = 0
+            for pos, radius, htype in hole_specs:
+                cyl = _make_cylinder(pos, direction, radius=radius, height=cyl_height)
+                if not tm_shell.bounds[0].tolist() or not tm_shell.bounds[1].tolist():
+                    continue
+                cyl_min = cyl.bounds[0]
+                cyl_max = cyl.bounds[1]
+                sh_min = tm_shell.bounds[0]
+                sh_max = tm_shell.bounds[1]
+                if np.any(cyl_max < sh_min - 1) or np.any(cyl_min > sh_max + 1):
+                    continue
+                result = self._robust_boolean_subtract(tm_shell, cyl)
                 if result is not None and len(result.faces) > 4:
                     tm_shell = result
-                    cut_ok = True
-
-            if cut_ok:
-                logger.info("Cut holes in shell %d", sh.shell_id)
+                    n_cut += 1
+                else:
+                    logger.warning(
+                        "Boolean %s hole cut FAILED on shell %d (pos=%s r=%.1f)",
+                        htype, sh.shell_id, pos.round(1).tolist(), radius,
+                    )
+            if n_cut > 0:
+                logger.info("Cut %d holes in shell %d", n_cut, sh.shell_id)
                 tm_shell = _repair_mesh(tm_shell)
 
             updated.append(MoldShell(

@@ -91,28 +91,28 @@ export function StepToolbar() {
   if (tools.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-0.5 px-2 py-1 border-b border-border/50 bg-bg-secondary/80 backdrop-blur-sm flex-wrap min-h-[28px] shrink-0">
+    <div className="flex items-center gap-0 px-1.5 py-0.5 border-b border-border-subtle bg-bg-secondary/60 backdrop-blur-sm flex-wrap min-h-[28px] shrink-0">
       {tools.map((tool) => (
         <div key={tool.id} className="flex items-center">
-          {tool.divider && <div className="w-px h-4 bg-border mx-1" />}
+          {tool.divider && <div className="w-px h-3.5 bg-border/30 mx-1" />}
           <motion.button
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
             onClick={() => {
               window.dispatchEvent(new CustomEvent("moldgen:toolbar-action", { detail: tool.id }));
             }}
             className={cn(
-              "flex items-center gap-1 px-1.5 py-1 rounded text-text-secondary",
-              "hover:bg-bg-hover hover:text-text-primary transition-colors",
+              "flex items-center gap-1 px-1.5 py-1 rounded-[3px] text-text-muted",
+              "hover:bg-bg-hover/60 hover:text-text-primary transition-all",
               "group relative",
             )}
             title={`${tool.label}${tool.shortcut ? ` (${tool.shortcut})` : ""}`}
           >
             {tool.icon}
-            <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-0.5 rounded bg-bg-primary border border-border text-[9px] text-text-secondary whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-lg z-10">
-              {tool.label}
-              {tool.shortcut && <kbd className="ml-1 text-text-muted">{tool.shortcut}</kbd>}
-            </span>
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded-md bg-bg-primary/95 backdrop-blur border border-border text-text-secondary whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-10 tooltip-anim">
+              <div className="text-[10px] font-medium">{tool.label}</div>
+              {tool.shortcut && <div className="text-[9px] text-text-muted mt-0.5">{tool.shortcut}</div>}
+            </div>
           </motion.button>
         </div>
       ))}
