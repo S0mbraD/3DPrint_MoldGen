@@ -42,6 +42,9 @@ class GatingRequest(BaseModel):
     material: str = "silicone_a30"
     gate_diameter: float = 12.0
     n_vents: int = 4
+    runner_type: str = "cold"
+    n_gates: int = 1
+    runner_width: float = 4.0
 
 
 @router.post("/gating/design")
@@ -58,8 +61,18 @@ async def design_gating(req: GatingRequest):
     if mat is None:
         raise HTTPException(400, f"Unknown material: {req.material}. Use /simulation/materials to list.")
 
-    logger.info("Gating design: model=%s mold=%s gate_diam=%.1fmm vents=%d", req.model_id, req.mold_id, req.gate_diameter, req.n_vents)
-    config = GatingConfig(gate_diameter=req.gate_diameter, n_vents=req.n_vents)
+    logger.info(
+        "Gating design: model=%s mold=%s gate_diam=%.1fmm vents=%d n_gates=%d runner=%s/%.1fmm",
+        req.model_id, req.mold_id, req.gate_diameter, req.n_vents,
+        req.n_gates, req.runner_type, req.runner_width,
+    )
+    config = GatingConfig(
+        gate_diameter=req.gate_diameter,
+        n_vents=req.n_vents,
+        n_gates=req.n_gates,
+        runner_type=req.runner_type,
+        runner_width=req.runner_width,
+    )
     gating = GatingSystem(config)
 
     try:

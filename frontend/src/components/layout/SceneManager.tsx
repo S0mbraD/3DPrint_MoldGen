@@ -14,7 +14,7 @@ import { useSimStore } from "../../stores/simStore";
 import { useViewportStore } from "../../stores/viewportStore";
 import { cn } from "../../lib/utils";
 
-type SceneNodeType = "model" | "mold" | "shell" | "insert" | "gating" | "sim" | "group";
+type SceneNodeType = "model" | "mold" | "shell" | "insert" | "gating" | "sim" | "group" | "analysis";
 
 interface SceneNodeData {
   id: string;
@@ -39,6 +39,7 @@ const TYPE_ICONS: Record<SceneNodeType, string> = {
   gating: "bg-obj-gating/20 text-obj-gating",
   sim: "bg-obj-sim/20 text-obj-sim",
   group: "bg-bg-hover text-text-muted",
+  analysis: "bg-info/20 text-info",
 };
 
 function SceneNode({
@@ -112,7 +113,7 @@ function SceneNode({
 
         {/* Meta badge */}
         {node.meta && Object.entries(node.meta).slice(0, 1).map(([, val]) => (
-          <span key={val} className="text-[9px] text-text-muted/60 tabular-nums shrink-0">
+          <span key={val} className="text-[11px] text-text-muted/60 tabular-nums shrink-0">
             {val}
           </span>
         ))}
@@ -158,7 +159,7 @@ function SceneNode({
                 className="flex-1 h-[3px]"
                 onClick={(e) => e.stopPropagation()}
               />
-              <span className="text-[9px] text-text-muted w-6 text-right tabular-nums">
+              <span className="text-[11px] text-text-muted w-6 text-right tabular-nums">
                 {Math.round(node.opacity * 100)}%
               </span>
             </div>
@@ -212,7 +213,7 @@ function PropertiesInspector({ node }: { node: SceneNodeData | null }) {
         {node.meta && Object.keys(node.meta).length > 0 && (
           <div className="space-y-0.5">
             {Object.entries(node.meta).map(([key, val]) => (
-              <div key={key} className="flex justify-between items-center py-[2px] px-1.5 rounded bg-bg-inset text-[10px]">
+              <div key={key} className="flex justify-between items-center py-[2px] px-1.5 rounded bg-bg-inset text-[12px]">
                 <span className="text-text-muted">{key}</span>
                 <span className="text-text-secondary tabular-nums">{val}</span>
               </div>
@@ -222,7 +223,7 @@ function PropertiesInspector({ node }: { node: SceneNodeData | null }) {
 
         {node.onOpacityChange && (
           <div className="flex items-center gap-2 mt-1.5">
-            <span className="text-[10px] text-text-muted w-12">不透明度</span>
+            <span className="text-[12px] text-text-muted w-12">不透明度</span>
             <input
               type="range"
               min={0}
@@ -232,7 +233,7 @@ function PropertiesInspector({ node }: { node: SceneNodeData | null }) {
               onChange={(e) => node.onOpacityChange?.(parseFloat(e.target.value))}
               className="flex-1 h-[3px]"
             />
-            <span className="text-[10px] text-text-muted w-8 text-right tabular-nums">
+            <span className="text-[12px] text-text-muted w-8 text-right tabular-nums">
               {Math.round(node.opacity * 100)}%
             </span>
           </div>
@@ -251,6 +252,9 @@ export function SceneManager() {
   const filename = useModelStore((s) => s.filename);
   const meshInfo = useModelStore((s) => s.meshInfo);
   const moldResult = useMoldStore((s) => s.moldResult);
+  const hasUndercutHeatmap = useMoldStore((s) => !!s.undercutHeatmap);
+  const undercutHeatmapVisible = useMoldStore((s) => s.undercutHeatmapVisible);
+  const setUndercutHeatmapVisible = useMoldStore((s) => s.setUndercutHeatmapVisible);
   const gatingResult = useSimStore((s) => s.gatingResult);
   const hasVisualization = useSimStore((s) => !!s.visualizationData);
   const heatmapVisible = useSimStore((s) => s.heatmapVisible);
@@ -377,6 +381,20 @@ export function SceneManager() {
     });
   }
 
+  if (hasUndercutHeatmap) {
+    nodes.push({
+      id: "undercut-heatmap",
+      type: "analysis",
+      label: "Undercut 热力图",
+      icon: <Blend size={10} />,
+      color: "info",
+      visible: undercutHeatmapVisible,
+      locked: false,
+      opacity: 1,
+      onToggleVisible: () => setUndercutHeatmapVisible(!undercutHeatmapVisible),
+    });
+  }
+
   const filteredNodes = filterText
     ? nodes.filter((n) => n.label.toLowerCase().includes(filterText.toLowerCase()))
     : nodes;
@@ -391,11 +409,11 @@ export function SceneManager() {
       <div className="flex items-center justify-between px-3 h-7 border-b border-border-subtle shrink-0">
         <div className="flex items-center gap-1.5">
           <Layers size={12} className="text-text-muted" />
-          <span className="text-[10px] font-semibold text-text-muted uppercase tracking-wider">
+          <span className="text-[12px] font-semibold text-text-muted uppercase tracking-wider">
             场景大纲
           </span>
           {totalObjects > 0 && (
-            <span className="text-[9px] text-text-muted/50 tabular-nums">{totalObjects}</span>
+            <span className="text-[11px] text-text-muted/50 tabular-nums">{totalObjects}</span>
           )}
         </div>
         <div className="flex items-center gap-0.5">
@@ -439,7 +457,7 @@ export function SceneManager() {
                   placeholder="筛选对象..."
                   value={filterText}
                   onChange={(e) => setFilterText(e.target.value)}
-                  className="flex-1 bg-transparent text-[10px] text-text-primary placeholder:text-text-muted/40 outline-none"
+                  className="flex-1 bg-transparent text-[12px] text-text-primary placeholder:text-text-muted/40 outline-none"
                   autoFocus
                 />
               </div>
@@ -462,11 +480,11 @@ export function SceneManager() {
         ) : (
           <div className="flex flex-col items-center py-6 gap-1.5">
             <Layers size={20} className="text-text-muted/20" />
-            <span className="text-[10px] text-text-muted/40">
+            <span className="text-[12px] text-text-muted/40">
               {filterText ? "无匹配对象" : "暂无场景对象"}
             </span>
             {!filterText && (
-              <span className="text-[9px] text-text-muted/30">导入模型以开始</span>
+              <span className="text-[11px] text-text-muted/30">导入模型以开始</span>
             )}
           </div>
         )}

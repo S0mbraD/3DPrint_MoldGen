@@ -4,6 +4,8 @@ import {
   type OrientationResult,
   type PartingResult,
   type MoldResultInfo,
+  type UndercutInfo,
+  type UndercutHeatmapData,
 } from "../stores/moldStore";
 
 const API = "/api/v1/molds";
@@ -63,12 +65,22 @@ export function usePartingGeneration() {
     mutationFn: async ({
       modelId,
       direction,
+      surfaceType = "auto",
+      heightfieldResolution = 40,
+      undercutThreshold = 1.0,
     }: {
       modelId: string;
       direction?: number[];
+      surfaceType?: string;
+      heightfieldResolution?: number;
+      undercutThreshold?: number;
     }) => {
       store.setGeneratingParting(true);
-      const body: Record<string, unknown> = {};
+      const body: Record<string, unknown> = {
+        surface_type: surfaceType,
+        heightfield_resolution: heightfieldResolution,
+        undercut_threshold: undercutThreshold,
+      };
       if (direction) body.direction = direction;
 
       const resp = await fetch(`${API}/${modelId}/parting`, {
@@ -82,6 +94,51 @@ export function usePartingGeneration() {
     },
     onSuccess: (result) => store.setPartingResult(result),
     onError: () => store.setGeneratingParting(false),
+  });
+}
+
+export function useUndercutAnalysis() {
+  return useMutation({
+    mutationFn: async ({
+      modelId,
+      direction,
+      undercutThreshold = 1.0,
+    }: {
+      modelId: string;
+      direction?: number[];
+      undercutThreshold?: number;
+    }) => {
+      const body: Record<string, unknown> = {
+        undercut_threshold: undercutThreshold,
+      };
+      if (direction) body.direction = direction;
+
+      const resp = await fetch(`${API}/${modelId}/undercut`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      return data.undercut as UndercutInfo;
+    },
+  });
+}
+
+export function useUndercutHeatmap() {
+  const store = useMoldStore();
+
+  return useMutation({
+    mutationFn: async ({ modelId }: { modelId: string }) => {
+      const resp = await fetch(`${API}/${modelId}/undercut/heatmap`);
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      return data.heatmap as UndercutHeatmapData;
+    },
+    onSuccess: (data) => {
+      store.setUndercutHeatmap(data);
+      store.setUndercutHeatmapVisible(true);
+    },
   });
 }
 

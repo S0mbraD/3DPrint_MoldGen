@@ -31,7 +31,7 @@ export function StatusBar() {
 
   return (
     <>
-      <div className="flex items-center justify-between h-[26px] px-3 bg-bg-secondary border-t border-border text-[10px] text-text-muted shrink-0 select-none">
+      <div className="flex items-center justify-between h-[26px] px-3 bg-bg-secondary border-t border-border text-[12px] text-text-muted shrink-0 select-none">
         {/* Left: system status */}
         <div className="flex items-center gap-3">
           {/* Connection */}
@@ -98,7 +98,7 @@ export function StatusBar() {
                 <span className="tabular-nums">{meshInfo.face_count.toLocaleString()}</span>
               </span>
               {meshInfo.is_watertight && (
-                <span className="text-success/60 text-[9px] font-medium">水密</span>
+                <span className="text-success/60 text-[11px] font-medium">水密</span>
               )}
             </div>
           )}
@@ -145,7 +145,7 @@ export function StatusBar() {
           >
             <History size={10} />
             {historyCount > 0 && (
-              <span className="text-[9px] tabular-nums">{historyCount}</span>
+              <span className="text-[11px] tabular-nums">{historyCount}</span>
             )}
           </button>
 
@@ -156,7 +156,7 @@ export function StatusBar() {
             title="AI Agent 工作站"
           >
             <Bot size={10} />
-            <span className="text-[9px] font-medium">Agent</span>
+            <span className="text-[11px] font-medium">Agent</span>
           </button>
         </div>
       </div>

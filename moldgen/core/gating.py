@@ -89,6 +89,8 @@ class GatingConfig:
     vent_width: float = 4.0  # mm
     vent_depth: float = 0.03  # mm (for silicone)
     n_vents: int = 4
+    n_gates: int = 1
+    runner_type: str = "cold"
     gate_search_resolution: int = 20
 
 
@@ -121,32 +123,68 @@ class VentPosition:
 
 
 @dataclass
+class RunnerSegment:
+    start: np.ndarray
+    end: np.ndarray
+    width: float
+    depth: float
+
+    def to_dict(self) -> dict:
+        return {
+            "start": self.start.tolist(),
+            "end": self.end.tolist(),
+            "width": round(self.width, 2),
+            "depth": round(self.depth, 2),
+        }
+
+
+@dataclass
 class GatingResult:
     gate: GatePosition
-    vents: list[VentPosition]
-    gate_diameter: float
-    runner_width: float
+    gates: list[GatePosition] | None = None
+    vents: list[VentPosition] = None
+    runners: list[RunnerSegment] | None = None
+    gate_diameter: float = 12.0
+    runner_width: float = 6.0
     cavity_volume: float = 0.0
     estimated_fill_time: float = 0.0
     estimated_material_volume: float = 0.0
     gate_mesh: object = None
+    gate_meshes: list | None = None
+    runner_meshes: list | None = None
     vent_meshes: list = None
 
     def to_dict(self) -> dict:
         result = {
             "gate": self.gate.to_dict(),
-            "vents": [v.to_dict() for v in self.vents],
+            "vents": [v.to_dict() for v in (self.vents or [])],
             "gate_diameter": round(self.gate_diameter, 2),
             "runner_width": round(self.runner_width, 2),
             "cavity_volume": round(self.cavity_volume, 2),
             "estimated_fill_time": round(self.estimated_fill_time, 1),
             "estimated_material_volume": round(self.estimated_material_volume, 2),
         }
+        if self.gates:
+            result["gates"] = [g.to_dict() for g in self.gates]
+        if self.runners:
+            result["runners"] = [r.to_dict() for r in self.runners]
         if self.gate_mesh is not None:
             result["gate_mesh"] = {
                 "vertices": np.asarray(self.gate_mesh.vertices).tolist(),
                 "faces": np.asarray(self.gate_mesh.faces).tolist(),
             }
+        if self.gate_meshes:
+            result["gate_meshes"] = [
+                {"vertices": np.asarray(m.vertices).tolist(),
+                 "faces": np.asarray(m.faces).tolist()}
+                for m in self.gate_meshes
+            ]
+        if self.runner_meshes:
+            result["runner_meshes"] = [
+                {"vertices": np.asarray(m.vertices).tolist(),
+                 "faces": np.asarray(m.faces).tolist()}
+                for m in self.runner_meshes
+            ]
         if self.vent_meshes:
             result["vent_meshes"] = [
                 {
@@ -170,29 +208,55 @@ class GatingSystem:
         model: MeshData,
         material: MaterialProperties,
     ) -> GatingResult:
-        logger.info("Designing gating system for %s", material.name)
+        logger.info(
+            "Designing gating system for %s (n_gates=%d, runner=%s)",
+            material.name, self.config.n_gates, self.config.runner_type,
+        )
 
         tm = model.to_trimesh()
         cavity_volume = float(tm.volume) if tm.is_watertight else 0.0
 
-        gate = self._optimize_gate_position(tm, mold)
-        vents = self._place_vents(tm, mold, gate)
+        n_gates = max(1, self.config.n_gates)
+        primary_gate = self._optimize_gate_position(tm, mold)
 
-        fill_time = self._estimate_fill_time(cavity_volume, material)
-        material_volume = cavity_volume * (1.0 + material.shrinkage) * 1.1  # 10% overflow
+        gates = [primary_gate]
+        if n_gates > 1:
+            extra = self._place_secondary_gates(
+                tm, mold, primary_gate, n_gates - 1,
+            )
+            gates.extend(extra)
 
-        gate_mesh = self._build_gate_mesh(gate, mold)
+        vents = self._place_vents(tm, mold, primary_gate)
+
+        runners = self._compute_runner_paths(gates, vents, tm, mold)
+
+        per_gate_volume = cavity_volume / max(n_gates, 1)
+        fill_time = self._estimate_fill_time(per_gate_volume, material)
+        runner_volume = sum(
+            np.linalg.norm(r.end - r.start) * r.width * r.depth
+            for r in runners
+        ) if runners else 0.0
+        material_volume = (
+            cavity_volume * (1.0 + material.shrinkage) * 1.1 + runner_volume
+        )
+
+        gate_meshes = [self._build_gate_mesh(g, mold) for g in gates]
+        runner_meshes = self._build_runner_meshes(runners, mold)
         vent_meshes = self._build_vent_meshes(vents, mold)
 
         return GatingResult(
-            gate=gate,
+            gate=primary_gate,
+            gates=gates if n_gates > 1 else None,
             vents=vents,
+            runners=runners,
             gate_diameter=self.config.gate_diameter,
             runner_width=self.config.runner_width,
             cavity_volume=cavity_volume,
             estimated_fill_time=fill_time,
             estimated_material_volume=material_volume,
-            gate_mesh=gate_mesh,
+            gate_mesh=gate_meshes[0] if gate_meshes else None,
+            gate_meshes=gate_meshes if n_gates > 1 else None,
+            runner_meshes=runner_meshes,
             vent_meshes=vent_meshes,
         )
 
@@ -393,6 +457,158 @@ class GatingSystem:
             remaining_mask[near_mask] = False
 
         return vents
+
+    def _place_secondary_gates(
+        self, tm: trimesh.Trimesh, mold: MoldResult,
+        primary: GatePosition, n_extra: int,
+    ) -> list[GatePosition]:
+        """Place additional gates maximizing distance from primary and each other."""
+        bounds = tm.bounds
+        center = tm.centroid.copy()
+        extents = bounds[1] - bounds[0]
+
+        up = np.array([0.0, 0.0, 1.0])
+        if mold.shells:
+            up = mold.shells[0].direction.copy()
+
+        arb = np.array([1.0, 0.0, 0.0]) if abs(up[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        u_axis = np.cross(up, arb).astype(np.float64)
+        u_axis /= np.linalg.norm(u_axis)
+        v_axis = np.cross(up, u_axis).astype(np.float64)
+        v_axis /= np.linalg.norm(v_axis)
+
+        n = self.config.gate_search_resolution
+        top_height = float(bounds[1] @ up) + 5.0
+        half_span = float(np.max(extents)) * 0.4
+
+        su = np.linspace(-half_span, half_span, n)
+        sv = np.linspace(-half_span, half_span, n)
+        su_grid, sv_grid = np.meshgrid(su, sv)
+        candidates = (
+            center[np.newaxis, :]
+            + su_grid.ravel()[:, np.newaxis] * u_axis[np.newaxis, :]
+            + sv_grid.ravel()[:, np.newaxis] * v_axis[np.newaxis, :]
+        )
+        heights = candidates @ up
+        candidates += (top_height - heights)[:, np.newaxis] * up[np.newaxis, :]
+
+        placed = [primary.position.copy()]
+        extras: list[GatePosition] = []
+
+        for _ in range(n_extra):
+            min_dists = np.full(len(candidates), np.inf)
+            for p in placed:
+                d = np.linalg.norm(candidates - p[np.newaxis, :], axis=1)
+                min_dists = np.minimum(min_dists, d)
+
+            best_idx = int(np.argmax(min_dists))
+            pos = candidates[best_idx].copy()
+            placed.append(pos)
+
+            face_centers = tm.triangles_center
+            face_dists = np.linalg.norm(face_centers - pos[np.newaxis, :], axis=1)
+            face_areas = tm.area_faces
+            aw = face_areas / face_areas.sum()
+            mean_d = float((face_dists * aw).sum())
+            std_d = float(np.sqrt((aw * (face_dists - mean_d) ** 2).sum()))
+            fb = 1.0 / (1.0 + std_d / max(mean_d, 1e-8))
+
+            extras.append(GatePosition(
+                position=pos, score=float(min_dists[best_idx]),
+                flow_balance=fb, accessibility=0.5,
+            ))
+            logger.info(
+                "Secondary gate #%d at [%.1f, %.1f, %.1f]",
+                len(extras), *pos,
+            )
+
+        return extras
+
+    def _compute_runner_paths(
+        self, gates: list[GatePosition], vents: list[VentPosition],
+        tm: trimesh.Trimesh, mold: MoldResult,
+    ) -> list[RunnerSegment]:
+        """Compute runner channel paths connecting gates to a sprue point.
+
+        For multi-gate: balanced H-pattern or star layout from a central sprue.
+        For single gate: straight runner from gate to model top.
+        Vents get thin runners from nearest gate.
+        """
+        cfg = self.config
+
+        up = np.array([0.0, 0.0, 1.0])
+        if mold.shells:
+            up = mold.shells[0].direction.copy()
+            up = up / (np.linalg.norm(up) + 1e-12)
+
+        runners: list[RunnerSegment] = []
+
+        if len(gates) == 1:
+            gate_pos = gates[0].position.copy()
+            sprue_top = gate_pos + up * 10.0
+            runners.append(RunnerSegment(
+                start=sprue_top, end=gate_pos,
+                width=cfg.runner_width, depth=cfg.runner_depth,
+            ))
+        else:
+            center_pos = np.mean([g.position for g in gates], axis=0)
+            sprue_top = center_pos + up * 15.0
+
+            runners.append(RunnerSegment(
+                start=sprue_top, end=center_pos,
+                width=cfg.runner_width * 1.2, depth=cfg.runner_depth * 1.2,
+            ))
+            for g in gates:
+                runners.append(RunnerSegment(
+                    start=center_pos, end=g.position,
+                    width=cfg.runner_width, depth=cfg.runner_depth,
+                ))
+
+        for vent in vents:
+            nearest_gate = min(gates, key=lambda g: float(
+                np.linalg.norm(g.position - vent.position)
+            ))
+            runners.append(RunnerSegment(
+                start=vent.position,
+                end=vent.position + np.asarray(vent.normal) * 8.0,
+                width=cfg.vent_width, depth=max(cfg.vent_depth * 50, 1.0),
+            ))
+
+        logger.info("Computed %d runner segments", len(runners))
+        return runners
+
+    def _build_runner_meshes(
+        self, runners: list[RunnerSegment], mold: MoldResult,
+    ) -> list[trimesh.Trimesh]:
+        """Build trapezoidal channel meshes for each runner segment."""
+        meshes: list[trimesh.Trimesh] = []
+        for seg in runners:
+            start, end = seg.start, seg.end
+            direction = end - start
+            length = float(np.linalg.norm(direction))
+            if length < 0.1:
+                continue
+
+            box = trimesh.creation.box(
+                extents=[seg.width, length, seg.depth],
+            )
+
+            d = direction / length
+            z_axis = np.array([0.0, 1.0, 0.0])
+            if not np.allclose(d, z_axis) and not np.allclose(d, -z_axis):
+                axis = np.cross(z_axis, d)
+                axis_len = float(np.linalg.norm(axis))
+                if axis_len > 1e-9:
+                    axis /= axis_len
+                    angle = np.arccos(np.clip(float(np.dot(z_axis, d)), -1, 1))
+                    rot = trimesh.transformations.rotation_matrix(angle, axis)
+                    box.apply_transform(rot)
+
+            mid = (start + end) / 2.0
+            box.apply_translation(mid)
+            meshes.append(box)
+
+        return meshes
 
     def _estimate_fill_time(
         self, cavity_volume_mm3: float, material: MaterialProperties,

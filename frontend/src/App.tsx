@@ -117,12 +117,12 @@ export default function App() {
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1.5">
               <div className="w-5 h-5 rounded bg-accent/15 flex items-center justify-center">
-                <span className="text-[10px] font-black text-accent">M</span>
+                <span className="text-[12px] font-black text-accent">M</span>
               </div>
               <span className="text-[12px] font-bold text-text-primary tracking-tight">MoldGen</span>
             </div>
             <div className="h-3 w-px bg-border/40" />
-            <span className="text-[10px] text-text-muted/60 font-medium">
+            <span className="text-[12px] text-text-muted/60 font-medium">
               AI 医学教具模具工作站
             </span>
             <div

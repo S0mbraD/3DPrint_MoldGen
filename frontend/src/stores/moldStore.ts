@@ -27,12 +27,47 @@ export interface PartingLineInfo {
   length: number;
 }
 
+export interface SidePullDirection {
+  direction: number[];
+  n_resolved: number;
+  coverage: number;
+  angle_from_primary: number;
+}
+
+export interface UndercutInfo {
+  n_undercut_faces: number;
+  total_faces: number;
+  undercut_ratio: number;
+  max_depth: number;
+  mean_depth: number;
+  total_volume: number;
+  severity: "none" | "mild" | "moderate" | "severe";
+  side_pulls?: SidePullDirection[];
+}
+
+export interface UndercutHeatmapData {
+  vertex_positions: number[][];
+  face_indices: number[][];
+  face_values: number[];
+  max_depth: number;
+}
+
+export interface PartingSurfaceInfo {
+  face_count: number;
+  normal: number[];
+  bounds_min: number[];
+  bounds_max: number[];
+  surface_type: string;
+}
+
 export interface PartingResult {
   direction: number[];
   parting_lines: PartingLineInfo[];
-  parting_surface?: { face_count: number; normal: number[]; bounds_min: number[]; bounds_max: number[] } | null;
+  parting_surface?: PartingSurfaceInfo | null;
   n_upper_faces: number;
   n_lower_faces: number;
+  undercut?: UndercutInfo;
+  surface_type_used?: string;
 }
 
 export interface MoldShellInfo {
@@ -59,13 +94,31 @@ export interface AlignmentFeatureInfo {
   height: number;
 }
 
+export interface ScrewHoleInfo {
+  position: number[];
+  screw_size: string;
+  through_diameter: number;
+  counterbore_diameter: number;
+  counterbore_depth: number;
+}
+
+export interface ClampBracketInfo {
+  face_count: number;
+  screw_positions: number[][];
+}
+
 export interface MoldResultInfo {
   n_shells: number;
   shells: MoldShellInfo[];
   cavity_volume: number;
+  parting_style?: string;
+  parting_surface_type?: string;
+  undercut_severity?: string;
   pour_hole: HoleInfo | number[] | null;
   vent_holes: (HoleInfo | number[])[];
   alignment_features?: AlignmentFeatureInfo[];
+  screw_holes?: ScrewHoleInfo[];
+  clamp_brackets?: ClampBracketInfo[];
 }
 
 interface MoldState {
@@ -75,6 +128,8 @@ interface MoldState {
   moldResult: MoldResultInfo | null;
   activeShellId: number | null;
   selectedCandidateIdx: number | null;
+  undercutHeatmap: UndercutHeatmapData | null;
+  undercutHeatmapVisible: boolean;
 
   isAnalyzing: boolean;
   isGeneratingParting: boolean;
@@ -85,6 +140,8 @@ interface MoldState {
   setMoldResult: (id: string, r: MoldResultInfo) => void;
   setActiveShell: (id: number | null) => void;
   setSelectedCandidate: (idx: number | null) => void;
+  setUndercutHeatmap: (data: UndercutHeatmapData | null) => void;
+  setUndercutHeatmapVisible: (v: boolean) => void;
   setAnalyzing: (v: boolean) => void;
   setGeneratingParting: (v: boolean) => void;
   setGeneratingMold: (v: boolean) => void;
@@ -98,6 +155,8 @@ export const useMoldStore = create<MoldState>((set) => ({
   moldResult: null,
   activeShellId: null,
   selectedCandidateIdx: null,
+  undercutHeatmap: null,
+  undercutHeatmapVisible: false,
   isAnalyzing: false,
   isGeneratingParting: false,
   isGeneratingMold: false,
@@ -109,6 +168,8 @@ export const useMoldStore = create<MoldState>((set) => ({
     set({ moldId: id, moldResult: r, isGeneratingMold: false }),
   setActiveShell: (id) => set({ activeShellId: id }),
   setSelectedCandidate: (idx) => set({ selectedCandidateIdx: idx }),
+  setUndercutHeatmap: (data) => set({ undercutHeatmap: data }),
+  setUndercutHeatmapVisible: (v) => set({ undercutHeatmapVisible: v }),
   setAnalyzing: (v) => set({ isAnalyzing: v }),
   setGeneratingParting: (v) => set({ isGeneratingParting: v }),
   setGeneratingMold: (v) => set({ isGeneratingMold: v }),
@@ -120,5 +181,7 @@ export const useMoldStore = create<MoldState>((set) => ({
       moldResult: null,
       activeShellId: null,
       selectedCandidateIdx: null,
+      undercutHeatmap: null,
+      undercutHeatmapVisible: false,
     }),
 }));

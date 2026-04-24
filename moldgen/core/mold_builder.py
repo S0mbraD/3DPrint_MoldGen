@@ -31,6 +31,19 @@ MOLD_MIN_FACES = 12_000
 
 # ═══════════════════════ Data Classes ═══════════════════════════════════
 
+M_SCREW_TABLE: dict[str, dict[str, float]] = {
+    "M1":   {"through": 1.2, "tap": 0.85, "head": 2.0,  "nut": 2.5,  "nut_h": 0.8},
+    "M1.6": {"through": 1.8, "tap": 1.35, "head": 3.0,  "nut": 3.2,  "nut_h": 1.3},
+    "M2":   {"through": 2.4, "tap": 1.7,  "head": 3.8,  "nut": 4.0,  "nut_h": 1.6},
+    "M2.5": {"through": 2.9, "tap": 2.15, "head": 4.5,  "nut": 5.0,  "nut_h": 2.0},
+    "M3":   {"through": 3.4, "tap": 2.55, "head": 5.5,  "nut": 5.5,  "nut_h": 2.4},
+    "M4":   {"through": 4.5, "tap": 3.4,  "head": 7.0,  "nut": 7.0,  "nut_h": 3.2},
+    "M5":   {"through": 5.5, "tap": 4.25, "head": 8.5,  "nut": 8.0,  "nut_h": 4.0},
+    "M6":   {"through": 6.6, "tap": 5.1,  "head": 10.0, "nut": 10.0, "nut_h": 5.0},
+    "M8":   {"through": 9.0, "tap": 6.85, "head": 13.0, "nut": 13.0, "nut_h": 6.5},
+}
+
+
 @dataclass
 class MoldConfig:
     wall_thickness: float = 4.0
@@ -40,14 +53,22 @@ class MoldConfig:
     fillet_radius: float = 1.0
     # Parting style: "flat" | "dovetail" | "zigzag" | "step" | "tongue_groove"
     parting_style: str = "flat"
+    # Adaptive parting surface type (used when splitting the mold)
+    parting_surface_type: str = "flat"  # "flat" | "heightfield" | "projected" | "auto"
     parting_depth: float = 3.0       # depth of interlock features (mm)
     parting_pitch: float = 10.0      # spacing between interlock features (mm)
-    # Flanges with screw holes
-    add_flanges: bool = False
-    flange_width: float = 12.0       # flange extension width (mm)
-    flange_thickness: float = 4.0    # flange plate thickness (mm)
-    screw_hole_diameter: float = 4.0 # M4 screws
-    n_flanges: int = 4               # number of flange tabs
+    # Screw fastening system (pocket + through-bolt at corners)
+    add_screw_holes: bool = False
+    screw_size: str = "M4"           # M1 / M1.6 / M2 / M2.5 / M3 / M4 / M5 / M6 / M8
+    n_screws: int = 4                # number of screw positions
+    screw_counterbore: bool = True   # add counterbore recess for bolt head
+    screw_tab_thickness: float = 5.0 # tab thickness remaining near parting plane (mm)
+    # Clamp bracket generation
+    add_clamp_bracket: bool = False
+    clamp_width: float = 15.0        # bracket width (mm)
+    clamp_thickness: float = 3.0     # bracket wall thickness (mm)
+    clamp_screw_size: str = "M3"     # screw size for clamp bolts
+    n_clamp_screws: int = 4
     # Alignment
     add_alignment_pins: bool = True
     pin_diameter: float = 4.0
@@ -148,6 +169,38 @@ class FlangeFeature:
 
 
 @dataclass
+class ScrewHoleFeature:
+    """Through-bolt hole for mold clamping."""
+    position: np.ndarray
+    screw_size: str          # M1..M8
+    through_diameter: float
+    counterbore_diameter: float
+    counterbore_depth: float
+
+    def to_dict(self) -> dict:
+        return {
+            "position": self.position.tolist(),
+            "screw_size": self.screw_size,
+            "through_diameter": round(self.through_diameter, 2),
+            "counterbore_diameter": round(self.counterbore_diameter, 2),
+            "counterbore_depth": round(self.counterbore_depth, 2),
+        }
+
+
+@dataclass
+class ClampBracket:
+    """External clamp bracket that wraps around the parting line."""
+    mesh: MeshData
+    screw_positions: list[np.ndarray] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "face_count": self.mesh.face_count,
+            "screw_positions": [p.tolist() for p in self.screw_positions],
+        }
+
+
+@dataclass
 class MoldResult:
     shells: list[MoldShell]
     cavity_volume: float = 0.0
@@ -156,8 +209,11 @@ class MoldResult:
     pour_hole: HoleFeature | None = None
     vent_positions: list[np.ndarray] = field(default_factory=list)
     vent_holes: list[HoleFeature] = field(default_factory=list)
-    flanges: list[FlangeFeature] = field(default_factory=list)
+    screw_holes: list[ScrewHoleFeature] = field(default_factory=list)
+    clamp_brackets: list[ClampBracket] = field(default_factory=list)
     parting_style: str = "flat"
+    parting_surface_type: str = "flat"
+    undercut_severity: str = "none"
 
     def to_dict(self) -> dict:
         return {
@@ -165,10 +221,13 @@ class MoldResult:
             "shells": [s.to_dict() for s in self.shells],
             "cavity_volume": round(self.cavity_volume, 2),
             "parting_style": self.parting_style,
+            "parting_surface_type": self.parting_surface_type,
+            "undercut_severity": self.undercut_severity,
             "alignment_features": [
                 f.to_dict() for f in self.alignment_features
             ],
-            "flanges": [f.to_dict() for f in self.flanges],
+            "screw_holes": [s.to_dict() for s in self.screw_holes],
+            "clamp_brackets": [c.to_dict() for c in self.clamp_brackets],
             "pour_hole": (
                 self.pour_hole.to_dict()
                 if self.pour_hole is not None
@@ -776,11 +835,18 @@ def _slice_keep_positive_halfspace(
 
 def _safe_slice(
     mesh: trimesh.Trimesh, origin: np.ndarray, normal: np.ndarray,
+    *, cap: bool = True,
 ) -> trimesh.Trimesh | None:
-    # Prefer capped trimesh slice when shapely is available (clean parting cap).
-    for cap in (True, False):
+    """Slice mesh at plane, keeping the positive half-space.
+
+    Args:
+        cap: If True, cap the cut face. Set False for mold wall-volume
+             slicing where the cavity cross-section must stay open.
+    """
+    cap_order = (True, False) if cap else (False, True)
+    for c in cap_order:
         try:
-            r = mesh.slice_plane(origin, normal, cap=cap)
+            r = mesh.slice_plane(origin, normal, cap=c)
             if r is not None and len(r.faces) >= 4:
                 return r
         except Exception:
@@ -805,6 +871,42 @@ def _build_face_adjacency_dict(tm: trimesh.Trimesh) -> dict[int, list[int]]:
     except Exception:
         pass
     return adj
+
+
+def _make_oriented_box(
+    center: np.ndarray,
+    u_ax: np.ndarray, v_ax: np.ndarray, w_ax: np.ndarray,
+    size_u: float, size_v: float, size_w: float,
+) -> trimesh.Trimesh:
+    """Build a watertight box mesh directly in world coordinates.
+
+    Avoids ``trimesh.creation.box() + apply_transform()`` which can
+    produce geometry that boolean engines (manifold3d) reject silently.
+    The 8 vertices are computed explicitly and faces use verified CCW
+    winding for outward normals.
+    """
+    hu, hv, hw = size_u / 2.0, size_v / 2.0, size_w / 2.0
+    verts = np.array([
+        center - hu * u_ax - hv * v_ax - hw * w_ax,   # 0: ---
+        center + hu * u_ax - hv * v_ax - hw * w_ax,   # 1: +--
+        center + hu * u_ax + hv * v_ax - hw * w_ax,   # 2: ++-
+        center - hu * u_ax + hv * v_ax - hw * w_ax,   # 3: -+-
+        center - hu * u_ax - hv * v_ax + hw * w_ax,   # 4: --+
+        center + hu * u_ax - hv * v_ax + hw * w_ax,   # 5: +-+
+        center + hu * u_ax + hv * v_ax + hw * w_ax,   # 6: +++
+        center - hu * u_ax + hv * v_ax + hw * w_ax,   # 7: -++
+    ], dtype=np.float64)
+    faces = np.array([
+        [0, 3, 2], [0, 2, 1],   # −w face
+        [4, 5, 6], [4, 6, 7],   # +w face
+        [0, 1, 5], [0, 5, 4],   # −v face
+        [2, 3, 7], [2, 7, 6],   # +v face
+        [0, 4, 7], [0, 7, 3],   # −u face
+        [1, 2, 6], [1, 6, 5],   # +u face
+    ], dtype=np.int64)
+    box = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    trimesh.repair.fix_normals(box)
+    return box
 
 
 def _make_cylinder(
@@ -869,14 +971,11 @@ class MoldBuilder:
 
         tm_model = build_mesh.to_trimesh()
 
-        # Auto-detect non-mm units and rescale
         tm_model, self._scale_factor = _auto_rescale_to_mm(
             tm_model, model.unit,
         )
 
         tm_model = _repair_mesh(tm_model)
-
-        # Subdivide low-poly models so mold shells have enough resolution
         tm_model = _ensure_min_faces(tm_model, min_faces=MOLD_MIN_FACES)
 
         logger.info(
@@ -886,52 +985,58 @@ class MoldBuilder:
 
         center = np.asarray(tm_model.centroid, dtype=np.float64)
 
-        # ── Strategy 1: Boolean subtraction (outer box - cavity) ──
-        shells = None
+        # ── Undercut analysis (lightweight, runs during mold generation) ──
+        from moldgen.core.parting import UndercutAnalyzer
+        uc_info = UndercutAnalyzer().analyze(tm_model, direction, threshold=1.0)
+        logger.info(
+            "Mold undercut: %d/%d faces (%.1f%%), severity=%s",
+            uc_info.n_undercut_faces, uc_info.total_faces,
+            uc_info.undercut_ratio * 100, uc_info.severity,
+        )
+        if uc_info.severity == "severe":
+            logger.warning(
+                "Severe undercuts detected (%.1f%%, max_depth=%.1fmm). "
+                "Consider using multi-piece mold or side-pulls.",
+                uc_info.undercut_ratio * 100, uc_info.max_depth,
+            )
+
         cavity = self._create_cavity(tm_model)
         outer = self._create_outer_shell(cavity)
-        solid = self._robust_boolean_subtract(outer, cavity)
-        # Inverted cavity / bad CSG can yield only the inner skin (~n_cav faces) with no box.
-        if (
-            solid is not None
-            and len(solid.faces) > 10
-            and not _shell_is_conformal(self.config.shell_type)
-            and len(solid.faces) < len(cavity.faces) + 6
-        ):
-            logger.warning(
-                "Boolean result suspicious (faces=%d, cavity=%d); using fallbacks",
-                len(solid.faces), len(cavity.faces),
+
+        # ── Try non-planar split if adaptive surface type requested ──
+        shells = None
+        if self.config.parting_surface_type in ("heightfield", "projected", "auto"):
+            shells = self._build_shells_adaptive_surface(
+                tm_model, outer, cavity, center, direction,
             )
-            solid = None
-        if solid is not None and len(solid.faces) > 10:
-            shells = self._split_solid_to_shells(solid, center, direction)
-            if shells and len(shells) >= 2:
-                logger.info("Boolean mold: %d shells", len(shells))
-            else:
-                shells = None
 
-        # ── Strategy 2: Voxel-based construction ──
-        if not shells:
-            logger.info("Boolean failed, trying voxel construction")
-            shells = self._build_shells_voxel(tm_model, center, direction)
-            if shells and len(shells) >= 2:
-                logger.info("Voxel mold: %d shells", len(shells))
-
-        # ── Strategy 3: Direct concatenation (last resort) ──
+        # ── Strategy 1: Slice-Then-Subtract (primary / flat fallback) ─
         if not shells or len(shells) < 2:
-            logger.warning("Voxel failed, using direct concatenation fallback")
-            shells = self._build_direct_shells(cavity, center, direction)
-            logger.info("Direct construction: %d shells", len(shells))
+            shells = self._build_shells_slice_then_subtract(
+                outer, cavity, center, direction,
+            )
 
-        # ── Repair all shells ──
+        # ── Strategy 2: Voxel construction ─────────────────────────
+        if not shells or len(shells) < 2:
+            logger.info("Slice-then-subtract failed, trying voxel")
+            shells = self._build_shells_voxel(tm_model, center, direction)
+
+        # ── Strategy 3: Direct half-box fallback ───────────────────
+        if not shells or len(shells) < 2:
+            logger.warning("Voxel failed, using direct half-box fallback")
+            shells = self._build_direct_shells(cavity, center, direction)
+
+        # ── Repair shells (do NOT seal parting face — cavity must stay open) ──
         for sh in shells:
             tm_sh = sh.mesh.to_trimesh()
             tm_sh = _repair_mesh(tm_sh)
-            dn = np.asarray(sh.direction, dtype=np.float64)
-            dn = dn / (np.linalg.norm(dn) + 1e-12)
-            tm_sh = _seal_parting_plane_gaps(tm_sh, center, dn)
-            tm_sh = _repair_mesh(tm_sh)
             sh.mesh = MeshData.from_trimesh(tm_sh)
+
+        # ── Apply parting interlock profile if non-flat ──
+        if self.config.parting_style != "flat" and len(shells) >= 2:
+            shells = self._apply_parting_interlock_to_shells(
+                shells, center, direction,
+            )
 
         # ── Draft angle check per shell ──
         if self.config.draft_angle_check:
@@ -966,23 +1071,32 @@ class MoldBuilder:
             shells, pour_hole, vent_holes, direction,
         )
 
-        # ── Flanges with screw holes ──
-        flanges: list[FlangeFeature] = []
-        if self.config.add_flanges:
-            shells, flanges = self._generate_flanges(
+        # ── Through-bolt screw holes (pocket + tab design) ──
+        screw_holes: list[ScrewHoleFeature] = []
+        if self.config.add_screw_holes:
+            shells, screw_holes = self._generate_screw_holes(
                 shells, tm_model, direction, center,
             )
-            logger.info("Added %d flanges", len(flanges))
+            logger.info("Added %d screw holes", len(screw_holes))
+
+        # ── Clamp brackets ──
+        clamp_brackets: list[ClampBracket] = []
+        if self.config.add_clamp_bracket:
+            clamp_brackets = self._generate_clamp_brackets(
+                shells, tm_model, direction, center,
+            )
+            logger.info("Generated %d clamp brackets", len(clamp_brackets))
 
         elapsed = time.perf_counter() - t0
         logger.info(
             "Mold complete: %d shells, cavity=%.0f mm3, "
-            "pour=%s, vents=%d, pins=%d, flanges=%d, style=%s, %.2fs",
+            "pour=%s, vents=%d, pins=%d, screws=%d, clamps=%d, "
+            "style=%s, %.2fs",
             len(shells), cavity_vol,
             "yes" if pour_hole else "no",
             len(vent_holes),
             len([a for a in alignment if a.feature_type == "pin"]),
-            len(flanges),
+            len(screw_holes), len(clamp_brackets),
             self.config.parting_style,
             elapsed,
         )
@@ -997,8 +1111,11 @@ class MoldBuilder:
             pour_hole=pour_hole,
             vent_positions=[v.position for v in vent_holes],
             vent_holes=vent_holes,
-            flanges=flanges,
+            screw_holes=screw_holes,
+            clamp_brackets=clamp_brackets,
             parting_style=self.config.parting_style,
+            parting_surface_type=self.config.parting_surface_type,
+            undercut_severity=uc_info.severity,
         )
 
     # ───────────── public: multi-part mold ─────────────────────
@@ -1088,98 +1205,238 @@ class MoldBuilder:
 
     # ═══════════════ Shell Construction Strategies ══════════════
 
-    def _try_boolean_mold(
-        self, cavity: trimesh.Trimesh,
+    def _build_shells_adaptive_surface(
+        self, tm_model: trimesh.Trimesh, outer: trimesh.Trimesh,
+        cavity: trimesh.Trimesh, center: np.ndarray, direction: np.ndarray,
+    ) -> list[MoldShell] | None:
+        """Split mold using an adaptive (non-planar) parting surface.
+
+        Generates a heightfield or projected parting surface via
+        PartingGenerator, then creates a thin cutting slab from the surface
+        mesh to perform the split via boolean operations.
+        """
+        from moldgen.core.parting import PartingConfig, PartingGenerator
+        from moldgen.core.mesh_data import MeshData
+
+        surf_type = self.config.parting_surface_type
+        config = PartingConfig(
+            surface_type=surf_type,
+            heightfield_resolution=30,
+            heightfield_smooth=3,
+            extend_margin=self.config.margin + 5.0,
+        )
+        gen = PartingGenerator(config)
+
+        mesh_data = MeshData.from_trimesh(tm_model)
+        try:
+            result = gen.generate(mesh_data, direction)
+        except Exception:
+            logger.warning("Adaptive parting generation failed, fallback to flat")
+            return None
+
+        if result.parting_surface is None:
+            return None
+
+        actual_type = result.surface_type_used
+        if actual_type == "flat":
+            return None
+
+        surf_tm = result.parting_surface.mesh.to_trimesh()
+        if len(surf_tm.faces) < 3:
+            return None
+
+        logger.info(
+            "Adaptive split: surface_type=%s, %d faces",
+            actual_type, len(surf_tm.faces),
+        )
+
+        # Create a thick slab from the surface by extruding vertices
+        # in ±direction by a small offset.  Then use:
+        #   upper_half = outer ∩ above_slab  (i.e. outer - below_slab)
+        #   lower_half = outer ∩ below_slab  (i.e. outer - above_slab)
+        slab_offset = 0.01  # very thin
+        verts = np.asarray(surf_tm.vertices, dtype=np.float64)
+        faces = np.asarray(surf_tm.faces, dtype=np.int64)
+        n_v = len(verts)
+        n_f = len(faces)
+
+        # Top and bottom shifted surfaces
+        verts_top = verts + direction * slab_offset
+        verts_bot = verts - direction * slab_offset
+
+        # For each original shell (upper/lower):
+        # Build a "half-space" volume by combining the surface with a large
+        # bounding box above/below, then intersect with outer.
+        bounds = outer.bounds
+        extent = np.linalg.norm(bounds[1] - bounds[0]) + 20.0
+        half_extent = extent / 2.0
+
+        shells: list[MoldShell] = []
+        for i, (side_dir, side_name) in enumerate(
+            [(direction, "upper"), (-direction, "lower")]
+        ):
+            # Slice outer at each surface vertex position along direction:
+            # Use a simpler approach — for each half, project the surface
+            # vertices to determine which vertices of outer are above/below
+            outer_verts = np.asarray(outer.vertices, dtype=np.float64)
+
+            # For each outer vertex, find the height of the nearest
+            # surface point and check if the vertex is above or below
+            from scipy.spatial import cKDTree
+
+            # Project everything onto the UV plane perpendicular to direction
+            arb = np.array([1, 0, 0]) if abs(direction[0]) < 0.9 else np.array([0, 1, 0])
+            u_ax = np.cross(direction, arb)
+            u_ax /= np.linalg.norm(u_ax)
+            v_ax = np.cross(direction, u_ax)
+            v_ax /= np.linalg.norm(v_ax)
+
+            surf_uv = np.column_stack([verts @ u_ax, verts @ v_ax])
+            surf_h = verts @ direction
+
+            tree = cKDTree(surf_uv)
+
+            outer_uv = np.column_stack([outer_verts @ u_ax, outer_verts @ v_ax])
+            outer_h = outer_verts @ direction
+
+            _, idx = tree.query(outer_uv, k=1)
+            local_h = surf_h[idx]
+
+            # Vertices on the correct side for this shell half
+            if side_name == "upper":
+                keep_mask = outer_h >= local_h - 0.05
+            else:
+                keep_mask = outer_h <= local_h + 0.05
+
+            outer_half = _extract_submesh(outer, keep_mask[outer.faces].all(axis=1))
+
+            if outer_half is None or len(outer_half.faces) < 4:
+                logger.warning("Adaptive split: no geometry for %s half", side_name)
+                continue
+
+            # Boolean subtract cavity
+            shell_mesh = self._robust_boolean_subtract(outer_half, cavity)
+            if shell_mesh is None or len(shell_mesh.faces) < 10:
+                logger.warning("Adaptive split: boolean failed for %s", side_name)
+                continue
+
+            shell_mesh = _repair_mesh(shell_mesh)
+            d = np.asarray(side_dir, dtype=np.float64)
+            d = d / (np.linalg.norm(d) + 1e-12)
+            shells.append(MoldShell(
+                shell_id=i,
+                mesh=MeshData.from_trimesh(shell_mesh),
+                direction=d,
+                volume=float(shell_mesh.volume) if shell_mesh.is_watertight else 0.0,
+                surface_area=float(shell_mesh.area),
+            ))
+
+        if len(shells) >= 2:
+            logger.info("Adaptive surface split: %d shells", len(shells))
+            return shells
+
+        logger.warning("Adaptive split produced %d shells, falling back", len(shells))
+        return None
+
+    def _build_shells_slice_then_subtract(
+        self, outer: trimesh.Trimesh, cavity: trimesh.Trimesh,
         center: np.ndarray, direction: np.ndarray,
     ) -> list[MoldShell] | None:
-        try:
-            import manifold3d
-        except ImportError:
-            return None
+        """Primary strategy: slice outer shell first, then subtract cavity.
 
-        outer = self._create_outer_shell(cavity)
-        try:
-            def _m(tm):
-                return manifold3d.Manifold(manifold3d.Mesh(
-                    vert_properties=np.asarray(tm.vertices, dtype=np.float32),
-                    tri_verts=np.asarray(tm.faces, dtype=np.uint32),
-                ))
-            diff = _m(outer) - _m(cavity)
-            out = diff.to_mesh()
-            solid = trimesh.Trimesh(
-                vertices=np.asarray(out.vert_properties[:, :3]),
-                faces=np.asarray(out.tri_verts), process=True,
-            )
-        except Exception as exc:
-            logger.warning("Manifold3D failed: %s", exc)
-            return None
+        For box mode this ensures:
+        - Each half-box is a simple convex shape (slice_plane cap works correctly)
+        - Boolean(half_box - cavity) naturally produces the cavity impression
+        - The parting face has the cavity opening (no sealing needed)
+        """
+        shells: list[MoldShell] = []
 
-        if len(solid.faces) < 10:
-            return None
+        for i, normal in enumerate([direction, -direction]):
+            d = np.asarray(normal, dtype=np.float64)
+            d = d / (np.linalg.norm(d) + 1e-12)
 
-        upper = _safe_slice(solid, center, direction)
-        lower = _safe_slice(solid, center, -direction)
-        shells = []
-        for i, (half, d) in enumerate([
-            (upper, direction.copy()), (lower, -direction),
-        ]):
-            if half is None or len(half.faces) == 0:
+            # Slice outer shell at parting plane — convex cut, cap is a
+            # simple rectangle (no annular issues)
+            outer_half = _safe_slice(outer, center, d)
+            if outer_half is None or len(outer_half.faces) < 4:
+                logger.warning("Cannot slice outer for shell %d", i)
                 continue
+
+            # Boolean subtract the FULL cavity from this outer half.
+            # The boolean clips the cavity to the half-box volume and
+            # naturally leaves the cavity impression open at the parting face.
+            shell_mesh = self._robust_boolean_subtract(outer_half, cavity)
+
+            if shell_mesh is None or len(shell_mesh.faces) < 10:
+                logger.warning("Boolean (outer_half - cavity) failed for shell %d", i)
+                continue
+
+            shell_mesh = _repair_mesh(shell_mesh)
+            logger.info(
+                "Slice-then-subtract shell %d: %d faces, watertight=%s",
+                i, len(shell_mesh.faces), shell_mesh.is_watertight,
+            )
+
             shells.append(MoldShell(
-                shell_id=i, mesh=MeshData.from_trimesh(half),
-                direction=d,
-                volume=(
-                    float(half.volume) if half.is_watertight else 0.0
-                ),
-                surface_area=float(half.area),
+                shell_id=i,
+                mesh=MeshData.from_trimesh(shell_mesh),
+                direction=np.asarray(d, dtype=np.float64),
+                volume=float(shell_mesh.volume) if shell_mesh.is_watertight else 0.0,
+                surface_area=float(shell_mesh.area),
             ))
-        return shells if len(shells) >= 2 else None
+
+        if len(shells) >= 2:
+            logger.info("Slice-then-subtract mold: %d shells", len(shells))
+            return shells
+        return None
 
     def _build_direct_shells(
         self, cavity: trimesh.Trimesh,
         center: np.ndarray, direction: np.ndarray,
     ) -> list[MoldShell]:
+        """Last-resort fallback: concatenate half-box + inverted cavity half.
+
+        No boolean needed — just geometric concatenation.
+        Outer surfaces come from a sliced box, inner from inverted cavity.
+        """
         outer = self._create_outer_shell(cavity)
-        upper_box = _safe_slice(outer, center, direction)
-        lower_box = _safe_slice(outer, center, -direction)
-
-        if upper_box is None or lower_box is None:
-            dots = (outer.triangles_center - center) @ direction
-            upper_box = _extract_submesh(outer, dots >= 0)
-            lower_box = _extract_submesh(outer, dots < 0)
-
-        cavity_inv = cavity.copy()
-        cavity_inv.invert()
-        upper_cav = _safe_slice(cavity_inv, center, direction)
-        lower_cav = _safe_slice(cavity_inv, center, -direction)
-        if upper_cav is None or len(upper_cav.faces) < 4:
-            cav_dots = (cavity_inv.triangles_center - center) @ direction
-            upper_cav = _extract_submesh(cavity_inv, cav_dots >= 0)
-        if lower_cav is None or len(lower_cav.faces) < 4:
-            cav_dots = (cavity_inv.triangles_center - center) @ direction
-            lower_cav = _extract_submesh(cavity_inv, cav_dots < 0)
+        up = direction / (np.linalg.norm(direction) + 1e-12)
 
         shells: list[MoldShell] = []
-        for i, (box_h, cav_h, d) in enumerate([
-            (upper_box, upper_cav, direction.copy()),
-            (lower_box, lower_cav, -direction),
-        ]):
-            parts = [box_h]
-            if len(cav_h.faces) > 0:
-                parts.append(cav_h)
+        for i, normal in enumerate([direction, -direction]):
+            d = np.asarray(normal, dtype=np.float64)
+            d = d / (np.linalg.norm(d) + 1e-12)
+
+            # Outer half-box: slice outer at parting plane (cap=True for
+            # the box boundary, but we'll trim the cap where cavity is)
+            outer_half = _safe_slice(outer, center, d)
+            if outer_half is None or len(outer_half.faces) < 4:
+                dots = (outer.triangles_center - center) @ d
+                outer_half = _extract_submesh(outer, dots >= 0)
+
+            # Inner cavity surface (inverted normals for the mold impression)
+            cavity_inv = cavity.copy()
+            cavity_inv.invert()
+            cav_half = _safe_slice(cavity_inv, center, d)
+            if cav_half is None or len(cav_half.faces) < 4:
+                cav_dots = (cavity_inv.triangles_center - center) @ d
+                cav_half = _extract_submesh(cavity_inv, cav_dots >= 0)
+
+            parts = [outer_half]
+            if cav_half is not None and len(cav_half.faces) > 0:
+                parts.append(cav_half)
+
             try:
                 combined = trimesh.util.concatenate(parts)
             except Exception:
-                combined = box_h
-            sn = np.asarray(d, dtype=np.float64)
-            sn = sn / (np.linalg.norm(sn) + 1e-12)
-            combined = _seal_parting_plane_gaps(combined, center, sn)
+                combined = outer_half
+
+            combined = _repair_mesh(combined)
+
             shells.append(MoldShell(
                 shell_id=i, mesh=MeshData.from_trimesh(combined),
                 direction=np.asarray(d, dtype=np.float64),
-                volume=(
-                    float(combined.volume) if combined.is_watertight else 0.0
-                ),
+                volume=float(combined.volume) if combined.is_watertight else 0.0,
                 surface_area=float(combined.area),
             ))
         return shells
@@ -1648,6 +1905,374 @@ class MoldBuilder:
         logger.info("Parting interlock: vertex displacement applied (style=%s)", style)
         return upper, lower
 
+    def _apply_parting_interlock_to_shells(
+        self, shells: list[MoldShell],
+        center: np.ndarray, direction: np.ndarray,
+    ) -> list[MoldShell]:
+        """Apply parting interlock profile to pre-built shell meshes.
+
+        Works on shells generated by slice-then-subtract: extracts the
+        trimesh objects, applies interlock (boolean or vertex displacement),
+        and returns updated MoldShell list.
+        """
+        if len(shells) < 2:
+            return shells
+
+        upper_tm = shells[0].mesh.to_trimesh()
+        lower_tm = shells[1].mesh.to_trimesh()
+
+        interlock = self._create_parting_interlock(
+            trimesh.util.concatenate([upper_tm, lower_tm]),
+            center, direction,
+        )
+
+        applied = False
+        if interlock is not None:
+            union_r = self._robust_boolean_union(upper_tm, interlock)
+            if union_r is not None and len(union_r.faces) > len(upper_tm.faces) // 2:
+                sub_r = self._robust_boolean_subtract(lower_tm, interlock)
+                if sub_r is not None and len(sub_r.faces) > 4:
+                    upper_tm = _repair_mesh(union_r)
+                    lower_tm = _repair_mesh(sub_r)
+                    applied = True
+                    logger.info(
+                        "Parting interlock (boolean): upper=%d, lower=%d faces",
+                        len(upper_tm.faces), len(lower_tm.faces),
+                    )
+
+        if not applied:
+            upper_tm, lower_tm = self._displace_parting_verts(
+                upper_tm, lower_tm, center, direction,
+            )
+            logger.info("Parting interlock (vertex displacement): style=%s",
+                        self.config.parting_style)
+
+        result: list[MoldShell] = []
+        for i, (tm, sh_orig) in enumerate([(upper_tm, shells[0]), (lower_tm, shells[1])]):
+            tm = _repair_mesh(tm)
+            result.append(MoldShell(
+                shell_id=sh_orig.shell_id,
+                mesh=MeshData.from_trimesh(tm),
+                direction=sh_orig.direction,
+                volume=float(tm.volume) if tm.is_watertight else sh_orig.volume,
+                surface_area=float(tm.area),
+                is_printable=sh_orig.is_printable,
+                min_draft_angle=sh_orig.min_draft_angle,
+            ))
+        result.extend(shells[2:])
+        return result
+
+    # ═══════════════ Screw Hole Generation ═══════════════════════
+
+    def _generate_screw_holes(
+        self, shells: list[MoldShell], tm_model: trimesh.Trimesh,
+        direction: np.ndarray, center: np.ndarray,
+    ) -> tuple[list[MoldShell], list[ScrewHoleFeature]]:
+        """Create pocket-and-tab screw fastening at mold wall corners.
+
+        At each screw position a rectangular pocket is cut from the
+        outer face of each shell half down to ``screw_tab_thickness``
+        above/below the parting plane.  The remaining thin *tab* near
+        the parting plane receives a through-bolt hole and optional
+        counterbore.  This allows short standard screws instead of
+        full-height bolts.
+
+        Cross-section at one corner::
+
+              shell outer face
+            ┌────────────────┐
+            │    pocket      │ ← box subtraction removes material
+            │                │
+            ├────┐      ┌────┤
+            │    │ tab  │    │ ← screw_tab_thickness
+            ├────┤      ├────┤ ← parting plane
+            │    │ tab  │    │
+            ├────┘      └────┤
+            │                │
+            │    pocket      │
+            └────────────────┘
+
+        Uses ``_make_oriented_box`` for robust boolean-friendly geometry
+        with a ``_make_cylinder`` fallback if box subtraction fails.
+        """
+        c = self.config
+        spec = M_SCREW_TABLE.get(c.screw_size, M_SCREW_TABLE["M4"])
+        up = direction / (np.linalg.norm(direction) + 1e-12)
+
+        arb = np.array([1.0, 0, 0]) if abs(up[0]) < 0.9 else np.array([0.0, 1, 0])
+        u_ax = np.cross(up, arb); u_ax /= (np.linalg.norm(u_ax) + 1e-12)
+        v_ax = np.cross(up, u_ax); v_ax /= (np.linalg.norm(v_ax) + 1e-12)
+
+        bounds = tm_model.bounds
+        model_extent = bounds[1] - bounds[0]
+        half_u = abs(float(model_extent @ u_ax)) / 2
+        half_v = abs(float(model_extent @ v_ax)) / 2
+
+        wall_mid = (c.clearance + c.margin + c.wall_thickness) / 2
+        avail_wall = c.margin + c.wall_thickness - c.clearance
+        if avail_wall < spec["through"] + 2.0:
+            logger.warning(
+                "Screw %s requires %.1fmm but wall only %.1fmm wide — skipping",
+                c.screw_size, spec["through"] + 2.0, avail_wall,
+            )
+            return shells, []
+
+        tab = c.screw_tab_thickness
+
+        # Pocket must extend BEYOND outer wall surface to prevent thin shells.
+        # avail_wall+4 guarantees 2mm overshoot on each side; boolean ignores
+        # the part outside the shell, only cuts what overlaps.
+        pocket_xy = max(
+            max(spec["head"], spec["nut"]) * 2.5,
+            avail_wall + 4.0,
+        )
+
+        # ── Build positions: corners first, then edge midpoints ──
+        positions: list[np.ndarray] = []
+        corners = [(+1, +1), (+1, -1), (-1, +1), (-1, -1)]
+        for su, sv in corners[:min(c.n_screws, 4)]:
+            pos = (center
+                   + su * (half_u + wall_mid) * u_ax
+                   + sv * (half_v + wall_mid) * v_ax)
+            pos -= up * float(np.dot(pos - center, up))
+            positions.append(pos)
+
+        if c.n_screws > 4:
+            edges = [(+1, 0), (-1, 0), (0, +1), (0, -1)]
+            for su, sv in edges[:c.n_screws - 4]:
+                pos = (center
+                       + (su * (half_u + wall_mid) if su else 0) * u_ax
+                       + (sv * (half_v + wall_mid) if sv else 0) * v_ax)
+                pos -= up * float(np.dot(pos - center, up))
+                positions.append(pos)
+
+        # ── Proximity safety check ──
+        safe_dist = spec["through"] / 2 + c.clearance + 0.5
+        try:
+            _, dists, _ = tm_model.nearest.on_surface(np.array(positions))
+            keep = [i for i, d in enumerate(dists) if d >= safe_dist]
+            if len(keep) < len(positions):
+                logger.warning(
+                    "Dropped %d/%d screw positions too close to cavity",
+                    len(positions) - len(keep), len(positions),
+                )
+                positions = [positions[i] for i in keep]
+        except Exception:
+            pass
+
+        if not positions:
+            return shells, []
+
+        through_r = spec["through"] / 2.0
+        cb_r = spec["head"] / 2.0
+        cb_depth = min(spec["nut_h"] + 1.0, tab * 0.35)
+        center_h = float(np.dot(center, up))
+
+        features: list[ScrewHoleFeature] = []
+        updated_shells: list[MoldShell] = []
+
+        for sh in shells:
+            tm_shell = sh.mesh.to_trimesh()
+            verts_h = tm_shell.vertices @ up
+            sh_h_min = float(verts_h.min())
+            sh_h_max = float(verts_h.max())
+            is_upper = ((sh_h_min + sh_h_max) / 2) > center_h
+
+            for pos in positions:
+                # ── Step 1: Rectangular pocket from outer face to tab ──
+                if is_upper:
+                    pocket_lo = center_h + tab
+                    pocket_hi = sh_h_max + 2.0
+                else:
+                    pocket_lo = sh_h_min - 2.0
+                    pocket_hi = center_h - tab
+
+                pocket_h = abs(pocket_hi - pocket_lo)
+                if pocket_h < 2.0:
+                    continue
+
+                pocket_mid_h = (pocket_hi + pocket_lo) / 2
+                pocket_center = pos + up * (pocket_mid_h - center_h)
+
+                pocket_ok = False
+
+                # Primary: oriented box built from world-space vertices
+                pocket_box = _make_oriented_box(
+                    pocket_center, u_ax, v_ax, up,
+                    pocket_xy, pocket_xy, pocket_h,
+                )
+                result = self._robust_boolean_subtract(tm_shell, pocket_box)
+                if result is not None and len(result.faces) > 10:
+                    tm_shell = result
+                    pocket_ok = True
+                    logger.info(
+                        "Pocket box OK at [%.1f,%.1f,%.1f]  %d faces",
+                        *pocket_center, len(tm_shell.faces),
+                    )
+
+                # Fallback: cylindrical pocket (always works with boolean)
+                if not pocket_ok:
+                    logger.warning(
+                        "Box pocket failed — falling back to cylinder at "
+                        "[%.1f,%.1f,%.1f]",
+                        *pocket_center,
+                    )
+                    pocket_cyl = _make_cylinder(
+                        pocket_center, up,
+                        radius=pocket_xy / 2.0,
+                        height=pocket_h + 1.0,
+                    )
+                    result = self._robust_boolean_subtract(tm_shell, pocket_cyl)
+                    if result is not None and len(result.faces) > 10:
+                        tm_shell = result
+                        pocket_ok = True
+
+                if not pocket_ok:
+                    logger.error(
+                        "Both box and cylinder pocket failed — skipping "
+                        "position [%.1f,%.1f,%.1f]",
+                        *pos,
+                    )
+                    continue
+
+                # ── Step 2: Through-hole in remaining tab ──
+                hole_h = tab * 2 + 4.0
+                cyl = _make_cylinder(pos, up, radius=through_r, height=hole_h)
+                result = self._robust_boolean_subtract(tm_shell, cyl)
+                if result is not None and len(result.faces) > 10:
+                    tm_shell = result
+
+                # ── Step 3: Counterbore on pocket face ──
+                if c.screw_counterbore and cb_depth > 0.5:
+                    if is_upper:
+                        cb_h = center_h + tab - cb_depth / 2
+                    else:
+                        cb_h = center_h - tab + cb_depth / 2
+                    cb_pos = pos + up * (cb_h - center_h)
+                    cb_cyl = _make_cylinder(
+                        cb_pos, up, radius=cb_r, height=cb_depth + 0.5,
+                    )
+                    result = self._robust_boolean_subtract(tm_shell, cb_cyl)
+                    if result is not None and len(result.faces) > 10:
+                        tm_shell = result
+
+            # Light repair only — DO NOT fill_holes here because the pocket
+            # openings are intentional (fill_holes would seal them shut).
+            try:
+                tm_shell.update_faces(tm_shell.nondegenerate_faces())
+            except Exception:
+                pass
+            try:
+                tm_shell.remove_duplicate_faces()
+            except Exception:
+                pass
+            for _rfn in (trimesh.repair.fix_normals, trimesh.repair.fix_winding):
+                try:
+                    _rfn(tm_shell)
+                except Exception:
+                    pass
+
+            updated_shells.append(MoldShell(
+                shell_id=sh.shell_id,
+                mesh=MeshData.from_trimesh(tm_shell),
+                direction=sh.direction,
+                volume=float(abs(tm_shell.volume)) if tm_shell.is_volume else sh.volume,
+                surface_area=float(tm_shell.area),
+                is_printable=sh.is_printable,
+                min_draft_angle=sh.min_draft_angle,
+            ))
+
+        for pos in positions:
+            features.append(ScrewHoleFeature(
+                position=pos,
+                screw_size=c.screw_size,
+                through_diameter=spec["through"],
+                counterbore_diameter=cb_r * 2 if c.screw_counterbore else 0.0,
+                counterbore_depth=cb_depth if c.screw_counterbore else 0.0,
+            ))
+
+        logger.info(
+            "Screw holes: %d × %s pocket+tab (tab=%.1fmm, pocket=%.1fmm sq)",
+            len(features), c.screw_size, tab, pocket_xy,
+        )
+        return updated_shells, features
+
+    # ═══════════════ Clamp Bracket Generation ══════════════════════
+
+    def _generate_clamp_brackets(
+        self, shells: list[MoldShell], tm_model: trimesh.Trimesh,
+        direction: np.ndarray, center: np.ndarray,
+    ) -> list[ClampBracket]:
+        """Generate C-shaped clamp brackets that wrap around the parting plane.
+
+        Each bracket is a U-channel that straddles the parting line with
+        through-bolt holes for tightening.
+        """
+        c = self.config
+        clamp_spec = M_SCREW_TABLE.get(c.clamp_screw_size, M_SCREW_TABLE["M3"])
+        up = direction / (np.linalg.norm(direction) + 1e-12)
+
+        arb = np.array([1.0, 0, 0]) if abs(up[0]) < 0.9 else np.array([0.0, 1, 0])
+        u_ax = np.cross(up, arb); u_ax /= (np.linalg.norm(u_ax) + 1e-12)
+        v_ax = np.cross(up, u_ax); v_ax /= (np.linalg.norm(v_ax) + 1e-12)
+
+        bounds = tm_model.bounds
+        max_ext = float(np.max(bounds[1] - bounds[0]))
+        bracket_dist = max_ext / 2 + c.margin + c.wall_thickness + c.clamp_width / 2
+
+        all_bounds = np.vstack([sh.mesh.bounds for sh in shells])
+        shell_height = float(np.ptp(all_bounds @ up))
+        grip_height = min(shell_height * 0.3, c.clamp_width)
+
+        brackets: list[ClampBracket] = []
+
+        for bi in range(c.n_clamp_screws):
+            angle = 2 * np.pi * bi / c.n_clamp_screws + np.pi / c.n_clamp_screws
+            outward = np.cos(angle) * u_ax + np.sin(angle) * v_ax
+            bracket_center = center + outward * bracket_dist
+
+            outer_w = c.clamp_width
+            inner_w = outer_w - 2 * c.clamp_thickness
+            outer_h = grip_height * 2 + c.clamp_thickness
+
+            outer_box = trimesh.primitives.Box(extents=[outer_w, outer_h, outer_w * 0.6])
+            inner_box = trimesh.primitives.Box(extents=[inner_w, grip_height * 2, inner_w * 0.8])
+
+            T = np.eye(4)
+            T[:3, 0] = outward
+            T[:3, 1] = up
+            T[:3, 2] = np.cross(outward, up)
+            T[:3, 3] = bracket_center
+
+            outer_mesh = outer_box.to_mesh()
+            outer_mesh.apply_transform(T)
+            inner_mesh = inner_box.to_mesh()
+            inner_mesh.apply_transform(T)
+
+            bracket_mesh = self._robust_boolean_subtract(outer_mesh, inner_mesh)
+            if bracket_mesh is None or len(bracket_mesh.faces) < 10:
+                bracket_mesh = outer_mesh
+
+            screw_r = clamp_spec["through"] / 2.0
+            screw_pos_top = bracket_center + up * (grip_height * 0.6)
+            screw_pos_bot = bracket_center - up * (grip_height * 0.6)
+            screw_positions = [screw_pos_top, screw_pos_bot]
+
+            for sp in screw_positions:
+                cyl = _make_cylinder(sp, outward, radius=screw_r, height=outer_w * 2)
+                result = self._robust_boolean_subtract(bracket_mesh, cyl)
+                if result is not None and len(result.faces) > 4:
+                    bracket_mesh = result
+
+            bracket_mesh = _repair_mesh(bracket_mesh)
+            brackets.append(ClampBracket(
+                mesh=MeshData.from_trimesh(bracket_mesh),
+                screw_positions=screw_positions,
+            ))
+
+        logger.info("Clamp brackets: %d × %s screws", len(brackets), c.clamp_screw_size)
+        return brackets
+
     # ═══════════════ Flange Generation ════════════════════════════
 
     def _generate_flanges(
@@ -1738,7 +2363,11 @@ class MoldBuilder:
         self, solid: trimesh.Trimesh,
         center: np.ndarray, direction: np.ndarray,
     ) -> list[MoldShell]:
-        """Split a mold solid into upper/lower halves, with optional interlock profile."""
+        """Split a mold solid into upper/lower halves.
+
+        NOTE: Does NOT seal the parting plane — the cavity impression
+        must remain open for a functional mold.
+        """
         if self.config.parting_style != "flat":
             upper, lower = self._apply_parting_interlock(solid, center, direction)
             shells: list[MoldShell] = []
@@ -1746,9 +2375,6 @@ class MoldBuilder:
                 (upper, direction.copy()), (lower, -direction.copy()),
             ]):
                 if half is not None and len(half.faces) >= 4:
-                    sn = np.asarray(d, dtype=np.float64)
-                    sn = sn / (np.linalg.norm(sn) + 1e-12)
-                    half = _seal_parting_plane_gaps(half, center, sn)
                     shells.append(MoldShell(
                         shell_id=i,
                         mesh=MeshData.from_trimesh(half),
@@ -1764,11 +2390,8 @@ class MoldBuilder:
             (direction, direction.copy()),
             (-direction, -direction.copy()),
         ]):
-            sn = np.asarray(normal, dtype=np.float64)
-            sn = sn / (np.linalg.norm(sn) + 1e-12)
             half = _safe_slice(solid, center, normal)
             if half is not None and len(half.faces) >= 4:
-                half = _seal_parting_plane_gaps(half, center, sn)
                 shells.append(MoldShell(
                     shell_id=i,
                     mesh=MeshData.from_trimesh(half),
@@ -1782,15 +2405,17 @@ class MoldBuilder:
         self, tm_model: trimesh.Trimesh,
         center: np.ndarray, direction: np.ndarray,
     ) -> list[MoldShell] | None:
-        """Voxel-based mold construction: voxelize model, dilate, subtract."""
+        """Voxel-based mold construction with per-half marching cubes.
+
+        Splits the voxel grid at the parting plane BEFORE marching cubes,
+        so each half naturally has the cavity impression open.
+        """
         c = self.config
         extents = tm_model.extents
         max_ext = float(np.max(extents))
         if max_ext < 1e-6:
             return None
 
-        # Uniform pitch from longest extent only; use finer cells than max_ext/80 so
-        # marching-cubes cavity surfaces are less visibly stair-stepped in the viewport.
         target_pitch = min(
             0.55,
             max_ext / 160.0,
@@ -1801,7 +2426,6 @@ class MoldBuilder:
         pitch = max_ext / resolution
         logger.info("Voxel mold: pitch=%.3f mm, res=%d", pitch, resolution)
 
-        # Step 1: Voxelize model
         try:
             vox = tm_model.voxelized(pitch)
             if hasattr(vox, "fill"):
@@ -1816,13 +2440,11 @@ class MoldBuilder:
             logger.warning("Voxelization produced empty grid")
             return None
 
-        # Step 2: Dilate to create clearance
         clearance_px = max(1, int(np.ceil(c.clearance / pitch)))
         cavity_matrix = ndimage.binary_dilation(
             model_matrix, iterations=clearance_px,
         )
 
-        # Step 3: Build outer shell
         wall_px = max(2, int(np.ceil((c.margin + c.wall_thickness) / pitch)))
         padded_cavity = np.pad(
             cavity_matrix, wall_px, mode="constant", constant_values=False,
@@ -1836,39 +2458,71 @@ class MoldBuilder:
             outer_matrix = np.ones_like(padded_cavity, dtype=bool)
 
         mold_matrix = outer_matrix & ~padded_cavity
+        world_origin = vox_origin - wall_px * pitch
 
-        # Step 4: Marching cubes to extract surface
+        # Determine the split index along the dominant axis of `direction`
+        up = direction / (np.linalg.norm(direction) + 1e-12)
+        dominant_axis = int(np.argmax(np.abs(up)))
+        parting_world = float(center[dominant_axis])
+        split_idx = int(round((parting_world - world_origin[dominant_axis]) / pitch))
+        split_idx = int(np.clip(split_idx, 1, mold_matrix.shape[dominant_axis] - 1))
+
         try:
             from skimage.measure import marching_cubes
-            verts_vox, faces_mc, normals_mc, _ = marching_cubes(
-                mold_matrix.astype(np.float32), level=0.5,
-            )
         except ImportError:
             logger.warning("scikit-image unavailable for marching cubes")
             return None
-        except Exception as e:
-            logger.warning("Marching cubes failed: %s", e)
-            return None
 
-        world_origin = vox_origin - wall_px * pitch
-        verts_world = verts_vox * pitch + world_origin
-        mold_mesh = trimesh.Trimesh(
-            vertices=verts_world, faces=faces_mc,
-            vertex_normals=normals_mc, process=True,
-        )
-        trimesh.repair.fix_normals(mold_mesh)
-        logger.info("Voxel mold mesh: %d faces", len(mold_mesh.faces))
+        shells: list[MoldShell] = []
+        target_faces = min(100_000, MOLD_MAX_FACES)
 
-        # Step 5: Simplify if too many faces
-        target = min(100_000, MOLD_MAX_FACES)
-        if len(mold_mesh.faces) > target:
+        for i, (lo, hi, d) in enumerate([
+            (split_idx, mold_matrix.shape[dominant_axis], direction.copy()),
+            (0, split_idx, -direction.copy()),
+        ]):
+            slices = [slice(None)] * 3
+            slices[dominant_axis] = slice(lo, hi)
+            half_matrix = mold_matrix[tuple(slices)]
+
+            if not np.any(half_matrix):
+                continue
+
             try:
-                mold_mesh = mold_mesh.simplify_quadric_decimation(target)
-            except Exception:
-                pass
+                verts_vox, faces_mc, normals_mc, _ = marching_cubes(
+                    half_matrix.astype(np.float32), level=0.5,
+                )
+            except Exception as e:
+                logger.warning("Marching cubes failed for half %d: %s", i, e)
+                continue
 
-        # Step 6: Split into halves
-        return self._split_solid_to_shells(mold_mesh, center, direction)
+            offset = np.zeros(3, dtype=np.float64)
+            offset[dominant_axis] = lo * pitch
+            verts_world = verts_vox * pitch + world_origin + offset
+
+            half_mesh = trimesh.Trimesh(
+                vertices=verts_world, faces=faces_mc,
+                vertex_normals=normals_mc, process=True,
+            )
+            trimesh.repair.fix_normals(half_mesh)
+
+            if len(half_mesh.faces) > target_faces:
+                try:
+                    half_mesh = half_mesh.simplify_quadric_decimation(target_faces)
+                except Exception:
+                    pass
+
+            half_mesh = _repair_mesh(half_mesh)
+            logger.info("Voxel shell %d: %d faces", i, len(half_mesh.faces))
+
+            shells.append(MoldShell(
+                shell_id=i,
+                mesh=MeshData.from_trimesh(half_mesh),
+                direction=np.asarray(d, dtype=np.float64),
+                volume=float(half_mesh.volume) if half_mesh.is_watertight else 0.0,
+                surface_area=float(half_mesh.area),
+            ))
+
+        return shells if len(shells) >= 2 else None
 
     # ═══════════════ Cavity / Outer Shell ═══════════════════════
 
@@ -2333,18 +2987,13 @@ class MoldBuilder:
     ) -> list[MoldShell]:
         """Boolean-subtract pour/vent hole cylinders from shell meshes.
 
-        Each hole cylinder is centered at the hole *position* and oriented along
-        *direction*.  The cylinder must be long enough to span the full shell
-        extent along that axis so it always creates a through-hole — even when
-        the hole position is outside the shell AABB.
+        Cylinder height is adaptive: spans only the individual shell's extent
+        along the direction axis (wall_thickness + margin), NOT the full mold.
+        This prevents holes from overshooting through to the other side.
         """
         c = self.config
-        all_bounds = np.vstack([sh.mesh.bounds for sh in shells])
-        shell_extent_along_dir = float(np.ptp(all_bounds @ direction))
-        cyl_height = max(
-            (c.wall_thickness + c.margin) * 4,
-            shell_extent_along_dir * 2.0,
-        )
+        up = np.asarray(direction, dtype=np.float64)
+        up = up / (np.linalg.norm(up) + 1e-12)
 
         hole_specs: list[tuple[np.ndarray, float, str]] = []
         if pour_hole:
@@ -2357,17 +3006,39 @@ class MoldBuilder:
         updated: list[MoldShell] = []
         for sh in shells:
             tm_shell = sh.mesh.to_trimesh()
+            sh_bounds = tm_shell.bounds
+            sh_dir = np.asarray(sh.direction, dtype=np.float64)
+            sh_dir = sh_dir / (np.linalg.norm(sh_dir) + 1e-12)
+
+            # Per-shell height: only the extent of THIS shell along direction
+            shell_heights = tm_shell.vertices @ up
+            shell_h_range = float(np.ptp(shell_heights))
+            cyl_height = min(
+                shell_h_range + 2.0,
+                (c.wall_thickness + c.margin) * 3.0,
+            )
+            cyl_height = max(cyl_height, c.wall_thickness * 2.0)
+
             n_cut = 0
             for pos, radius, htype in hole_specs:
-                cyl = _make_cylinder(pos, direction, radius=radius, height=cyl_height)
-                if not tm_shell.bounds[0].tolist() or not tm_shell.bounds[1].tolist():
+                # Only cut into the shell that the hole is closest to
+                hole_h = float(pos @ up)
+                shell_center_h = float(tm_shell.centroid @ up)
+
+                # Skip if the hole is on the opposite side of the parting plane
+                if np.dot(sh_dir, up) > 0 and hole_h < shell_center_h - shell_h_range:
                     continue
+                if np.dot(sh_dir, up) < 0 and hole_h > shell_center_h + shell_h_range:
+                    continue
+
+                # Center the cylinder at the hole position, oriented along direction
+                cyl = _make_cylinder(pos, up, radius=radius, height=cyl_height)
+
                 cyl_min = cyl.bounds[0]
                 cyl_max = cyl.bounds[1]
-                sh_min = tm_shell.bounds[0]
-                sh_max = tm_shell.bounds[1]
-                if np.any(cyl_max < sh_min - 1) or np.any(cyl_min > sh_max + 1):
+                if np.any(cyl_max < sh_bounds[0] - 1) or np.any(cyl_min > sh_bounds[1] + 1):
                     continue
+
                 result = self._robust_boolean_subtract(tm_shell, cyl)
                 if result is not None and len(result.faces) > 4:
                     tm_shell = result

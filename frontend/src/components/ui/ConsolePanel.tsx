@@ -35,10 +35,10 @@ function FrontendLogLine({ entry }: { entry: LogEntry }) {
     >
       <div className="flex items-start gap-1.5 min-w-0">
         <span className="text-text-muted/40 shrink-0 tabular-nums w-[52px] text-right">{formatTs(entry.timestamp)}</span>
-        <span className={cn("shrink-0 w-6 text-center rounded text-[8px] font-bold leading-4", style.color, style.bg)}>
+        <span className={cn("shrink-0 w-6 text-center rounded text-[11px] font-bold leading-4", style.color, style.bg)}>
           {style.label}
         </span>
-        <span className="text-accent/60 shrink-0 text-[9px] font-medium min-w-[48px]">[{entry.source}]</span>
+        <span className="text-accent/60 shrink-0 text-[11px] font-medium min-w-[48px]">[{entry.source}]</span>
         <span className={cn("flex-1 min-w-0 break-words", style.color)}>{entry.message}</span>
         {entry.duration != null && (
           <span className="shrink-0 text-text-muted/30 flex items-center gap-0.5">
@@ -53,7 +53,7 @@ function FrontendLogLine({ entry }: { entry: LogEntry }) {
         )}
       </div>
       {expanded && entry.detail && (
-        <div className="ml-[85px] mt-0.5 text-text-muted/50 text-[9px] whitespace-pre-wrap break-all bg-black/20 rounded px-2 py-1">
+        <div className="ml-[85px] mt-0.5 text-text-muted/50 text-[11px] whitespace-pre-wrap break-all bg-black/20 rounded px-2 py-1">
           {entry.detail}
         </div>
       )}
@@ -130,7 +130,7 @@ export function ConsolePanel() {
   return (
     <div className="h-52 border-t border-border bg-[#12121e] flex flex-col shrink-0">
       {/* Header */}
-      <div className="flex items-center h-7 px-2 bg-bg-secondary/80 border-b border-border/50 text-[10px] gap-1 shrink-0">
+      <div className="flex items-center h-7 px-2 bg-bg-secondary/80 border-b border-border/50 text-[12px] gap-1 shrink-0">
         <span className="font-bold text-text-primary mr-1">控制台</span>
 
         {/* Tabs */}
@@ -141,7 +141,7 @@ export function ConsolePanel() {
         >
           <Monitor size={9} /> 前端
           {frontendEntries.length > 0 && (
-            <span className="text-[8px] text-text-muted/50">{frontendEntries.length}</span>
+            <span className="text-[11px] text-text-muted/50">{frontendEntries.length}</span>
           )}
         </button>
         <button
@@ -158,7 +158,7 @@ export function ConsolePanel() {
         >
           <AlertTriangle size={9} /> 错误
           {(errorCount + frontendErrorCount) > 0 && (
-            <span className="bg-red-500/30 text-red-300 px-1 rounded-full text-[8px]">
+            <span className="bg-red-500/30 text-red-300 px-1 rounded-full text-[11px]">
               {errorCount + frontendErrorCount}
             </span>
           )}
@@ -176,7 +176,7 @@ export function ConsolePanel() {
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Escape" && (setSearchOpen(false), setSearchQuery(""))}
               placeholder="搜索日志..."
-              className="bg-transparent text-[10px] text-text-primary outline-none w-28 placeholder:text-text-muted/30"
+              className="bg-transparent text-[12px] text-text-primary outline-none w-28 placeholder:text-text-muted/30"
             />
             <button onClick={() => { setSearchOpen(false); setSearchQuery(""); }} className="text-text-muted/40 hover:text-text-muted">
               <X size={8} />
@@ -206,7 +206,7 @@ export function ConsolePanel() {
       </div>
 
       {/* Log Content */}
-      <div className="flex-1 overflow-y-auto py-1 font-mono text-[10px] leading-[14px]">
+      <div className="flex-1 overflow-y-auto py-1 font-mono text-[12px] leading-[14px]">
         {tab === "frontend" && (
           filteredFrontend.length === 0 ? (
             <div className="text-text-muted/30 italic py-4 text-center">

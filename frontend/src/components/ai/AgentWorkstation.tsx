@@ -74,7 +74,7 @@ export function AgentWorkstation() {
 
             <div className="flex items-center gap-2 ml-auto mr-2">
               {/* WebSocket status */}
-              <div className="flex items-center gap-1 text-[10px]">
+              <div className="flex items-center gap-1 text-[12px]">
                 <div
                   className={cn(
                     "w-1.5 h-1.5 rounded-full",
@@ -161,12 +161,12 @@ function AgentsTab() {
               <span className="text-base">{ROLE_ICONS[a.role] ?? "⚡"}</span>
               <span className="text-xs font-semibold text-text-primary">{a.name}</span>
             </div>
-            <p className="text-[10px] text-text-muted leading-tight">{a.description}</p>
+            <p className="text-[12px] text-text-muted leading-tight">{a.description}</p>
             <div className="mt-1.5 flex items-center gap-2">
-              <span className="text-[9px] text-text-muted">{a.tools.length} 工具</span>
+              <span className="text-[11px] text-text-muted">{a.tools.length} 工具</span>
               {a.config && (
                 <span className={cn(
-                  "text-[9px] px-1 rounded",
+                  "text-[11px] px-1 rounded",
                   a.config.enabled ? "text-green-400 bg-green-400/10" : "text-red-400 bg-red-400/10",
                 )}>
                   {a.config.enabled ? "启用" : "禁用"}
@@ -236,7 +236,7 @@ function LiveEventsTab() {
       <div className="text-center text-text-muted text-xs py-8">
         <Radio size={24} className="mx-auto mb-2 opacity-30" />
         <p>等待 Agent 事件...</p>
-        <p className="text-[10px] mt-1">执行任务时这里将实时显示 Agent 思考和操作过程</p>
+        <p className="text-[12px] mt-1">执行任务时这里将实时显示 Agent 思考和操作过程</p>
       </div>
     );
   }
@@ -244,10 +244,10 @@ function LiveEventsTab() {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] text-text-muted">{events.length} 条事件</span>
+        <span className="text-[12px] text-text-muted">{events.length} 条事件</span>
         <button
           onClick={clearEvents}
-          className="text-[10px] text-text-muted hover:text-red-400 transition-colors"
+          className="text-[12px] text-text-muted hover:text-red-400 transition-colors"
         >
           清空
         </button>
@@ -261,7 +261,7 @@ function LiveEventsTab() {
           return (
             <div
               key={i}
-              className="flex items-start gap-2 p-1.5 rounded bg-bg-secondary text-[10px]"
+              className="flex items-start gap-2 p-1.5 rounded bg-bg-secondary text-[12px]"
             >
               <Icon size={11} className={cn("mt-0.5 shrink-0", info.color)} />
               <div className="flex-1 min-w-0">
@@ -312,7 +312,7 @@ function PipelinesTab() {
                 <span className="text-sm font-semibold text-text-primary">
                   {info?.label ?? key}
                 </span>
-                <span className="text-[10px] text-text-muted">
+                <span className="text-[12px] text-text-muted">
                   {(steps as unknown[]).length} 步骤
                 </span>
               </div>
@@ -320,7 +320,7 @@ function PipelinesTab() {
               <div className="flex flex-wrap items-center gap-1">
                 {(steps as { agent: string; task: string }[]).map((s, i) => (
                   <span key={i} className="flex items-center gap-0.5">
-                    <span className="px-2 py-0.5 rounded text-[10px] bg-bg-primary text-text-secondary">
+                    <span className="px-2 py-0.5 rounded text-[12px] bg-bg-primary text-text-secondary">
                       {s.agent}
                     </span>
                     {i < (steps as unknown[]).length - 1 && (
@@ -347,7 +347,7 @@ function ToolsTab() {
           <button
             onClick={() => setCategory(undefined)}
             className={cn(
-              "px-2 py-0.5 rounded text-[10px] transition-colors",
+              "px-2 py-0.5 rounded text-[12px] transition-colors",
               !category ? "bg-accent/20 text-accent" : "bg-bg-secondary text-text-muted hover:text-text-primary",
             )}
           >
@@ -358,7 +358,7 @@ function ToolsTab() {
               key={c}
               onClick={() => setCategory(c)}
               className={cn(
-                "px-2 py-0.5 rounded text-[10px] transition-colors",
+                "px-2 py-0.5 rounded text-[12px] transition-colors",
                 category === c
                   ? "bg-accent/20 text-accent"
                   : "bg-bg-secondary text-text-muted hover:text-text-primary",
@@ -381,13 +381,13 @@ function ToolsTab() {
             <Wrench size={12} className="text-text-muted mt-0.5 shrink-0" />
             <div>
               <p className="text-[11px] font-mono text-text-primary">{t.name}</p>
-              <p className="text-[10px] text-text-muted leading-tight">{t.description}</p>
+              <p className="text-[12px] text-text-muted leading-tight">{t.description}</p>
             </div>
           </div>
         ))}
       </div>
       {data?.total !== undefined && (
-        <p className="text-[10px] text-text-muted">共 {data.total} 个工具</p>
+        <p className="text-[12px] text-text-muted">共 {data.total} 个工具</p>
       )}
     </div>
   );
@@ -414,14 +414,14 @@ function HistoryTab({ result }: { result: unknown }) {
                 {String(r.step_name ?? "执行结果")}
               </span>
               {Boolean(r.elapsed_seconds) && (
-                <span className="text-[10px] text-text-muted flex items-center gap-0.5">
+                <span className="text-[12px] text-text-muted flex items-center gap-0.5">
                   <Clock size={9} />
                   {Number(r.elapsed_seconds).toFixed(1)}s
                 </span>
               )}
             </div>
             {Boolean(r.thinking) && (
-              <div className="text-[10px] text-text-muted bg-bg-secondary p-2 rounded italic">
+              <div className="text-[12px] text-text-muted bg-bg-secondary p-2 rounded italic">
                 {String(r.thinking).slice(0, 200)}
               </div>
             )}
@@ -440,7 +440,7 @@ function HistoryTab({ result }: { result: unknown }) {
             .map((item, i) => {
               const ts = new Date(item.timestamp * 1000);
               return (
-                <div key={i} className="flex items-center gap-2 p-1.5 rounded bg-bg-secondary text-[10px]">
+                <div key={i} className="flex items-center gap-2 p-1.5 rounded bg-bg-secondary text-[12px]">
                   {item.success ? (
                     <CheckCircle2 size={10} className="text-green-400 shrink-0" />
                   ) : (

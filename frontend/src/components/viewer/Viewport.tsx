@@ -21,6 +21,7 @@ import { HoleBrushPainter } from "./HoleBrushPainter";
 import { SimulationViewer, StreamlineViewer, DefectMarkers, SurfaceOverlayViewer, FEAViewer } from "./SimulationViewer";
 import { GatingViewer } from "./GatingViewer";
 import { SimFloatingBar } from "./SimFloatingBar";
+import { UndercutOverlay } from "./UndercutOverlay";
 import { useInsertStore } from "../../stores/insertStore";
 import { useRepairModel, useSimplifyModel, useTransformModel } from "../../hooks/useModelApi";
 import { toastSuccess, toastError } from "../../stores/toastStore";
@@ -93,6 +94,8 @@ export function Viewport() {
           {orientationResult && (
             <DirectionArrow direction={orientationResult.best_direction} />
           )}
+
+          <UndercutOverlay />
 
           {moldId && moldResult && moldVisible &&
             !(heatmapVisible && hasVisualization) &&
@@ -315,7 +318,7 @@ function FloatingEditToolbar() {
               title={tool.label}
             >
               {tool.icon}
-              <span className="absolute left-full ml-2 top-1/2 -translate-y-1/2 px-2 py-0.5 rounded bg-bg-primary border border-border text-[9px] text-text-secondary whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-lg z-20">
+              <span className="absolute left-full ml-2 top-1/2 -translate-y-1/2 px-2 py-0.5 rounded bg-bg-primary border border-border text-[11px] text-text-secondary whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-lg z-20">
                 {tool.label}
               </span>
             </button>
@@ -349,7 +352,7 @@ function DisplayModeSwitcher() {
     <div ref={ref} className="absolute top-8 left-3 z-10">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 px-2 py-1 rounded bg-bg-secondary/80 backdrop-blur-sm border border-border/50 text-[10px] text-text-muted hover:text-text-primary transition-colors"
+        className="flex items-center gap-1 px-2 py-1 rounded bg-bg-secondary/80 backdrop-blur-sm border border-border/50 text-[12px] text-text-muted hover:text-text-primary transition-colors"
       >
         <Palette size={10} />
         <span>材质: {DISPLAY_MODE_LABELS[displayMode]}</span>
@@ -372,7 +375,7 @@ function DisplayModeSwitcher() {
                 key={mode}
                 onClick={() => { setDisplayMode(mode); setOpen(false); }}
                 className={cn(
-                  "w-full text-left px-2 py-1 rounded text-[10px] transition-colors",
+                  "w-full text-left px-2 py-1 rounded text-[12px] transition-colors",
                   displayMode === mode
                     ? "bg-accent/20 text-accent"
                     : "text-text-muted hover:bg-bg-hover hover:text-text-primary",
@@ -418,7 +421,7 @@ function ScaleUnitSwitcher() {
     <div ref={ref} className="absolute top-3 right-3 z-10">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 px-2 py-1 rounded bg-bg-secondary/80 backdrop-blur-sm border border-border/50 text-[10px] text-text-muted hover:text-text-primary transition-colors"
+        className="flex items-center gap-1 px-2 py-1 rounded bg-bg-secondary/80 backdrop-blur-sm border border-border/50 text-[12px] text-text-muted hover:text-text-primary transition-colors"
       >
         <Ruler size={10} />
         <span>{labels[gridUnit]}</span>
@@ -441,7 +444,7 @@ function ScaleUnitSwitcher() {
                 key={unit}
                 onClick={() => { setGridUnit(unit); setOpen(false); }}
                 className={cn(
-                  "w-full text-left px-2 py-1 rounded text-[10px] transition-colors",
+                  "w-full text-left px-2 py-1 rounded text-[12px] transition-colors",
                   gridUnit === unit
                     ? "bg-accent/20 text-accent"
                     : "text-text-muted hover:bg-bg-hover hover:text-text-primary",
@@ -500,7 +503,7 @@ function HeatmapLegend() {
 
   return (
     <div className="absolute bottom-14 right-3 pointer-events-none">
-      <div className="bg-bg-secondary/90 backdrop-blur-sm border border-border/60 rounded-lg px-3 py-2 text-[10px] min-w-[140px]">
+      <div className="bg-bg-secondary/90 backdrop-blur-sm border border-border/60 rounded-lg px-3 py-2 text-[12px] min-w-[140px]">
         <div className="font-semibold text-text-secondary mb-1.5">{info.label}</div>
         <div
           className="h-3 rounded-sm mb-1"
@@ -596,7 +599,7 @@ function ViewportOverlay() {
     <>
       {/* Keyboard hints (top, centered) */}
       <div className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none">
-        <div className="text-[9px] text-text-muted/40 whitespace-nowrap">
+        <div className="text-[11px] text-text-muted/40 whitespace-nowrap">
           鼠标左键: 旋转 | 右键: 平移 | 滚轮: 缩放 | Ctrl+1~8: 切换步骤
         </div>
       </div>
@@ -604,7 +607,7 @@ function ViewportOverlay() {
       {/* Step context info panel (bottom-left) */}
       <div className="absolute bottom-3 left-3 pointer-events-none space-y-1.5 max-w-[220px]">
         {/* Step badge */}
-        <div className="px-2.5 py-1.5 rounded-md bg-bg-secondary/80 backdrop-blur-sm border border-border/50 text-[10px] text-text-secondary">
+        <div className="px-2.5 py-1.5 rounded-md bg-bg-secondary/80 backdrop-blur-sm border border-border/50 text-[12px] text-text-secondary">
           <span className="text-accent font-medium mr-1.5">
             {STEP_LABELS[currentStep]}
           </span>
@@ -613,8 +616,8 @@ function ViewportOverlay() {
 
         {/* Orientation result overlay */}
         {currentStep === "orientation" && orientationResult && (
-          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[9px] space-y-0.5">
-            <div className="text-accent font-semibold text-[10px] mb-1">方向分析结果</div>
+          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[11px] space-y-0.5">
+            <div className="text-accent font-semibold text-[12px] mb-1">方向分析结果</div>
             <div className="flex justify-between"><span className="text-text-muted">方向</span><span className="font-mono">[{orientationResult.best_direction.map((v: number) => v.toFixed(2)).join(",")}]</span></div>
             <div className="flex justify-between"><span className="text-text-muted">评分</span><span className="text-accent font-bold">{(orientationResult.best_score.total_score * 100).toFixed(0)}%</span></div>
             <div className="flex justify-between"><span className="text-text-muted">可见率</span><span>{(orientationResult.best_score.visibility_ratio * 100).toFixed(0)}%</span></div>
@@ -623,8 +626,8 @@ function ViewportOverlay() {
 
         {/* Mold result overlay */}
         {currentStep === "mold" && moldResult && (
-          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[9px] space-y-0.5">
-            <div className="text-accent font-semibold text-[10px] mb-1">模具信息</div>
+          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[11px] space-y-0.5">
+            <div className="text-accent font-semibold text-[12px] mb-1">模具信息</div>
             <div className="flex justify-between"><span className="text-text-muted">壳体</span><span>{moldResult.n_shells} 片</span></div>
             <div className="flex justify-between"><span className="text-text-muted">型腔</span><span>{moldResult.cavity_volume.toFixed(0)} mm³</span></div>
             {moldResult.pour_hole && <div className="flex justify-between"><span className="text-text-muted">浇口</span><span className="text-success">已放置</span></div>}
@@ -634,8 +637,8 @@ function ViewportOverlay() {
 
         {/* Gating result overlay */}
         {currentStep === "gating" && gatingResult && (
-          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[9px] space-y-0.5">
-            <div className="text-accent font-semibold text-[10px] mb-1">浇注系统</div>
+          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[11px] space-y-0.5">
+            <div className="text-accent font-semibold text-[12px] mb-1">浇注系统</div>
             <div className="flex justify-between"><span className="text-text-muted">浇口评分</span><span className="text-accent font-bold">{(gatingResult.gate.score * 100).toFixed(0)}%</span></div>
             <div className="flex justify-between"><span className="text-text-muted">排气口</span><span>{gatingResult.vents.length} 个</span></div>
             <div className="flex justify-between"><span className="text-text-muted">预估充填</span><span>{gatingResult.estimated_fill_time.toFixed(1)}s</span></div>
@@ -645,8 +648,8 @@ function ViewportOverlay() {
 
         {/* Simulation result overlay */}
         {currentStep === "simulation" && simResult && (
-          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[9px] space-y-0.5">
-            <div className="text-accent font-semibold text-[10px] mb-1">仿真结果</div>
+          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-accent/30 text-[11px] space-y-0.5">
+            <div className="text-accent font-semibold text-[12px] mb-1">仿真结果</div>
             <div className="flex justify-between"><span className="text-text-muted">充填率</span><span className={simResult.fill_fraction > 0.95 ? "text-success" : "text-warning"}>{(simResult.fill_fraction * 100).toFixed(1)}%</span></div>
             <div className="flex justify-between"><span className="text-text-muted">充填时间</span><span>{simResult.fill_time_seconds.toFixed(1)}s</span></div>
             <div className="flex justify-between"><span className="text-text-muted">缺陷数</span><span className={simResult.defects.length > 0 ? "text-danger" : "text-success"}>{simResult.defects.length}</span></div>
@@ -655,7 +658,7 @@ function ViewportOverlay() {
 
         {/* Mesh info for repair step */}
         {currentStep === "repair" && meshInfo && (
-          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-border/50 text-[9px] space-y-0.5">
+          <div className="px-2.5 py-2 rounded-md bg-bg-secondary/90 backdrop-blur-sm border border-border/50 text-[11px] space-y-0.5">
             <div className="flex justify-between"><span className="text-text-muted">面数</span><span>{meshInfo.face_count.toLocaleString()}</span></div>
             <div className="flex justify-between"><span className="text-text-muted">水密</span><span className={meshInfo.is_watertight ? "text-success" : "text-warning"}>{meshInfo.is_watertight ? "是" : "否"}</span></div>
           </div>

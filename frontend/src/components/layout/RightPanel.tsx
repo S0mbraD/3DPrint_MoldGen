@@ -3,9 +3,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronRight, Info, Layers, Droplets, Triangle,
   CheckCircle, AlertTriangle, Compass, Boxes, Pin,
-  FlaskConical, Clock, Hash, Ruler, Eye,
+  FlaskConical, Clock, Hash, Ruler,
   Box, ThermometerSun, BarChart3, SlidersHorizontal,
-  FileText, Activity, Gauge,
+  Activity, Gauge,
 } from "lucide-react";
 import { useAppStore, type WorkflowStep } from "../../stores/appStore";
 import { useModelStore } from "../../stores/modelStore";
@@ -54,12 +54,12 @@ function SectionHeader({
         />
         <span className="flex items-center gap-1.5">
           {icon}
-          <span className="text-[10px] font-semibold text-text-muted uppercase tracking-wider">
+          <span className="text-[12px] font-semibold text-text-muted uppercase tracking-wider">
             {title}
           </span>
         </span>
         {badge && (
-          <span className="ml-auto text-[9px] text-accent/70 tabular-nums">{badge}</span>
+          <span className="ml-auto text-[11px] text-accent/70 tabular-nums">{badge}</span>
         )}
       </button>
       <AnimatePresence>
@@ -91,7 +91,7 @@ function PropRow({
   icon?: React.ReactNode;
 }) {
   return (
-    <div className="flex justify-between items-center py-[3px] px-2 rounded bg-bg-inset text-[10px]">
+    <div className="flex justify-between items-center py-[3px] px-2 rounded bg-bg-inset text-[12px]">
       <span className="text-text-muted">{label}</span>
       <span className={cn("flex items-center gap-1 tabular-nums", valueClass || "text-text-secondary")}>
         {icon}
@@ -115,7 +115,7 @@ function StatBar({
   const pct = max > 0 ? Math.min(value / max, 1) * 100 : 0;
   return (
     <div className="px-2 py-[3px]">
-      <div className="flex justify-between text-[10px] mb-0.5">
+      <div className="flex justify-between text-[12px] mb-0.5">
         <span className="text-text-muted">{label}</span>
         <span className="text-text-secondary tabular-nums">{value.toLocaleString()}</span>
       </div>
@@ -205,6 +205,29 @@ function PropertiesTab() {
           <PropRow label="分型线" value={`${partingResult.parting_lines.length} 条`} />
           <PropRow label="上模面" value={partingResult.n_upper_faces.toLocaleString()} />
           <PropRow label="下模面" value={partingResult.n_lower_faces.toLocaleString()} />
+          {partingResult.surface_type_used && (
+            <PropRow
+              label="面型"
+              value={({ flat: "平面", heightfield: "高度场", projected: "投影拉伸" } as Record<string, string>)[partingResult.surface_type_used] ?? "平面"}
+            />
+          )}
+          {partingResult.undercut && (
+            <>
+              <PropRow
+                label="倒扣严重度"
+                value={({ none: "无", mild: "轻微", moderate: "中等", severe: "严重" })[partingResult.undercut.severity]}
+                valueClass={partingResult.undercut.severity === "none" ? "text-success" : partingResult.undercut.severity === "severe" ? "text-danger" : "text-warning"}
+              />
+              <PropRow label="倒扣面" value={`${partingResult.undercut.n_undercut_faces} / ${partingResult.undercut.total_faces}`} />
+              <PropRow label="最大深度" value={`${partingResult.undercut.max_depth.toFixed(2)} mm`} />
+              {partingResult.undercut.total_volume > 0 && (
+                <PropRow label="倒扣体积" value={`${partingResult.undercut.total_volume.toFixed(1)} mm³`} />
+              )}
+              {partingResult.undercut.side_pulls && partingResult.undercut.side_pulls.length > 0 && (
+                <PropRow label="侧抽推荐" value={`${partingResult.undercut.side_pulls.length} 方向`} />
+              )}
+            </>
+          )}
         </SectionHeader>
       )}
 
@@ -213,6 +236,16 @@ function PropertiesTab() {
         <>
           <SectionHeader title="模具壳体" icon={<Boxes size={11} className="text-obj-mold" />} badge={`${moldResult.n_shells} 壳`}>
             <PropRow label="型腔体积" value={`${moldResult.cavity_volume.toFixed(1)} mm³`} />
+            {moldResult.parting_surface_type && (
+              <PropRow label="分型面类型" value={({ flat: "平面", heightfield: "高度场", projected: "投影拉伸" } as Record<string, string>)[moldResult.parting_surface_type] ?? moldResult.parting_surface_type} />
+            )}
+            {moldResult.undercut_severity && moldResult.undercut_severity !== "none" && (
+              <PropRow
+                label="倒扣严重度"
+                value={({ mild: "轻微", moderate: "中等", severe: "严重" } as Record<string, string>)[moldResult.undercut_severity] ?? moldResult.undercut_severity}
+                valueClass={moldResult.undercut_severity === "severe" ? "text-danger" : "text-warning"}
+              />
+            )}
             {moldResult.shells.map((sh) => (
               <PropRow
                 key={sh.shell_id}
@@ -375,13 +408,13 @@ function StatsTab() {
                   done ? "bg-success" : active ? "bg-accent" : "bg-border",
                 )} />
                 <span className={cn(
-                  "text-[10px] flex-1",
+                  "text-[12px] flex-1",
                   done ? "text-success" : active ? "text-accent" : "text-text-muted/60",
                 )}>
                   {s.label}
                 </span>
                 <span className={cn(
-                  "text-[9px]",
+                  "text-[11px]",
                   done ? "text-success/60" : active ? "text-accent/60" : "text-text-muted/30",
                 )}>
                   {done ? "✓" : active ? "●" : "—"}

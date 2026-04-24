@@ -692,7 +692,12 @@ class InsertGenerator:
     def _conformal_base_grid(
         self, model: MeshData, pos: InsertPosition,
     ) -> trimesh.Trimesh | None:
-        """Moderate-resolution conformal grid projection."""
+        """Surface-projected conformal grid with edge stitching.
+
+        Uses closest_point (ray-based) on the mesh surface instead of
+        nearest-vertex to produce smoother conformal projection.
+        Stitches inner and outer sheets at the boundary for a watertight plate.
+        """
         tm = model.to_trimesh()
         cfg = self.config
         normal = np.asarray(pos.normal, dtype=np.float64)
@@ -719,29 +724,38 @@ class InsertGenerator:
                    + flat_u[:, None] * u_ax[None, :]
                    + flat_v[:, None] * v_ax[None, :])
 
-        tree = cKDTree(tm.vertices)
-        dists, indices = tree.query(grid_3d, k=1, workers=-1)
+        # Use closest_point on surface (not nearest vertex) for accurate projection
+        try:
+            surf_pts, dists, face_ids = tm.nearest.on_surface(grid_3d)
+            surf_normals = np.asarray(tm.face_normals[face_ids], dtype=np.float64)
+        except Exception:
+            tree = cKDTree(tm.vertices)
+            dists_sq, indices = tree.query(grid_3d, k=1, workers=-1)
+            dists = dists_sq
+            surf_pts = tm.vertices[indices]
+            surf_normals = np.asarray(tm.vertex_normals[indices], dtype=np.float64)
+
         max_dist = half_span * 0.8
         valid = dists < max_dist
 
         if np.sum(valid) < 9:
             return None
 
-        surf_pts = tm.vertices[indices]
-        surf_normals = np.asarray(tm.vertex_normals, dtype=np.float64)[indices]
         sn_len = np.linalg.norm(surf_normals, axis=1, keepdims=True)
         sn_unit = surf_normals / (sn_len + 1e-12)
         offset = cfg.conformal_offset
 
+        # All valid points use surface-projected positions
         close_mask = dists < offset * 5
         inner = np.where(
             close_mask[:, None],
-            surf_pts + sn_unit * (-offset),
+            surf_pts - sn_unit * offset,
             grid_3d - up[None, :] * offset,
         )
         outer_dir = np.where(close_mask[:, None], sn_unit, up[None, :])
         outer = inner + outer_dir * cfg.thickness
 
+        # Build quad grid → triangle faces
         ri, ci = np.meshgrid(
             np.arange(grid_res - 1), np.arange(grid_res - 1), indexing="ij",
         )
@@ -763,9 +777,44 @@ class InsertGenerator:
             np.column_stack([tl + n_pts, br + n_pts, tr + n_pts]),
             np.column_stack([tl + n_pts, bl + n_pts, br + n_pts]),
         ])
+
+        # Stitch boundary edges between inner and outer sheets
+        valid_grid = valid.reshape(grid_res, grid_res)
+        stitch_faces: list[np.ndarray] = []
+        for r in range(grid_res):
+            for c_i in range(grid_res):
+                if not valid_grid[r, c_i]:
+                    continue
+                idx = r * grid_res + c_i
+                # Check each of 4 neighbors — if neighbor is invalid, this is a boundary
+                for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                    nr, nc = r + dr, c_i + dc
+                    is_boundary = False
+                    if nr < 0 or nr >= grid_res or nc < 0 or nc >= grid_res:
+                        is_boundary = True
+                    elif not valid_grid[nr, nc]:
+                        is_boundary = True
+                    if not is_boundary:
+                        continue
+                    # Find the next valid neighbor along the boundary direction
+                    if dr == 0 and dc == 1 and c_i + 1 < grid_res and valid_grid[r, c_i]:
+                        pass  # right neighbor invalid → stitch right edge
+                    nxt_r, nxt_c = r + abs(dc), c_i + abs(dr)
+                    if nxt_r >= grid_res or nxt_c >= grid_res:
+                        continue
+                    if not valid_grid[nxt_r, nxt_c]:
+                        continue
+                    nxt_idx = nxt_r * grid_res + nxt_c
+                    stitch_faces.append(np.array([idx, nxt_idx, nxt_idx + n_pts]))
+                    stitch_faces.append(np.array([idx, nxt_idx + n_pts, idx + n_pts]))
+
+        all_faces = [inner_f, outer_f]
+        if stitch_faces:
+            all_faces.append(np.array(stitch_faces))
+
         plate = trimesh.Trimesh(
             vertices=np.vstack([inner, outer]),
-            faces=np.vstack([inner_f, outer_f]),
+            faces=np.vstack(all_faces),
             process=True,
         )
         _clean_mesh(plate)

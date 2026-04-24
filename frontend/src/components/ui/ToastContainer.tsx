@@ -68,7 +68,7 @@ export function ToastContainer() {
                   {t.title}
                 </p>
                 {t.message && (
-                  <p className="text-[10px] text-text-secondary mt-0.5 leading-snug">
+                  <p className="text-[12px] text-text-secondary mt-0.5 leading-snug">
                     {t.message}
                   </p>
                 )}

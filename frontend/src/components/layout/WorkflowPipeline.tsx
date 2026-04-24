@@ -120,7 +120,7 @@ export function WorkflowPipeline() {
               >
                 {/* Step number / icon */}
                 <div className={cn(
-                  "w-[18px] h-[18px] rounded-[4px] flex items-center justify-center transition-all shrink-0 text-[10px] font-semibold",
+                  "w-[18px] h-[18px] rounded-[4px] flex items-center justify-center transition-all shrink-0 text-[12px] font-semibold",
                   isActive
                     ? "bg-accent text-white shadow-[0_0_8px_rgba(99,102,241,0.3)]"
                     : isDone
@@ -143,7 +143,7 @@ export function WorkflowPipeline() {
                     {meta.shortLabel}
                   </span>
                   {dataLabel && isDone && !isActive && (
-                    <span className="text-[8px] text-success/50 whitespace-nowrap mt-0.5">
+                    <span className="text-[11px] text-success/50 whitespace-nowrap mt-0.5">
                       {dataLabel}
                     </span>
                   )}
@@ -162,7 +162,7 @@ export function WorkflowPipeline() {
                 <div className="absolute top-full mt-1.5 left-1/2 -translate-x-1/2 hidden group-hover:block z-50 whitespace-nowrap pointer-events-none tooltip-anim">
                   <div className="bg-bg-primary/95 backdrop-blur border border-border rounded-md px-2.5 py-1.5 shadow-xl">
                     <div className="text-[11px] font-medium text-text-primary">{meta.label}</div>
-                    <div className="text-[10px] text-text-muted">{meta.desc}</div>
+                    <div className="text-[12px] text-text-muted">{meta.desc}</div>
                   </div>
                 </div>
               </motion.button>
@@ -186,7 +186,7 @@ export function WorkflowPipeline() {
             completedCount === STEP_ORDER.length ? "text-success" : "text-text-muted/60")}>
             {completedCount}/{STEP_ORDER.length}
           </span>
-          <span className="text-[10px] text-text-muted/30">完成</span>
+          <span className="text-[12px] text-text-muted/30">完成</span>
         </div>
       </div>
     </div>

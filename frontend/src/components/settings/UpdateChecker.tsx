@@ -156,13 +156,13 @@ export function UpdateChecker() {
                 发现新版本: v{updateInfo.version}
               </span>
               {updateInfo.date && (
-                <span className="text-[10px] text-text-muted">
+                <span className="text-[12px] text-text-muted">
                   {new Date(updateInfo.date).toLocaleDateString("zh-CN")}
                 </span>
               )}
             </div>
             {updateInfo.body && (
-              <p className="text-[10px] text-text-secondary leading-relaxed max-h-20 overflow-y-auto">
+              <p className="text-[12px] text-text-secondary leading-relaxed max-h-20 overflow-y-auto">
                 {updateInfo.body}
               </p>
             )}
@@ -197,7 +197,7 @@ export function UpdateChecker() {
               />
             </div>
             {progress.total > 0 && (
-              <span className="text-[10px] text-text-muted">
+              <span className="text-[12px] text-text-muted">
                 {(progress.downloaded / 1024 / 1024).toFixed(1)} / {(progress.total / 1024 / 1024).toFixed(1)} MB
               </span>
             )}
@@ -228,7 +228,7 @@ export function UpdateChecker() {
             <AlertCircle size={14} className="mt-0.5 shrink-0" />
             <div className="flex-1">
               <span className="text-[11px]">更新检查失败</span>
-              <p className="text-[10px] opacity-75 mt-0.5">{error.slice(0, 150)}</p>
+              <p className="text-[12px] opacity-75 mt-0.5">{error.slice(0, 150)}</p>
             </div>
             <button onClick={() => setStatus("idle")} className="shrink-0">
               <X size={12} />
@@ -274,7 +274,7 @@ export function UpdateNotification() {
           <ArrowUpCircle size={16} className="text-accent mt-0.5 shrink-0" />
           <div className="flex-1">
             <p className="text-[11px] font-semibold text-text-primary">发现新版本 v{version}</p>
-            <p className="text-[10px] text-text-muted mt-0.5">请前往 设置 → 关于 查看更新</p>
+            <p className="text-[12px] text-text-muted mt-0.5">请前往 设置 → 关于 查看更新</p>
           </div>
           <button
             onClick={() => setShow(false)}

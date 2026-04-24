@@ -193,7 +193,7 @@ export function ChatBubble() {
                       {filename ?? modelId}
                     </div>
                     {meshInfo && (
-                      <div className="text-[10px] text-text-muted mt-0.5">
+                      <div className="text-[12px] text-text-muted mt-0.5">
                         {meshInfo.face_count.toLocaleString()} 面 ·{" "}
                         {meshInfo.vertex_count.toLocaleString()} 顶点
                         {meshInfo.unit ? ` · ${meshInfo.unit}` : ""}
@@ -219,7 +219,7 @@ export function ChatBubble() {
                   </div>
 
                   <div className="rounded-lg border border-border/80 bg-bg-secondary/30 p-3">
-                    <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-2">
+                    <div className="flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wider text-text-muted mb-2">
                       <Sparkles size={12} className="text-accent" />
                       快速操作
                     </div>
@@ -249,7 +249,7 @@ export function ChatBubble() {
                         const cat = SUGGESTIONS[key];
                         return (
                           <div key={key}>
-                            <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">
+                            <div className="text-[12px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">
                               {cat.label}
                             </div>
                             <div className="flex flex-wrap gap-1">
@@ -288,7 +288,7 @@ export function ChatBubble() {
                   >
                     {msg.content}
                   </div>
-                  <span className="text-[9px] text-text-muted/90 px-1 tabular-nums">
+                  <span className="text-[11px] text-text-muted/90 px-1 tabular-nums">
                     {formatMessageTime(msg.timestamp)}
                   </span>
                 </motion.div>
@@ -350,7 +350,7 @@ function SuggestionChip({
     <button
       type="button"
       onClick={() => onClick(text)}
-      className="inline-block px-2.5 py-1 rounded-full text-[10px] leading-snug bg-bg-secondary text-text-secondary hover:bg-accent/20 hover:text-accent transition-colors text-left max-w-full"
+      className="inline-block px-2.5 py-1 rounded-full text-[12px] leading-snug bg-bg-secondary text-text-secondary hover:bg-accent/20 hover:text-accent transition-colors text-left max-w-full"
     >
       {text}
     </button>

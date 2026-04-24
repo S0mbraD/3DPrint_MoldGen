@@ -402,38 +402,66 @@ moldgen/
 └── utils/
 ```
 
-## 7. 前端架构（更新）
+## 7. 前端架构（v2 UI 重构）
+
+参考 Blender Outliner / Unity Inspector / 专业模具 CAD 软件面板设计重构。
 
 ```
 frontend/src/
 ├── components/
-│   ├── ai/                     # AI 组件 [新增]
-│   │   ├── ChatBubble.tsx      # AI 悬浮球
-│   │   ├── ChatPanel.tsx       # 对话面板
-│   │   ├── AgentWorkstation.tsx # Agent 工作站
-│   │   ├── AgentStepCard.tsx   # Agent 步骤卡片
-│   │   ├── AgentStatusBar.tsx  # Agent状态指示条 [新增]
-│   │   ├── ExecutionLog.tsx    # 执行日志面板 [新增]
-│   │   ├── ConfirmationCard.tsx # 确认决策卡片 [新增]
-│   │   ├── ModeSelector.tsx    # 执行模式选择器(Auto/Semi/Step) [新增]
-│   │   ├── ImagePreview.tsx    # AI 图像预览
-│   │   └── ModelPreview.tsx    # AI 模型预览
-│   ├── viewer/                 # 3D 查看器
-│   ├── editor/                 # 模型编辑器
-│   ├── panels/                 # 参数面板
-│   ├── animation/              # 动画组件
-│   ├── common/
-│   └── layout/
-├── hooks/
-│   ├── useAIChat.ts            # AI 对话 Hook [新增]
-│   ├── useAIAgent.ts           # Agent 任务 Hook [新增]
-│   ├── useStreamResponse.ts    # 流式响应 Hook [新增]
+│   ├── layout/                  # UI 布局 [v2 重构]
+│   │   ├── LeftPanel.tsx        # 步骤驱动参数面板 (290px)
+│   │   ├── RightPanel.tsx       # 标签式面板 (大纲/属性/统计)
+│   │   ├── SceneManager.tsx     # 场景管理器 (Blender Outliner 风格) [新增]
+│   │   ├── WorkflowPipeline.tsx # 工作流导航条 (8 步)
+│   │   ├── StepToolbar.tsx      # 视口上方快捷工具条
+│   │   └── StatusBar.tsx        # 底部状态栏
+│   ├── ai/                      # AI 组件
+│   │   ├── ChatBubble.tsx       # AI 悬浮球
+│   │   └── AgentWorkstation.tsx # Agent 工作站
+│   ├── viewer/                  # 3D 查看器
+│   │   ├── Viewport.tsx         # R3F Canvas 主视口
+│   │   ├── ModelViewer.tsx      # 源模型渲染
+│   │   ├── MoldShellViewer.tsx  # 模具壳体渲染
+│   │   ├── InsertPlateViewer.tsx # 支撑板渲染
+│   │   ├── GatingViewer.tsx     # 浇注系统渲染
+│   │   └── SimulationViewer.tsx # 仿真热力图/流线/缺陷
+│   ├── settings/                # 设置对话框
+│   └── ui/                      # 通用 UI (Toast/Console/History)
+├── hooks/                       # TanStack Query API hooks
+│   ├── useModelApi.ts           # 模型上传/修复/简化
+│   ├── useMoldApi.ts            # 方向/分型/模具
+│   ├── useSimApi.ts             # 浇注/仿真/FEA
+│   ├── useInsertApi.ts          # 支撑板
+│   ├── useExportApi.ts          # 导出
+│   ├── useAgentApi.ts           # Agent 执行
 │   └── ...
-├── stores/
-│   ├── aiStore.ts              # AI 状态管理 [新增]
+├── stores/                      # Zustand 扁平存储
+│   ├── appStore.ts              # 步骤 FSM / 面板 / 后端状态
+│   ├── modelStore.ts            # 模型数据
+│   ├── moldStore.ts             # 模具数据
+│   ├── viewportStore.ts         # 视口图层可见性/显示模式
+│   ├── simStore.ts              # 仿真数据
+│   ├── aiStore.ts               # AI/Agent 状态
 │   └── ...
-└── ...
+├── index.css                    # Tailwind v4 + 主题变量 + 对象类型色彩
+└── App.tsx                      # 根布局组件
 ```
+
+### 7.1 场景管理器 (SceneManager) — Blender Outliner 风格
+
+- **树形层级**: 模型 → 模具壳体 → 单壳; 支撑板; 浇注系统; 仿真热力图
+- **交互功能**: 选中高亮 / 可见性开关 / 不透明度滑块 / 属性检查
+- **搜索过滤**: 顶部搜索栏快速定位
+- **类型色彩**: model=蓝 / mold=青 / insert=绿 / sim=粉 / gating=橙
+
+### 7.2 右面板标签系统
+
+| 标签 | 功能 |
+|------|------|
+| **大纲** | SceneManager 场景树 + 可见性 + 属性检查器 |
+| **属性** | 模型/网格/尺寸/方向/模具/浇注/仿真属性, 可折叠分段 |
+| **统计** | 工作流进度 + 几何统计条形图 + 仿真摘要 |
 
 ## 8. 通信架构（更新）
 

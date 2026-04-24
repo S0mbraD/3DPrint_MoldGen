@@ -110,8 +110,8 @@ export function StepToolbar() {
           >
             {tool.icon}
             <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded-md bg-bg-primary/95 backdrop-blur border border-border text-text-secondary whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-10 tooltip-anim">
-              <div className="text-[10px] font-medium">{tool.label}</div>
-              {tool.shortcut && <div className="text-[9px] text-text-muted mt-0.5">{tool.shortcut}</div>}
+              <div className="text-[12px] font-medium">{tool.label}</div>
+              {tool.shortcut && <div className="text-[11px] text-text-muted mt-0.5">{tool.shortcut}</div>}
             </div>
           </motion.button>
         </div>

@@ -83,7 +83,7 @@ export function SimFloatingBar() {
                 onClick={() => setHeatmapField(opt.value)}
                 tip={opt.label}>
                 {opt.icon}
-                <span className="text-[8px]">{opt.label}</span>
+                <span className="text-[11px]">{opt.label}</span>
               </BarBtn>
             ))}
 
@@ -93,7 +93,7 @@ export function SimFloatingBar() {
             <BarBtn active={streamlinesVisible} onClick={() => setStreamlinesVisible(!streamlinesVisible)}
               tip="流线">
               <Activity size={11} />
-              <span className="text-[8px]">流线</span>
+              <span className="text-[11px]">流线</span>
             </BarBtn>
 
             {/* Surface overlay */}
@@ -101,7 +101,7 @@ export function SimFloatingBar() {
               <BarBtn active={surfaceMapVisible} onClick={() => setSurfaceMapVisible(!surfaceMapVisible)}
                 tip="表面叠加">
                 <Layers size={11} />
-                <span className="text-[8px]">表面</span>
+                <span className="text-[11px]">表面</span>
               </BarBtn>
             )}
 
@@ -111,7 +111,7 @@ export function SimFloatingBar() {
             {[1, 2, 3].map((d) => (
               <BarBtn key={d} active={particleDensity === d} onClick={() => setParticleDensity(d)}
                 tip={`${d}x 密度`}>
-                <span className="text-[9px] font-bold">{d}×</span>
+                <span className="text-[11px] font-bold">{d}×</span>
               </BarBtn>
             ))}
 
@@ -132,13 +132,13 @@ export function SimFloatingBar() {
             <input type="range" min={0} max={1} step={0.01} value={animProgress}
               onChange={(e) => { setAnimProgress(parseFloat(e.target.value)); setAnimPlaying(false); }}
               className="w-16 h-3 accent-accent" />
-            <span className="text-[9px] text-text-muted w-8 tabular-nums">
+            <span className="text-[11px] text-text-muted w-8 tabular-nums">
               {(animProgress * 100).toFixed(0)}%
             </span>
             {[0.5, 1, 2].map((s) => (
               <BarBtn key={s} active={animSpeed === s} onClick={() => setAnimSpeed(s)}
                 tip={`${s}x 速度`}>
-                <span className="text-[8px]">{s}×</span>
+                <span className="text-[11px]">{s}×</span>
               </BarBtn>
             ))}
           </div>
@@ -153,7 +153,7 @@ export function SimFloatingBar() {
             <div className="w-px h-5 bg-border/50 mx-0.5" />
             {FEA_FIELDS.map((opt) => (
               <BarBtn key={opt.v} active={feaField === opt.v} onClick={() => setFEAField(opt.v)} tip={opt.label}>
-                <span className="text-[9px]">{opt.label}</span>
+                <span className="text-[11px]">{opt.label}</span>
               </BarBtn>
             ))}
             <div className="w-px h-5 bg-border/50 mx-0.5" />
@@ -161,7 +161,7 @@ export function SimFloatingBar() {
               <div className="w-16 h-2 rounded-full" style={{
                 background: "linear-gradient(to right, #0066ff, #00ccaa, #00ff33, #ffcc00, #ff4400)",
               }} />
-              <span className="text-[8px] text-text-muted">低→高</span>
+              <span className="text-[11px] text-text-muted">低→高</span>
             </div>
           </div>
         )}
@@ -176,7 +176,7 @@ function BarBtn({ active, onClick, tip, children }: {
   return (
     <button onClick={onClick} title={tip}
       className={cn(
-        "flex items-center gap-0.5 px-1.5 py-1 rounded-lg text-[10px] transition-all",
+        "flex items-center gap-0.5 px-1.5 py-1 rounded-lg text-[12px] transition-all",
         active
           ? "bg-accent/25 text-accent ring-1 ring-accent/30"
           : "text-text-muted hover:bg-bg-hover hover:text-text-primary",

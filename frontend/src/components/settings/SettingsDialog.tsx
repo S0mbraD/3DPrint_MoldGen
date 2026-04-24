@@ -279,7 +279,7 @@ function ApiSettings() {
         <span className="text-[11px] text-text-secondary">
           后端服务: {backendOnline === true ? "在线" : backendOnline === false ? "离线" : "检测中..."}
         </span>
-        <button onClick={checkBackend} className="ml-auto text-[10px] text-accent hover:underline">刷新</button>
+        <button onClick={checkBackend} className="ml-auto text-[12px] text-accent hover:underline">刷新</button>
       </div>
 
       <p className="text-[11px] text-text-muted">
@@ -300,7 +300,7 @@ function ApiSettings() {
                 onClick={() => testSingle(svc.key)}
                 disabled={isTesting}
                 className={cn(
-                  "text-[10px] px-2 py-0.5 rounded border transition-colors",
+                  "text-[12px] px-2 py-0.5 rounded border transition-colors",
                   isTesting
                     ? "border-border text-text-muted cursor-wait"
                     : "border-accent/30 text-accent hover:bg-accent/10",
@@ -354,7 +354,7 @@ function ApiSettings() {
           保存
         </button>
         {saveStatus && (
-          <span className="text-[10px] text-green-400 self-center ml-1">{saveStatus}</span>
+          <span className="text-[12px] text-green-400 self-center ml-1">{saveStatus}</span>
         )}
       </div>
 
@@ -363,7 +363,7 @@ function ApiSettings() {
         <div className="flex items-center gap-1.5 mb-3">
           <Network size={13} className="text-text-muted" />
           <span className="text-[11px] font-semibold text-text-secondary">后端链路拓扑</span>
-          <button onClick={fetchTopology} className="ml-auto text-[10px] text-accent hover:underline">刷新</button>
+          <button onClick={fetchTopology} className="ml-auto text-[12px] text-accent hover:underline">刷新</button>
         </div>
         {topology ? (
           <TopologyDiagram nodes={topology.nodes} edges={topology.edges} statuses={statuses} backendOnline={backendOnline} />
@@ -378,20 +378,20 @@ function ApiSettings() {
 function StatusBadge({ status }: { status: ServiceStatus }) {
   if (status.authenticated) {
     return (
-      <span className="flex items-center gap-1 text-[10px] text-green-400">
+      <span className="flex items-center gap-1 text-[12px] text-green-400">
         <CheckCircle size={10} /> {status.latency_ms}ms
       </span>
     );
   }
   if (status.reachable) {
     return (
-      <span className="flex items-center gap-1 text-[10px] text-yellow-400">
+      <span className="flex items-center gap-1 text-[12px] text-yellow-400">
         <Wifi size={10} /> 可达({status.status_code}) {status.latency_ms}ms
       </span>
     );
   }
   return (
-    <span className="flex items-center gap-1 text-[10px] text-red-400">
+    <span className="flex items-center gap-1 text-[12px] text-red-400">
       <WifiOff size={10} /> 不可达
     </span>
   );
@@ -650,8 +650,8 @@ function AgentSettings() {
                 >
                   <div className={cn("w-2 h-2 rounded-full", cfg?.enabled ? "bg-green-400" : "bg-red-400")} />
                   <span className="text-[11px] font-semibold text-text-primary flex-1">{agent.name}</span>
-                  <span className="text-[10px] text-text-muted">{agent.tools.length} 工具</span>
-                  <span className={cn("text-[10px] transition-transform", isExpanded && "rotate-90")}>▶</span>
+                  <span className="text-[12px] text-text-muted">{agent.tools.length} 工具</span>
+                  <span className={cn("text-[12px] transition-transform", isExpanded && "rotate-90")}>▶</span>
                 </button>
 
                 {isExpanded && cfg && (
@@ -695,7 +695,7 @@ function AgentSettings() {
                       onChange={(v) => updateAgent.mutate({ role: agent.role, updates: { verbose_logging: v } })}
                     />
                     <div className="pt-1">
-                      <p className="text-[10px] text-text-muted">
+                      <p className="text-[12px] text-text-muted">
                         可用工具: {agent.tools.join(", ") || "无"}
                       </p>
                     </div>
@@ -728,7 +728,7 @@ function AgentSettings() {
               <button
                 onClick={() => clearMemory.mutate()}
                 disabled={clearMemory.isPending}
-                className="flex items-center gap-1 text-[10px] text-red-400 hover:text-red-300 transition-colors"
+                className="flex items-center gap-1 text-[12px] text-red-400 hover:text-red-300 transition-colors"
               >
                 <Trash2 size={10} />
                 {clearMemory.isPending ? "清除中..." : "清空短期记忆"}
@@ -774,7 +774,7 @@ function AgentSettings() {
                     <span className="text-[11px] font-semibold text-text-primary">{agentRole}</span>
                   </div>
                   {Object.entries(tools).map(([toolName, stats]) => (
-                    <div key={toolName} className="flex items-center justify-between text-[10px]">
+                    <div key={toolName} className="flex items-center justify-between text-[12px]">
                       <span className="text-text-secondary font-mono">{toolName}</span>
                       <span className="text-text-muted">
                         {stats.total}次 ({stats.success}成功 / {stats.fail}失败)
@@ -1067,12 +1067,12 @@ function LocalModelSettings() {
                 style={{ width: `${vram.gpu_vram_total_mb > 0 ? Math.round((vram.gpu_vram_total_mb - vram.gpu_vram_free_mb) / vram.gpu_vram_total_mb * 100) : 0}%` }}
               />
             </div>
-            <span className="text-[10px] text-text-muted shrink-0">
+            <span className="text-[12px] text-text-muted shrink-0">
               {vram.gpu_vram_free_mb}MB 可用 / {vram.gpu_vram_total_mb}MB 总计
             </span>
           </div>
           {vram.loaded_models?.length > 0 && (
-            <div className="text-[10px] text-text-muted">
+            <div className="text-[12px] text-text-muted">
               已加载模型占用: {vram.total_loaded_vram_mb}MB
             </div>
           )}
@@ -1081,7 +1081,7 @@ function LocalModelSettings() {
 
       {/* Recommendation */}
       {recommendation && (
-        <div className="p-2.5 rounded-lg bg-accent/5 border border-accent/20 text-[10px]">
+        <div className="p-2.5 rounded-lg bg-accent/5 border border-accent/20 text-[12px]">
           <div className="font-semibold text-accent mb-1">推荐配置: {recommendation.tier}</div>
           <p className="text-text-muted leading-relaxed">{recommendation.note}</p>
         </div>
@@ -1095,7 +1095,7 @@ function LocalModelSettings() {
           if (!catModels.length) return null;
           return (
             <div key={cat} className="space-y-1.5">
-              <span className="text-[10px] font-semibold text-text-secondary">
+              <span className="text-[12px] font-semibold text-text-secondary">
                 {cat === "image_gen" ? "图像生成" : "三维重建"}
               </span>
               {catModels.map(m => {
@@ -1106,11 +1106,11 @@ function LocalModelSettings() {
                       <div className="flex items-center gap-1.5">
                         <span className="text-[11px] font-semibold text-text-primary">{m.name}</span>
                         {m.tags.map(t => (
-                          <span key={t} className="text-[8px] px-1 rounded bg-accent/10 text-accent">{t}</span>
+                          <span key={t} className="text-[11px] px-1 rounded bg-accent/10 text-accent">{t}</span>
                         ))}
                       </div>
-                      <p className="text-[9px] text-text-muted truncate">{m.description}</p>
-                      <div className="flex items-center gap-2 mt-0.5 text-[9px] text-text-muted">
+                      <p className="text-[11px] text-text-muted truncate">{m.description}</p>
+                      <div className="flex items-center gap-2 mt-0.5 text-[11px] text-text-muted">
                         <span>{m.vram_required_mb}MB VRAM</span>
                         <span>{m.disk_size_gb}GB 磁盘</span>
                         <span className={st.color}>{st.text}</span>
@@ -1121,7 +1121,7 @@ function LocalModelSettings() {
                         <button
                           onClick={() => downloadModel.mutate(m.model_id)}
                           disabled={downloadModel.isPending}
-                          className="px-2 py-0.5 text-[10px] rounded bg-accent/20 text-accent hover:bg-accent/30"
+                          className="px-2 py-0.5 text-[12px] rounded bg-accent/20 text-accent hover:bg-accent/30"
                         >
                           下载
                         </button>
@@ -1131,13 +1131,13 @@ function LocalModelSettings() {
                           <button
                             onClick={() => loadModel.mutate(m.model_id)}
                             disabled={loadModel.isPending}
-                            className="px-2 py-0.5 text-[10px] rounded bg-green-500/20 text-green-400 hover:bg-green-500/30"
+                            className="px-2 py-0.5 text-[12px] rounded bg-green-500/20 text-green-400 hover:bg-green-500/30"
                           >
                             加载
                           </button>
                           <button
                             onClick={() => deleteModel.mutate(m.model_id)}
-                            className="px-2 py-0.5 text-[10px] rounded bg-red-500/10 text-red-400 hover:bg-red-500/20"
+                            className="px-2 py-0.5 text-[12px] rounded bg-red-500/10 text-red-400 hover:bg-red-500/20"
                           >
                             删除
                           </button>
@@ -1146,7 +1146,7 @@ function LocalModelSettings() {
                       {m.is_loaded && (
                         <button
                           onClick={() => unloadModel.mutate(m.model_id)}
-                          className="px-2 py-0.5 text-[10px] rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30"
+                          className="px-2 py-0.5 text-[12px] rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30"
                         >
                           卸载
                         </button>
@@ -1169,7 +1169,7 @@ function AboutSection() {
       <div className="text-center py-4">
         <h3 className="text-lg font-bold text-accent mb-1">MoldGen</h3>
         <p className="text-xs text-text-muted">AI 驱动的医学教具智能模具生成工作站</p>
-        <p className="text-[10px] text-text-muted mt-2">v0.1.0-dev</p>
+        <p className="text-[12px] text-text-muted mt-2">v0.1.0-dev</p>
       </div>
       <div className="p-3 rounded-lg bg-bg-secondary space-y-1 text-[11px]">
         <InfoRow label="框架" value="Tauri 2.0 + React + Three.js" />
@@ -1179,7 +1179,7 @@ function AboutSection() {
       </div>
       <UpdateCheckerSection />
       <div className="text-center">
-        <p className="text-[10px] text-text-muted">面向临床教学与手术教具开发</p>
+        <p className="text-[12px] text-text-muted">面向临床教学与手术教具开发</p>
       </div>
     </div>
   );
@@ -1202,7 +1202,7 @@ function SettingSlider({
       <div className="flex items-center gap-2">
         <input type="range" min={min} max={max} step={step} value={value}
           onChange={(e) => onChange(parseFloat(e.target.value))} className="w-24 accent-accent" />
-        <span className="text-[10px] text-text-muted w-12 text-right font-mono">
+        <span className="text-[12px] text-text-muted w-12 text-right font-mono">
           {value % 1 === 0 ? value : value.toFixed(2)}
         </span>
       </div>

@@ -58,12 +58,12 @@ function RecordItem({ rec }: { rec: HistoryRecord }) {
         {TYPE_ICON[rec.type] ?? <History size={11} />}
       </span>
       <div className="flex-1 min-w-0">
-        <div className="text-[10px] text-text-primary truncate">{rec.label}</div>
+        <div className="text-[12px] text-text-primary truncate">{rec.label}</div>
         {rec.detail && (
-          <div className="text-[9px] text-text-muted/60 truncate">{rec.detail}</div>
+          <div className="text-[11px] text-text-muted/60 truncate">{rec.detail}</div>
         )}
       </div>
-      <span className="text-[9px] text-text-muted/40 shrink-0">{formatTime(rec.timestamp)}</span>
+      <span className="text-[11px] text-text-muted/40 shrink-0">{formatTime(rec.timestamp)}</span>
       <button
         onClick={() => remove(rec.id)}
         className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-bg-secondary text-text-muted/40 hover:text-danger transition-all"
@@ -96,7 +96,7 @@ export function HistoryPanel({ open, onClose }: { open: boolean; onClose: () => 
             <div className="flex items-center gap-1.5">
               <History size={13} className="text-accent" />
               <span className="text-xs font-semibold text-text-primary">操作历史</span>
-              <span className="text-[9px] text-text-muted/50 ml-1">{records.length} 条</span>
+              <span className="text-[11px] text-text-muted/50 ml-1">{records.length} 条</span>
             </div>
             <div className="flex items-center gap-1">
               {records.length > 0 && (
@@ -116,7 +116,7 @@ export function HistoryPanel({ open, onClose }: { open: boolean; onClose: () => 
               <button
                 onClick={() => setFilterType(null)}
                 className={cn(
-                  "px-1.5 py-0.5 rounded text-[9px] shrink-0 transition-colors",
+                  "px-1.5 py-0.5 rounded text-[11px] shrink-0 transition-colors",
                   !filterType ? "bg-accent/20 text-accent" : "text-text-muted hover:bg-bg-hover",
                 )}
               >
@@ -127,7 +127,7 @@ export function HistoryPanel({ open, onClose }: { open: boolean; onClose: () => 
                   key={t}
                   onClick={() => setFilterType(filterType === t ? null : t)}
                   className={cn(
-                    "px-1.5 py-0.5 rounded text-[9px] shrink-0 transition-colors flex items-center gap-0.5",
+                    "px-1.5 py-0.5 rounded text-[11px] shrink-0 transition-colors flex items-center gap-0.5",
                     filterType === t ? "bg-accent/20 text-accent" : "text-text-muted hover:bg-bg-hover",
                   )}
                 >
@@ -156,7 +156,7 @@ export function HistoryPanel({ open, onClose }: { open: boolean; onClose: () => 
 
           {/* Footer with summary */}
           {records.length > 0 && (
-            <div className="flex items-center justify-between px-3 py-1.5 border-t border-border/30 text-[9px] text-text-muted/40 shrink-0">
+            <div className="flex items-center justify-between px-3 py-1.5 border-t border-border/30 text-[11px] text-text-muted/40 shrink-0">
               <span>最早: {formatTime(records[records.length - 1].timestamp)}</span>
               <span>
                 <ChevronDown size={9} className="inline" /> 持久化存储

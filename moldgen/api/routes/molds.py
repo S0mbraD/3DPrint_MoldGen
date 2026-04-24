@@ -18,7 +18,13 @@ from moldgen.core.orientation import (
     OrientationConfig,
     OrientationResult,
 )
-from moldgen.core.parting import PartingConfig, PartingGenerator, PartingResult
+from moldgen.core.parting import (
+    PartingConfig,
+    PartingGenerator,
+    PartingResult,
+    UndercutAnalyzer,
+    UndercutInfo,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -95,11 +101,14 @@ async def evaluate_direction(model_id: str, req: EvalDirectionRequest):
 class PartingRequest(BaseModel):
     direction: list[float] | None = None
     smooth_iterations: int = 5
+    surface_type: str = "auto"           # "flat" | "heightfield" | "projected" | "auto"
+    heightfield_resolution: int = 40
+    undercut_threshold: float = 1.0
 
 
 @router.post("/{model_id}/parting")
 async def generate_parting(model_id: str, req: PartingRequest | None = None):
-    """生成分型线和分型面"""
+    """生成分型线、分型面并进行 undercut 分析"""
     mesh = _get_mesh(model_id)
     req = req or PartingRequest()
 
@@ -117,7 +126,12 @@ async def generate_parting(model_id: str, req: PartingRequest | None = None):
             )
         direction = ori.best_direction
 
-    config = PartingConfig(smooth_iterations=req.smooth_iterations)
+    config = PartingConfig(
+        smooth_iterations=req.smooth_iterations,
+        surface_type=req.surface_type,
+        heightfield_resolution=req.heightfield_resolution,
+        undercut_threshold=req.undercut_threshold,
+    )
     generator = PartingGenerator(config)
 
     try:
@@ -131,6 +145,61 @@ async def generate_parting(model_id: str, req: PartingRequest | None = None):
     return {
         "model_id": model_id,
         "result": result.to_dict(),
+    }
+
+
+@router.post("/{model_id}/undercut")
+async def analyze_undercut(model_id: str, req: PartingRequest | None = None):
+    """独立 undercut 分析端点（不重新生成分型面）"""
+    mesh = _get_mesh(model_id)
+    req = req or PartingRequest()
+
+    import numpy as np
+
+    if req.direction:
+        direction = np.array(req.direction, dtype=np.float64)
+    else:
+        ori = _orientation_results.get(model_id)
+        if ori is None:
+            raise HTTPException(
+                400,
+                "No direction and no orientation result. "
+                "Run orientation analysis first.",
+            )
+        direction = ori.best_direction
+
+    direction = direction / (np.linalg.norm(direction) + 1e-12)
+    tm = mesh.to_trimesh()
+
+    try:
+        uc = await asyncio.to_thread(
+            UndercutAnalyzer().analyze, tm, direction,
+            req.undercut_threshold,
+        )
+    except Exception as e:
+        logger.exception("Undercut analysis failed")
+        raise HTTPException(500, f"Undercut analysis error: {e}") from e
+
+    return {
+        "model_id": model_id,
+        "undercut": uc.to_dict(),
+    }
+
+
+@router.get("/{model_id}/undercut/heatmap")
+async def get_undercut_heatmap(model_id: str):
+    """导出 undercut 深度热力图数据（per-face depth 用于 3D 着色）"""
+    pr = _parting_results.get(model_id)
+    if pr is None:
+        raise HTTPException(404, "Run parting generation first.")
+
+    mesh = _get_mesh(model_id)
+    tm = mesh.to_trimesh()
+
+    heatmap = PartingGenerator.export_undercut_heatmap(tm, pr.undercut)
+    return {
+        "model_id": model_id,
+        "heatmap": heatmap,
     }
 
 
@@ -154,19 +223,30 @@ class MoldRequest(BaseModel):
     shell_type: str = "box"
     margin: float = 10.0
     parting_style: str = "flat"
+    parting_surface_type: str = "flat"  # "flat" | "heightfield" | "projected" | "auto"
     parting_depth: float = 3.0
     parting_pitch: float = 10.0
     add_alignment_pins: bool = True
     add_pour_hole: bool = True
     add_vent_holes: bool = True
-    add_flanges: bool = False
-    flange_width: float = 12.0
-    flange_thickness: float = 4.0
-    screw_hole_diameter: float = 4.0
-    n_flanges: int = 4
+    # Screw fastening (pocket + tab)
+    add_screw_holes: bool = False
+    screw_size: str = "M4"
+    n_screws: int = 4
+    screw_counterbore: bool = True
+    screw_tab_thickness: float = 5.0
+    # Clamp bracket
+    add_clamp_bracket: bool = False
+    clamp_width: float = 15.0
+    clamp_thickness: float = 3.0
+    clamp_screw_size: str = "M3"
+    n_clamp_screws: int = 4
+    # Other
     shrinkage_compensation: float = 0.0
     add_ejectors: bool = False
     n_ejectors: int = 4
+    surface_texture: str = "none"
+    mold_material: str = "pla"
 
 
 @router.post("/{model_id}/mold/generate")
@@ -177,8 +257,8 @@ async def generate_mold(model_id: str, req: MoldRequest | None = None):
     mesh = _get_mesh(model_id)
     req = req or MoldRequest()
     logger.info(
-        "Mold gen: model=%s shell=%s parting=%s wall=%.1fmm flanges=%s",
-        model_id, req.shell_type, req.parting_style, req.wall_thickness, req.add_flanges,
+        "Mold gen: model=%s shell=%s parting=%s wall=%.1fmm screws=%s",
+        model_id, req.shell_type, req.parting_style, req.wall_thickness, req.add_screw_holes,
     )
 
     import numpy as np
@@ -211,16 +291,22 @@ async def generate_mold(model_id: str, req: MoldRequest | None = None):
         shell_type=req.shell_type,
         margin=req.margin,
         parting_style=req.parting_style,
+        parting_surface_type=req.parting_surface_type,
         parting_depth=req.parting_depth,
         parting_pitch=req.parting_pitch,
         add_alignment_pins=req.add_alignment_pins,
         add_pour_hole=req.add_pour_hole,
         add_vent_holes=req.add_vent_holes,
-        add_flanges=req.add_flanges,
-        flange_width=req.flange_width,
-        flange_thickness=req.flange_thickness,
-        screw_hole_diameter=req.screw_hole_diameter,
-        n_flanges=req.n_flanges,
+        add_screw_holes=req.add_screw_holes,
+        screw_size=req.screw_size,
+        n_screws=req.n_screws,
+        screw_counterbore=req.screw_counterbore,
+        screw_tab_thickness=req.screw_tab_thickness,
+        add_clamp_bracket=req.add_clamp_bracket,
+        clamp_width=req.clamp_width,
+        clamp_thickness=req.clamp_thickness,
+        clamp_screw_size=req.clamp_screw_size,
+        n_clamp_screws=req.n_clamp_screws,
     )
     builder = MoldBuilder(config)
 

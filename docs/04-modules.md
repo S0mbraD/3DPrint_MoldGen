@@ -1441,3 +1441,596 @@ npm run tauri:build
 | `bundle.windows.nsis.languages` | `["SimpChinese", "English"]` |
 | `bundle.windows.nsis.installMode` | `"both"` (per-user / all-users) |
 | `app.windows[0].title` | `"MoldGen — AI 医学教具模具工作站"` |
+
+---
+
+## 15. 前端 UI 架构 (v2 重构)
+
+### 15.1 整体布局
+
+参考 Blender / Unity / 专业模具 CAD 软件的面板布局：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ [M] MoldGen  |  AI 医学教具模具工作站  ●   [ ⌘ ] [ ⚙ ]    │  ← 标题栏
+├─────────────────────────────────────────────────────────────┤
+│ ① 导入 ─ ② 编辑 ─ ③ 方向 ─ ④ 模具 ─ ...  0/8 完成        │  ← 工作流导航
+├───────────┬──────────────────────────┬──────────────────────┤
+│           │  工具条 (步骤相关)        │  大纲 │ 属性 │ 统计  │  ← 标签式右面板
+│ 参数面板   │                          │                      │
+│ (步骤驱动) │       3D 视口            │  场景大纲 (树形)      │
+│           │   (R3F + Three.js)       │  ├ 源模型             │
+│           │                          │  ├ 模具壳体           │
+│           │                          │  │  ├ 壳体 #0         │
+│           │                          │  │  └ 壳体 #1         │
+│           │                          │  ├ 支撑板             │
+│           │                          │  └ 仿真热力图         │
+│           │                          │  ────────────────     │
+│           │                          │  属性检查器 (选中对象) │
+├───────────┴──────────────────────────┴──────────────────────┤
+│ ● 已连接 | ⚡ GPU 4060Ti | 💾 799/16380 MB  │ v0.1.0 Agent │  ← 状态栏
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 15.2 组件结构
+
+| 组件 | 文件 | 功能 |
+|------|------|------|
+| **App** | `App.tsx` | 根布局: 标题栏 + WorkflowPipeline + 三栏 + 浮动层 |
+| **LeftPanel** | `layout/LeftPanel.tsx` | 步骤驱动参数面板 (290px), 8 个子面板按 currentStep 切换 |
+| **RightPanel** | `layout/RightPanel.tsx` | 标签式面板 (280px): 大纲 / 属性 / 统计 三个标签页 |
+| **SceneManager** | `layout/SceneManager.tsx` | **Blender Outliner 风格**场景树, 树形层级 + 选中高亮 + 属性检查 |
+| **WorkflowPipeline** | `layout/WorkflowPipeline.tsx` | 8 步工作流导航条, 进度指示 + 状态标记 |
+| **StepToolbar** | `layout/StepToolbar.tsx` | 视口上方步骤相关快捷操作条, 分组 + 分隔符 |
+| **StatusBar** | `layout/StatusBar.tsx` | 底部状态栏: 连接 / GPU / VRAM / 步骤点 / Agent |
+| **Viewport** | `viewer/Viewport.tsx` | R3F Canvas, 灯光/HDRI/Grid/Gizmo, 所有 3D 图层 |
+
+### 15.3 场景管理器 (SceneManager)
+
+借鉴 Blender Outliner + Unity Hierarchy:
+
+- **树形层级**: 模型 → 模具壳体 → 单个壳体; 支撑板; 浇注系统; 仿真热力图
+- **可见性开关**: 每个节点独立 Eye/EyeOff 切换
+- **不透明度滑块**: 展开后可调 (SlidersHorizontal 图标)
+- **选中高亮**: 点击选中节点, 底部显示属性检查器 (面数/水密性/尺寸等)
+- **搜索过滤**: 顶部搜索栏快速定位对象
+- **类型图标 + 色彩编码**: 每种对象类型有独立颜色 (model=蓝, mold=青, insert=绿, sim=粉)
+
+### 15.4 主题设计
+
+深色主题, CSS 变量体系:
+
+| Token | 色值 | 用途 |
+|-------|------|------|
+| `bg-primary` | `#0d0d12` | 最深背景 (标题栏/主区域) |
+| `bg-secondary` | `#14141e` | 次级背景 (状态栏/工具条) |
+| `bg-panel` | `#191924` | 面板背景 |
+| `bg-inset` | `#111118` | 内嵌元素背景 (属性行) |
+| `accent` | `#6366f1` | 品牌主色 (Indigo) |
+| `success` | `#10b981` | 成功/完成 (Emerald) |
+| `obj-model` | `#60a5fa` | 模型对象 (蓝) |
+| `obj-mold` | `#22d3ee` | 模具对象 (青) |
+| `obj-insert` | `#4ade80` | 支撑对象 (绿) |
+| `obj-sim` | `#f472b6` | 仿真对象 (粉) |
+
+### 15.5 状态管理
+
+Zustand 扁平存储 + TanStack Query:
+
+| Store | 职责 |
+|-------|------|
+| `appStore` | 步骤FSM, 面板开关, 后端状态, GPU |
+| `modelStore` | 模型ID/文件名/网格信息/GLB URL |
+| `moldStore` | 方向/分型/模具结果, 壳体选择 |
+| `insertStore` | 支撑位置/板/画笔模式 |
+| `simStore` | 浇注/仿真/优化/可视化/FEA |
+| `viewportStore` | 图层可见性/不透明度/显示模式/网格单位 |
+| `aiStore` | 聊天/Agent 执行/WebSocket 事件 |
+
+---
+
+## 16. Phase 2 工具栏与交互系统 (v3)
+
+### 16.1 统一工具栏事件系统
+
+**问题**: Phase 1 中, `StepToolbar` 通过 `CustomEvent("moldgen:toolbar-action")` 分发工具按钮点击, 但只有 `EditPanel`（编辑修复步骤）监听了此事件, 导致其他 7 个步骤中的工具栏按钮完全无效。
+
+**解决方案**: 引入 `useToolbarHandler` hook (`frontend/src/hooks/useToolbarActions.ts`):
+
+```python
+# 架构设计
+useToolbarHandler(actions: Record<string, () => void>)
+  # 每个 panel 独立注册自己的 action 映射
+  # 通过 useRef 保持最新闭包, 避免 stale closure
+  # 当 panel unmount 时自动清理 listener
+```
+
+现在 **全部 8 个步骤面板** 都注册了工具栏动作:
+
+| Panel | 可用 toolbar actions |
+|-------|---------------------|
+| ImportPanel | `open`, `upload` |
+| EditPanel | `auto_repair`, `simplify`, `subdivide`, `center`, `rotate`, `scale_up`, `scale_down`, `flip`, `mirror`, `d_measure` |
+| OrientationPanel | `analyze`, `refresh`, `preview` |
+| MoldPanel | `parting`, `build_shell`, `d_preview` |
+| InsertPanel | `analyze_pos`, `gen_plate`, `validate` |
+| GatingPanel | `design`, `preview` |
+| SimPanel | `run_sim`, `optimize`, `heatmap`, `defects` |
+| ExportPanel | `export_model`, `export_mold`, `export_insert`, `export_all`, `d_all` |
+
+### 16.2 键盘快捷键系统
+
+`useToolbarShortcuts` hook 根据当前步骤动态映射无修饰符单键:
+
+| 步骤 | 快捷键 | 动作 |
+|------|--------|------|
+| import | O / U | 打开文件 / 上传 |
+| repair | R / S | 自动修复 / 简化 |
+| orientation | A | 分析方向 |
+| mold | P / G | 分型面 / 生成壳体 |
+| insert | A / G | 分析位置 / 生成支撑板 |
+| gating | D | 设计浇注系统 |
+| 全局 | F5 / F6 | 运行仿真 / 自动优化 |
+
+Ctrl+1~8 切换步骤, Ctrl+B/I 面板开关等保持不变。
+
+### 16.3 浇注系统参数扩展
+
+`GatingPanel` → `useGatingDesign` → 后端现在传递全部参数:
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `runner_type` | string | `"cold"` | 冷/热流道 |
+| `n_gates` | int | 1 | 浇口数量 (1-4) |
+| `runner_width` | float | 4.0mm | 流道宽度 |
+| `gate_diameter` | float | 6.0mm | 浇口直径 |
+| `n_vents` | int | 3 | 排气孔数 |
+
+`GatingConfig` 数据类新增 `n_gates`, `runner_type` 字段。
+
+### 16.4 模具设计参数扩展
+
+`MoldPanel` → `useMoldGeneration` → 后端新增:
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `surface_texture` | string | 模具表面纹理 (none/matte/fine_grain/medium_grain/coarse_grain/knurl) |
+| `mold_material` | string | 模具材料 (pla/abs/petg/resin/silicone_mold/aluminum/steel) |
+
+### 16.5 3D 视口增强
+
+新增 **视图预设系统** (类 Blender Numpad):
+
+| 视图 | 相机方向 | Blender 对应 |
+|------|---------|-------------|
+| 前 | [0,0,1] | Numpad 1 |
+| 后 | [0,0,-1] | Ctrl+Numpad 1 |
+| 右 | [1,0,0] | Numpad 3 |
+| 左 | [-1,0,0] | Ctrl+Numpad 3 |
+| 顶 | [0,1,0] | Numpad 7 |
+| 底 | [0,-1,0] | Ctrl+Numpad 7 |
+| 透视 | [0.7,0.5,0.7] | Numpad 5 |
+
+通过 `ViewPresetListener`（R3F 内部组件）监听 `moldgen:view-preset` 事件实现相机切换。
+
+---
+
+## 18. Phase 2.5 算法与交互优化 (v4/v5)
+
+### 18.1 模具壳体生成 — 根本性重构 (v5)
+
+#### 根因分析
+
+旧管线使用 **"先减后切"** 流程:
+
+```
+solid = outer_box - cavity      ← 布尔运算得到壁体
+upper = slice_plane(solid, cap=True)   ← 切分 + 封帽
+lower = slice_plane(solid, cap=True)
+seal_parting_plane_gaps(upper)  ← 二次封盖
+```
+
+**Bug 1 — 腔体被封闭**: `slice_plane(solid, cap=True)` 在分型面创建封帽。壁体横截面是环形
+(外方框 + 内腔轮廓), 但 trimesh 的 cap 做简单三角化, 把整个截面(含腔体开口)全部填满。
+`_seal_parting_plane_gaps` 又做了二次封盖, 彻底堵死腔体。
+
+**Bug 2 — 方形外壳不可见**: 布尔 `outer_box - cavity` 经常失败(manifold3d 未安装或输入非水密),
+回退到 `_build_direct_shells` 使用 `trimesh.concatenate` 拼合面片(非流形), 或 `_build_shells_voxel`
+通过 marching cubes 后再用同一个有缺陷的切分+封盖管线, 产生相同问题。
+
+#### 新管线: "先切后减" (Slice-Then-Subtract)
+
+```
+outer_upper = slice_plane(outer_box, parting_plane, cap=True)  ← 简单凸切割, cap 正确
+outer_lower = slice_plane(outer_box, parting_plane, cap=True)
+shell_upper = outer_upper - cavity   ← 布尔减去完整腔体
+shell_lower = outer_lower - cavity   ← 分型面处腔体自然敞开
+```
+
+**为什么这样修复**:
+1. 切分对象是 outer_box (简单凸体), `slice_plane(cap=True)` 生成的是简单矩形封帽, 无环形问题
+2. 布尔 `half_box - cavity` 的结果在分型面处自然留下腔体开口 (布尔移除了腔体内部)
+3. 不需要 `_seal_parting_plane_gaps` — 腔体印迹保持敞开
+
+#### 三级策略
+
+| 策略 | 方法 | 分型面处理 |
+|------|------|------------|
+| S1 主路径 | `_build_shells_slice_then_subtract`: 切分 outer → 布尔减 cavity | 布尔自然保留腔体开口 |
+| S2 体素回退 | `_build_shells_voxel`: 在分型面高度分割体素网格, 对每半独立 marching cubes | 每半自然有一面开口 |
+| S3 直接拼合 | `_build_direct_shells`: 半盒 + 反转腔体半面拼合 | 几何拼合 |
+
+#### `_safe_slice` 改进
+
+新增 `cap` 参数 (默认 True). 在切分壁体时用 `cap=False` 防止封闭腔体:
+
+```python
+def _safe_slice(mesh, origin, normal, *, cap=True):
+    cap_order = (True, False) if cap else (False, True)
+    ...
+```
+
+### 18.1.1 浇注口/排气口自适应深度修复 (v5.1)
+
+**问题**: `_cut_holes_in_shells` 中圆柱高度使用 `shell_extent_along_dir * 2.0` (整个模具沿方向的全长×2),
+导致浇注口和排气口穿透了模具另一侧。
+
+**根因**: 高度计算基于所有壳体的总范围而非单个壳体的壁厚。对于分型面两侧的两片壳体, 该值远超实际壁厚。
+
+**修复**:
+- 圆柱高度改为**按壳体自适应**: `min(shell_h_range + 2mm, (wall + margin) * 3)`
+- 下限保护: `max(cyl_height, wall_thickness * 2)` 确保至少穿透壁体
+- 增加壳体归属检查: 只在浇注口所在侧的壳体上切孔, 防止切到对侧壳体
+
+### 18.1.2 分型面样式修复 (v5.1)
+
+**问题**: 重构为 "先切后减" 管线后, `_split_solid_to_shells` 不再是主路径, 导致其中的
+`_apply_parting_interlock` 分型面样式逻辑(dovetail/zigzag/step/tongue_groove)被旁路。
+
+**根因**: 在重构 `build_two_part_mold` 时, 新的 `_build_shells_slice_then_subtract` 直接生成壳体,
+绕过了原来包含分型面逻辑的 `_split_solid_to_shells`. 重构只关注了壳体形状和腔体开口,
+遗漏了分型面互锁特征这个下游步骤。
+
+**修复**:
+- 新增 `_apply_parting_interlock_to_shells` 方法: 接受已生成的壳体列表, 提取上下壳体 trimesh,
+  调用 `_create_parting_interlock` 或 `_displace_parting_verts`, 返回更新后的壳体
+- 在 `build_two_part_mold` 的壳体修复后、拔模角检查前插入分型面样式应用步骤
+
+### 18.2 仿形支撑板改进
+
+**问题**: `_conformal_base_grid` 使用 `cKDTree` 查最近顶点, 而非最近表面点, 导致:
+- 粗糙网格上投影不精确
+- 板面跳变/不连续
+
+**修复**:
+- 改用 `trimesh.nearest.on_surface(grid_3d)` — 返回精确的面上最近点 + 面法线
+- 添加边界缝合 (boundary stitching): 遍历有效网格边界, 在 inner/outer 表之间插入三角面, 使板片趋近水密
+
+### 18.3 浇注系统算法增强
+
+新增功能:
+
+| 特性 | 实现 |
+|------|------|
+| **多浇口** | `_place_secondary_gates` — 最远点贪心布置, 与主浇口及已有浇口保持最大间距 |
+| **流道路径** | `_compute_runner_paths` — 单浇口: 直通 sprue→gate; 多浇口: 星形/H 型从中心 sprue 分配; 排气孔: 短通道连接最近浇口 |
+| **流道几何** | `_build_runner_meshes` — 长方体通道网格, 带正确的旋转/平移 |
+| **运行器类型** | `GatingConfig.runner_type` ("cold"/"hot") 和 `n_gates` 参数现在通过 API 传递到后端 |
+
+数据结构扩展:
+- `RunnerSegment` 数据类: `start`, `end`, `width`, `depth`
+- `GatingResult` 新增: `gates`, `runners`, `gate_meshes`, `runner_meshes` 字段
+
+### 18.4 视口交互系统
+
+**对象选择**: 点击 3D 视口中的模型/壳体 → `viewportStore.selectedObject` 更新 → 右侧面板自动切换到"属性"标签并显示选中对象的详细信息
+
+| 组件 | 功能 |
+|------|------|
+| `ModelViewer` | 点击 → 选中模型, 显示网格信息 |
+| `MoldShellViewer` | 点击 → 选中壳体, 显示面片/拔模角/可打印性 |
+| `SelectedObjectInspector` | 右侧面板顶部浮动卡片, 显示选中对象参数 |
+| `VisibilityToggles` | 视口右上角悬浮面板, 快速切换模型/模具/支撑可见性和透明度 |
+
+### 18.5 `viewportStore` 扩展
+
+新增字段:
+
+```typescript
+selectedObject: SelectedObject | null;
+selectObject: (obj: SelectedObject | null) => void;
+
+interface SelectedObject {
+  type: "model" | "mold_shell" | "insert" | "gating" | "simulation" | null;
+  id?: string | number;
+  label?: string;
+}
+```
+
+---
+
+## 19. Phase 3 — 螺栓固定系统 + UI 布局优化 (v6)
+
+### 19.1 螺栓固定系统 (M1-M8)
+
+为平面分型的两片壳模具提供可靠的机械固定方案，参考专业注塑/翻模模具的紧固设计。
+
+#### 19.1.1 M_SCREW_TABLE
+
+预置 ISO 标准螺丝参数表，覆盖 M1 ~ M8 规格：
+
+```python
+M_SCREW_TABLE: dict[str, dict[str, float]] = {
+    "M1":   {"through": 1.2, "tap": 0.85, "head": 2.0,  "nut": 2.5,  "nut_h": 0.8},
+    # ... M1.6 / M2 / M2.5 / M3 / M4 / M5 / M6 / M8
+}
+```
+
+| 参数 | 说明 |
+|------|------|
+| `through` | 通孔直径 (自由配合) |
+| `tap` | 攻丝孔直径 |
+| `head` | 螺栓头/沉头孔直径 |
+| `nut` | 螺母外径 |
+| `nut_h` | 螺母高度 |
+
+#### 19.1.2 MoldConfig 新增字段
+
+```python
+# 螺栓固定系统 (凹槽 + 螺丝台 设计)
+add_screw_holes: bool = False
+screw_size: str = "M4"           # M1 / M1.6 / M2 / M2.5 / M3 / M4 / M5 / M6 / M8
+n_screws: int = 4
+screw_counterbore: bool = True   # 沉头孔
+screw_tab_thickness: float = 5.0 # 分型面两侧保留的螺丝台厚度 (mm)
+
+# 箍套夹具
+add_clamp_bracket: bool = False
+clamp_width: float = 15.0
+clamp_thickness: float = 3.0
+clamp_screw_size: str = "M3"
+n_clamp_screws: int = 4
+```
+
+> **v6.2**: 移除了法兰 (flange) 功能，由凹槽+螺丝台方案完全替代。
+
+#### 19.1.3 `_generate_screw_holes` 方法 — 凹槽+螺丝台设计
+
+**核心设计**：参考专业模具软件，在四角（或边中点）从壳体外表面向下切除矩形凹槽
+(pocket)，仅在分型面两侧保留 `screw_tab_thickness` 厚度的螺丝台 (tab)，
+再在螺丝台上钻通孔。使用短螺栓（≈ 2 × tab_thickness）即可紧固。
+
+截面示意 (单角)：
+
+```
+    ┌────────────────┐  壳体外表面
+    │    pocket      │  ← 矩形凹槽 (布尔减法)
+    │                │
+    ├────┐      ┌────┤
+    │    │ tab  │    │  ← screw_tab_thickness
+    ├────┤      ├────┤  ← 分型面
+    │    │ tab  │    │  ← screw_tab_thickness
+    ├────┘      └────┤
+    │                │
+    │    pocket      │
+    └────────────────┘
+```
+
+算法流程：
+
+1. 构建正交基: `u_ax`, `v_ax` 在分型面上，`up` 为开模方向
+2. 投影模型包围盒到 u/v 轴，获取 `half_u`, `half_v`
+3. 在壁厚中点放置螺丝位: `wall_mid = (clearance + margin + wall_thickness) / 2`
+4. 角落/边中点位置构建 (`corners` → `edge midpoints`)
+5. 安全距离校验: `tm_model.nearest.on_surface()` 排除距型腔过近的位置
+6. **对每个壳体、每个位置**:
+   - **Step 1 — 凹槽**: `_make_oriented_box()` 创建世界坐标系盒体，从外表面切到 `center_h ± tab`
+   - 若 box 布尔失败，自动降级为 `_make_cylinder()` 圆柱凹槽
+   - **Step 2 — 通孔**: 小直径圆柱穿过螺丝台
+   - **Step 3 — 沉头孔**: 在凹槽底面为螺栓头/螺母预留座面
+7. 修复网格
+
+**关键辅助函数 `_make_oriented_box()`**：
+直接在世界坐标系计算 8 个顶点坐标（绕过 `trimesh.creation.box()` + `apply_transform`
+的兼容性问题），使用验证过的 CCW 面绕向，确保 manifold3d 布尔引擎可靠接受。
+
+**v6.2 改进**：
+- 凹槽+螺丝台设计替代全高通孔，使标准短螺丝 (M4×10) 即可紧固
+- `_make_oriented_box()` 替代 `trimesh.creation.box()+apply_transform` 解决布尔失败
+- 增加圆柱凹槽后备确保 100% 鲁棒
+- 移除法兰功能，简化为单一紧固方案
+
+**v6.3 修复 — 凹槽薄壁问题**：
+- **问题**: `pocket_xy` 被 `avail_wall - 1.0` 限制，凹槽外边缘在外壁面内侧 ~0.8mm
+  处停止，留下了对 3D 打印有害的薄壁结构
+- **修复**: `pocket_xy = max(head*2.5, avail_wall + 4.0)`，凹槽超过外壁面 2mm，
+  布尔减法自动忽略超出壳体的部分
+- **修复**: 螺丝孔生成后的修复步骤移除了 `fill_holes` 调用——该函数会将凹槽
+  产生的开放面误判为"需要修复的洞"并封闭它们，等于把凹槽填回去了
+- 详见 `docs/11-adaptive-parting.md` 中的自适应分型面系统设计
+
+#### 19.1.4 `_generate_clamp_brackets` 方法
+
+算法流程：
+
+1. 在分型面外围均匀分布 `n_clamp_screws` 个箍套位置
+2. 每个箍套为 C 形结构：外盒减去内盒 (U 形通道包裹分型线)
+3. 箍套上下各打一个紧固螺丝通孔 (clamp_screw_size)
+4. 输出独立 mesh，用于单独 3D 打印
+
+### 19.2 UI 布局优化
+
+#### 19.2.1 左侧面板精简 (v6.1)
+
+将所有分析结果数据**完全移除**——不保留任何摘要或提示文字。
+
+左侧面板仅保留：
+- 操作按钮（分析、生成、验证）
+- 参数控制（滑条、下拉选择、开关）
+- 状态徽标（StatusBadge 绿/灰点）
+- 步骤提示（StepHint 前往下一步）
+
+**已移除的数据区域**：
+- 方向分析结果（评分、方向向量、候选数）
+- 分型面结果（分型线数、面数）
+- 模具壳体详情（壳体表格、浇注口评分、排气口列表、定位销）
+- 成本估算面板
+- 支撑板详情（板片列表、锚固信息）
+- 装配验证结果（消息列表）
+- 浇注系统设计结果（评分、流道平衡、型腔体积等）
+- 仿真结果（充填率条、缺陷分组、时间/压力/温度）
+- 优化结果（收敛状态、迭代、充填改善）
+- FEA 结果（位移、应力、安全系数）
+
+#### 19.2.2 右侧 "大纲" 标签扩展
+
+在 SceneManager（场景大纲）下方新增 `AnalysisDataSection` 组件：
+
+```
+┌─ 右侧面板 ─────────────────┐
+│ [大纲] [属性] [统计]         │
+│                              │
+│ ┌─ 场景大纲 ──────────────┐ │
+│ │ · 模型                  │ │
+│ │ · 壳体 #0 / #1          │ │
+│ │ · 支撑板                │ │
+│ │ · 浇注系统              │ │
+│ └────────────────────────┘ │
+│                              │
+│ ── 分析数据 ──               │
+│ ▸ 方向分析  [82%]            │
+│ ▸ 分型面                     │
+│ ▸ 模具壳体  [2 壳]           │
+│ ▸ 支撑板    [2 板]           │
+│ ▸ 浇注系统  [91%]            │
+│ ▸ 仿真结果  [99%]            │
+│ ▸ 优化结果                   │
+└──────────────────────────────┘
+```
+
+每个分析数据 section 默认折叠，带 badge 摘要，展开显示完整数据。
+
+#### 19.2.3 新增 UI 控件（左侧 MoldPanel）
+
+| 控件 | 说明 |
+|------|------|
+| 螺栓固定孔 开关 | 启用/禁用凹槽+螺丝台紧固 |
+| 螺丝规格 下拉 | M1 ~ M8 标准规格选择 |
+| 数量 按钮组 | 2 / 4 / 6 / 8 |
+| 螺丝台厚度 滑块 | 2 ~ 15 mm (默认 5mm) |
+| 沉头孔 开关 | 是/否 |
+| 分型面箍套 开关 | 启用/禁用箍套生成 |
+| 箍套螺丝 下拉 | M2 ~ M6 |
+| 箍套数量 按钮组 | 2 / 4 / 6 |
+
+### 19.3 API 变更
+
+`POST /{model_id}/mold/generate` 新增请求字段：
+
+```json
+{
+  "add_screw_holes": true,
+  "screw_size": "M4",
+  "n_screws": 4,
+  "screw_counterbore": true,
+  "screw_tab_thickness": 5.0,
+  "add_clamp_bracket": false,
+  "clamp_width": 15.0,
+  "clamp_thickness": 3.0,
+  "clamp_screw_size": "M3",
+  "n_clamp_screws": 4
+}
+```
+
+响应新增字段：
+
+```json
+{
+  "screw_holes": [
+    { "position": [x,y,z], "screw_size": "M4", "through_diameter": 4.5, ... }
+  ],
+  "clamp_brackets": [
+    { "face_count": 120, "screw_positions": [[x,y,z], ...] }
+  ]
+}
+```
+
+---
+
+## 20. Phase 4 — 自适应分型面系统 (v5 → v4.0 修复)
+
+> 详细设计文档见 [11-adaptive-parting.md](./11-adaptive-parting.md)
+
+### 20.1 Phase 1 — Undercut 检测 + 高度场分型面
+
+- `UndercutAnalyzer`: 射线投射 undercut 检测, 深度量化, 严重度分级
+- `_build_heightfield_surface()`: 射线投射取上下边界中点的非平面分型面
+- 自动选择: 分型线非共面 → heightfield, 否则 → flat
+
+### 20.2 Phase 2 — 投影分型面 + 侧抽 + 热力图
+
+**侧抽方向推荐** (`recommend_side_pulls()`):
+- 基于 undercut 面法线的 SVD 聚类 + 基准方向
+- 评估每个候选方向的覆盖率 (面法线可见性 + 遮挡轴夹角判定)
+- 输出 `SidePullDirection` 列表 (方向、覆盖率、与主拉夹角)
+
+**投影拉伸分型面** (`_build_projected_surface()`):
+- 从分型线径向外延, 每步等距拉伸
+- 高度渐变: 外环高度从分型线高度线性混合到默认高度 (v4.0 改进)
+- 回退: 生成失败则回退到 heightfield
+
+**Undercut 热力图**:
+- `export_undercut_heatmap()`: 导出 per-face 深度数据
+- API: `GET /{model_id}/undercut/heatmap`
+- 前端: `UndercutOverlay.tsx` 使用蓝→红渐变渲染
+
+### 20.3 Phase 2.5 — 模具分割集成 + Bug 修复 (v4.0)
+
+**v4.0 Bug 修复**:
+- 严重度分级: `or` → `and` (ratio=0.50, depth=5 不再被误判为 moderate)
+- 分型面命名: "分型面样式" → "锁扣样式" (消除与"分型面类型"的混淆)
+- 高度场边界: 添加渐变约束，边缘平滑过渡到默认高度
+- 射线循环: `np.minimum.at` / `np.maximum.at` 替代 Python 循环
+
+**MoldBuilder 自适应分割** (`_build_shells_adaptive_surface()`):
+- 当 `parting_surface_type` 不为 "flat" 时自动启用
+- 通过 `scipy.spatial.cKDTree` 将 outer shell 顶点按分型面高度分配到上下半壳
+- 自动回退: 分割失败则使用平面切割
+- `MoldResult` 包含 `parting_surface_type`, `undercut_severity`
+
+### 20.4 API 变更
+
+```
+POST /{model_id}/parting       — 新增 surface_type, heightfield_resolution, undercut_threshold
+POST /{model_id}/undercut      — 独立 undercut 分析
+GET  /{model_id}/undercut/heatmap — 热力图数据
+POST /{model_id}/mold/generate — 新增 parting_surface_type; 响应含 undercut_severity
+```
+
+### 20.5 前端变更
+
+- 分型面类型选择器: 自动 / 平面 / 高度场 / 投影拉伸
+- "查看 Undercut 热力图" 按钮 + `UndercutOverlay.tsx` 3D 叠加层
+- 模具结果显示 undercut 严重度 + 分型面类型
+- 场景管理器新增 "Undercut 热力图" 节点 (analysis 类型)
+- Store: `UndercutHeatmapData`, `SidePullDirection`, heatmap 状态
+- Hook: `useUndercutHeatmap()`, `useUndercutAnalysis()`
+- 全局字体: 7-10px → 11-12px
+
+---
+
+## 21. 开发路线图
+
+### Phase 5 计划
+
+| 优先级 | 功能 | 描述 |
+|--------|------|------|
+| P0 | 会话持久化 | 后端工作流状态持久化到磁盘, 重启不丢失 |
+| P0 | 错误恢复 | GPU OOM / 网络断连时优雅降级 |
+| P1 | 高级编辑 | 视口内直接拖拽编辑顶点/面 (MeshEditor) |
+| P1 | 测量工具 | 距离/角度/面积实时测量叠加层 |
+| P1 | 多片模具工作流 | UI 完整支持 3+ 片壳体的拆分与装配 |
+| P2 | Agent 工作站 | 完整的 AI Agent 交互界面, 进度/暂停/确认 |
+| P2 | 批量处理 | 多模型批量导入→模具→导出流水线 |
+| P3 | 打印集成 | 直接发送到切片软件 (Cura/PrusaSlicer) |
+| P3 | 版本管理 | 工作流快照与回滚 |

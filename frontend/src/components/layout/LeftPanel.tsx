@@ -7,7 +7,7 @@ import { useMoldStore } from "../../stores/moldStore";
 import { useSimStore } from "../../stores/simStore";
 import { useInsertStore } from "../../stores/insertStore";
 import { useUploadModel, useSimplifyModel, useSubdivideModel, useTransformModel, useRepairModel, useModelQuality } from "../../hooks/useModelApi";
-import { useOrientationAnalysis, usePartingGeneration, useMoldGeneration, useCoolingChannelDesign } from "../../hooks/useMoldApi";
+import { useOrientationAnalysis, usePartingGeneration, useMoldGeneration, useCoolingChannelDesign, useUndercutHeatmap } from "../../hooks/useMoldApi";
 import { useGatingDesign, useRunSimulation, useRunOptimization, useFetchVisualization, useFetchCrossSection, useFetchSurfaceMap, useRunFEA, useFetchFEAVisualization } from "../../hooks/useSimApi";
 import { useAnalyzePositions, useGenerateInserts, useValidateAssembly } from "../../hooks/useInsertApi";
 import { useThicknessAnalysis, useCurvatureAnalysis, useSymmetryAnalysis, useOverhangAnalysis, useSmoothMesh, useRemeshMesh, useThickenMesh, useOffsetMesh } from "../../hooks/useAnalysisApi";
@@ -171,7 +171,7 @@ function ImportPanel() {
             {upload.isPending ? "加载中..." : isDragging ? "释放以导入" : "拖拽或点击上传模型"}
           </span>
           {!upload.isPending && !isDragging && (
-            <span className="text-[10px] text-text-muted">
+            <span className="text-[12px] text-text-muted">
               最大 200MB
             </span>
           )}
@@ -187,7 +187,7 @@ function ImportPanel() {
           }}
         />
         {upload.isError && (
-          <p className="text-[10px] text-danger mt-1">
+          <p className="text-[12px] text-danger mt-1">
             上传失败: {(upload.error as Error)?.message}
           </p>
         )}
@@ -205,7 +205,7 @@ function ImportPanel() {
             { ext: "glTF", desc: "Web 3D" },
             { ext: "DAE", desc: "COLLADA" },
           ].map((f) => (
-            <div key={f.ext} className="flex items-center gap-1.5 p-1 rounded bg-bg-secondary text-[10px]">
+            <div key={f.ext} className="flex items-center gap-1.5 p-1 rounded bg-bg-secondary text-[12px]">
               <span className="text-accent font-mono font-bold w-8">{f.ext}</span>
               <span className="text-text-muted">{f.desc}</span>
             </div>
@@ -214,7 +214,7 @@ function ImportPanel() {
       </Section>
 
       <Section title="快速开始">
-        <div className="p-2 rounded border border-border bg-bg-secondary/50 text-[10px] text-text-muted space-y-1.5">
+        <div className="p-2 rounded border border-border bg-bg-secondary/50 text-[12px] text-text-muted space-y-1.5">
           <p><span className="text-text-secondary font-medium">1.</span> 上传或拖拽 3D 模型文件</p>
           <p><span className="text-text-secondary font-medium">2.</span> 编辑面板中修复/简化模型</p>
           <p><span className="text-text-secondary font-medium">3.</span> 自动分析脱模方向，生成模具</p>
@@ -240,7 +240,7 @@ function ImportPanel() {
         return (
           <Section title="模型健康状态" icon={<Activity size={11} />}>
             <div className={cn(
-              "p-2 rounded border text-[10px] space-y-1.5",
+              "p-2 rounded border text-[12px] space-y-1.5",
               issues.length === 0 ? "border-success/30 bg-success/5" : "border-warning/30 bg-warning/5",
             )}>
               <div className="flex items-center gap-1.5 font-medium">
@@ -359,7 +359,7 @@ function EditPanel() {
       <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
         <Scissors size={28} className="opacity-30" />
         <p className="text-xs">请先导入模型</p>
-        <button onClick={() => setStep("import")} className="text-[10px] text-accent hover:underline">前往导入</button>
+        <button onClick={() => setStep("import")} className="text-[12px] text-accent hover:underline">前往导入</button>
       </div>
     );
   }
@@ -454,7 +454,7 @@ function EditPanel() {
 
       {qualityData?.quality && (
         <Section title="质量检查" icon={<Activity size={11} />}>
-          <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+          <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
             <div className="flex justify-between">
               <span className="text-text-muted">水密性</span>
               <span className={qualityData.quality.is_watertight ? "text-success" : "text-warning"}>
@@ -485,7 +485,7 @@ function EditPanel() {
 
       <Section title="网格信息" icon={<Ruler size={11} />}>
         {meshInfo && (
-          <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+          <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
             <div className="flex justify-between">
               <span className="text-text-muted">顶点数</span>
               <span className="font-mono">{meshInfo.vertex_count.toLocaleString()}</span>
@@ -558,12 +558,12 @@ function EditPanel() {
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className={cn("text-2xl font-bold", color)}>{pct}</span>
-                    <span className="text-[10px] text-text-muted">/ 100</span>
+                    <span className="text-[12px] text-text-muted">/ 100</span>
                   </div>
                   <div className="h-1.5 rounded-full bg-bg-hover overflow-hidden">
                     <div className={cn("h-full rounded-full transition-all", bgColor)} style={{ width: `${pct}%` }} />
                   </div>
-                  <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[9px]">
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[11px]">
                     {checks.map((c, i) => (
                       <div key={i} className="flex items-center gap-1">
                         <span className={c.ok ? "text-success" : "text-text-muted/40"}>
@@ -582,7 +582,7 @@ function EditPanel() {
 
       {/* ── nTopology-style Analysis Suite ── */}
       <CollapsibleSection title="壁厚分析" icon={<Ruler size={11} />} defaultOpen={false}
-        badge={thicknessData ? <span className="text-[8px] text-success">✓</span> : undefined}>
+        badge={thicknessData ? <span className="text-[11px] text-success">✓</span> : undefined}>
         <div className="space-y-1.5">
           <ActionButton
             icon={<Ruler size={13} />}
@@ -595,7 +595,7 @@ function EditPanel() {
           />
           {thicknessData && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-              className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+              className="p-2 rounded bg-bg-secondary text-[12px] space-y-1.5">
               <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
                 <ResultRow label="最小壁厚" value={`${thicknessData.min.toFixed(2)} mm`}
                   color={thicknessData.min < 1.0 ? "text-danger" : thicknessData.min < 1.5 ? "text-warning" : undefined} />
@@ -604,7 +604,7 @@ function EditPanel() {
                 <ResultRow label="标准差" value={`${thicknessData.std.toFixed(3)} mm`} />
               </div>
               {thicknessData.thin_count > 0 && (
-                <div className="text-[9px] text-warning flex items-center gap-1">
+                <div className="text-[11px] text-warning flex items-center gap-1">
                   <span>⚠</span> {thicknessData.thin_count} 个薄壁点 (&lt;1mm)
                 </div>
               )}
@@ -615,7 +615,7 @@ function EditPanel() {
                   return <div key={i} className="flex-1 bg-accent/40 rounded-t-sm" style={{ height: `${(c / maxC) * 100}%` }} />;
                 })}
               </div>
-              <div className="flex justify-between text-[8px] text-text-muted">
+              <div className="flex justify-between text-[11px] text-text-muted">
                 <span>{thicknessData.histogram_bins[0]?.toFixed(1)}</span>
                 <span>{thicknessData.histogram_bins[thicknessData.histogram_bins.length - 1]?.toFixed(1)} mm</span>
               </div>
@@ -625,7 +625,7 @@ function EditPanel() {
       </CollapsibleSection>
 
       <CollapsibleSection title="曲率分析" icon={<Activity size={11} />} defaultOpen={false}
-        badge={curvatureData ? <span className="text-[8px] text-success">✓</span> : undefined}>
+        badge={curvatureData ? <span className="text-[11px] text-success">✓</span> : undefined}>
         <div className="space-y-1.5">
           <ActionButton
             icon={<Activity size={13} />}
@@ -638,20 +638,20 @@ function EditPanel() {
           />
           {curvatureData && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-              className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
-              <div className="text-[9px] font-semibold text-text-muted mb-1">Gaussian 曲率</div>
+              className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
+              <div className="text-[11px] font-semibold text-text-muted mb-1">Gaussian 曲率</div>
               <ResultRow label="最小值" value={curvatureData.gaussian_min.toExponential(2)} />
               <ResultRow label="最大值" value={curvatureData.gaussian_max.toExponential(2)} />
-              <div className="text-[9px] font-semibold text-text-muted mt-1.5 mb-0.5">平均曲率</div>
+              <div className="text-[11px] font-semibold text-text-muted mt-1.5 mb-0.5">平均曲率</div>
               <ResultRow label="范围" value={`${curvatureData.mean_curvature_min.toExponential(2)} ~ ${curvatureData.mean_curvature_max.toExponential(2)}`} />
-              <div className="text-[8px] text-text-muted/60 mt-1">高曲率区域适合增加晶格密度</div>
+              <div className="text-[11px] text-text-muted/60 mt-1">高曲率区域适合增加晶格密度</div>
             </motion.div>
           )}
         </div>
       </CollapsibleSection>
 
       <CollapsibleSection title="对称性分析" icon={<FlipVertical size={11} />} defaultOpen={false}
-        badge={symmetryData ? <span className="text-[8px] text-success">✓</span> : undefined}>
+        badge={symmetryData ? <span className="text-[11px] text-success">✓</span> : undefined}>
         <div className="space-y-1.5">
           <ActionButton
             icon={<FlipVertical size={13} />}
@@ -664,8 +664,8 @@ function EditPanel() {
           />
           {symmetryData && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-              className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
-              <div className="text-[9px] font-semibold text-text-muted mb-1">轴对称度</div>
+              className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
+              <div className="text-[11px] font-semibold text-text-muted mb-1">轴对称度</div>
               {(["x", "y", "z"] as const).map((ax) => {
                 const val = symmetryData[`${ax}_symmetry` as keyof SymmetryData] as number;
                 return (
@@ -679,7 +679,7 @@ function EditPanel() {
                   </div>
                 );
               })}
-              <div className="text-[9px] text-accent mt-1">
+              <div className="text-[11px] text-accent mt-1">
                 最佳对称面: {symmetryData.best_plane.toUpperCase()} ({(symmetryData.best_score * 100).toFixed(0)}%)
               </div>
             </motion.div>
@@ -688,7 +688,7 @@ function EditPanel() {
       </CollapsibleSection>
 
       <CollapsibleSection title="悬垂分析" icon={<ArrowUpDown size={11} />} defaultOpen={false}
-        badge={overhangData ? <span className="text-[8px] text-success">✓</span> : undefined}>
+        badge={overhangData ? <span className="text-[11px] text-success">✓</span> : undefined}>
         <div className="space-y-1.5">
           <ActionButton
             icon={<ArrowUpDown size={13} />}
@@ -701,14 +701,14 @@ function EditPanel() {
           />
           {overhangData && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-              className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+              className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
               <ResultRow label="悬垂面占比" value={`${(overhangData.overhang_fraction * 100).toFixed(1)}%`}
                 color={overhangData.overhang_fraction > 0.2 ? "text-warning" : undefined} />
               <ResultRow label="悬垂面积" value={`${overhangData.overhang_area_mm2.toFixed(1)} mm²`} />
               <ResultRow label="总面积" value={`${overhangData.total_area_mm2.toFixed(1)} mm²`} />
               <ResultRow label="临界角" value={`${overhangData.critical_angle_deg}°`} />
               {overhangData.overhang_fraction > 0.15 && (
-                <div className="text-[9px] text-warning flex items-center gap-1 mt-1">
+                <div className="text-[11px] text-warning flex items-center gap-1 mt-1">
                   <span>⚠</span> 悬垂面较多，建议调整方向或添加支撑
                 </div>
               )}
@@ -721,7 +721,7 @@ function EditPanel() {
       <CollapsibleSection title="光滑处理" icon={<RefreshCw size={11} />} defaultOpen={false}>
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">算法</span>
+            <span className="text-[12px] text-text-muted">算法</span>
             <div className="flex items-center gap-1">
               {[
                 { v: "laplacian", label: "Laplacian" },
@@ -729,7 +729,7 @@ function EditPanel() {
                 { v: "humphrey", label: "HC" },
               ].map((opt) => (
                 <button key={opt.v} onClick={() => setSmoothMethod(opt.v)}
-                  className={cn("px-1.5 py-0.5 rounded text-[9px] transition-colors",
+                  className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
                     smoothMethod === opt.v ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
                   {opt.label}
                 </button>
@@ -749,7 +749,7 @@ function EditPanel() {
               onError: (e) => toastError("光滑失败", (e as Error).message),
             })}
           />
-          <div className="text-[8px] text-text-muted/60">
+          <div className="text-[11px] text-text-muted/60">
             {smoothMethod === "laplacian" ? "标准拉普拉斯平滑 — 快速但有收缩" :
              smoothMethod === "taubin" ? "Taubin λ/μ交替 — 减少收缩变形" :
              "Humphrey HC — 体积保持光滑"}
@@ -850,7 +850,7 @@ function MeshQualityPanel({ modelId }: { modelId: string | null }) {
     <div className="space-y-2">
       <ActionButton label={loading ? "分析中..." : "运行网格质量分析"} loading={loading} onClick={run} />
       {data && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[9px]">
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[11px]">
           <ResultRow label="顶点 / 面 / 边" value={`${(data as Record<string,unknown>).n_vertices} / ${(data as Record<string,unknown>).n_faces} / ${(data as Record<string,unknown>).n_edges}`} />
           <ResultRow label="宽高比均值" value={Number((data as Record<string,unknown>).aspect_ratio_mean).toFixed(2)} />
           <ResultRow label="宽高比最大" value={Number((data as Record<string,unknown>).aspect_ratio_max).toFixed(2)} />
@@ -859,7 +859,7 @@ function MeshQualityPanel({ modelId }: { modelId: string | null }) {
           {Boolean((data as Record<string,unknown>).topology) && (() => {
             const topo = (data as Record<string,unknown>).topology as Record<string,unknown>;
             return (<>
-              <div className="border-t border-border/20 pt-1 mt-1 text-[8px] text-text-muted font-semibold">拓扑</div>
+              <div className="border-t border-border/20 pt-1 mt-1 text-[11px] text-text-muted font-semibold">拓扑</div>
               <ResultRow label="水密" value={topo.is_watertight ? "✓" : "✗"} />
               <ResultRow label="流形" value={topo.is_manifold ? "✓" : "✗"} />
               <ResultRow label="欧拉特征" value={String(topo.euler_characteristic)} />
@@ -869,7 +869,7 @@ function MeshQualityPanel({ modelId }: { modelId: string | null }) {
           <ResultRow label="体积" value={`${Number((data as Record<string,unknown>).volume).toFixed(1)} mm³`} />
           <ResultRow label="表面积" value={`${Number((data as Record<string,unknown>).surface_area).toFixed(1)} mm²`} />
           <ResultRow label="紧凑度" value={Number((data as Record<string,unknown>).compactness).toFixed(4)} />
-          <div className="text-[7px] text-text-muted/40 mt-0.5">紧凑度 1.0 = 完美球体</div>
+          <div className="text-[11px] text-text-muted/40 mt-0.5">紧凑度 1.0 = 完美球体</div>
         </motion.div>
       )}
     </div>
@@ -939,7 +939,7 @@ function TopologyOptPanel() {
 
   return (
     <div className="space-y-2">
-      <div className="text-[8px] text-text-muted/60">SIMP 密度法结构拓扑优化 — 最小化柔度(最大化刚度)</div>
+      <div className="text-[11px] text-text-muted/60">SIMP 密度法结构拓扑优化 — 最小化柔度(最大化刚度)</div>
       <div className="grid grid-cols-2 gap-1">
         <ParamSlider label="X 单元" value={nelx} onChange={setNelx} min={20} max={120} step={10} width="w-10" />
         <ParamSlider label="Y 单元" value={nely} onChange={setNely} min={10} max={80} step={5} width="w-10" />
@@ -948,16 +948,16 @@ function TopologyOptPanel() {
       <div className="flex gap-1">
         {(["cantilever", "mbb", "bridge"] as const).map((bc) => (
           <button key={bc} onClick={() => setBcType(bc)}
-            className={cn("px-2 py-0.5 rounded text-[8px]",
+            className={cn("px-2 py-0.5 rounded text-[11px]",
               bcType === bc ? "bg-accent/70 text-white" : "bg-bg-secondary text-text-muted")}>
             {bc === "cantilever" ? "悬臂梁" : bc === "mbb" ? "MBB梁" : "桥梁"}
           </button>
         ))}
       </div>
       <ActionButton label={loading ? "优化中..." : "运行拓扑优化"} loading={loading} onClick={run} />
-      {loading && progress && <div className="text-[8px] text-accent animate-pulse">{progress}</div>}
+      {loading && progress && <div className="text-[11px] text-accent animate-pulse">{progress}</div>}
       {result && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[9px]">
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[11px]">
           <ResultRow label="迭代次数" value={String((result as Record<string,unknown>).iterations)} />
           <ResultRow label="最终柔度" value={Number((result as Record<string,unknown>).final_compliance).toExponential(3)} />
           <ResultRow label="最终体积分数" value={Number((result as Record<string,unknown>).final_volfrac).toFixed(3)} />
@@ -969,7 +969,7 @@ function TopologyOptPanel() {
         style={{ imageRendering: "pixelated", aspectRatio: `${nelx} / ${nely}` }}
       />
       {result && (
-        <div className="flex items-center gap-1 text-[7px] text-text-muted/50">
+        <div className="flex items-center gap-1 text-[11px] text-text-muted/50">
           <div className="w-12 h-2 rounded" style={{ background: "linear-gradient(to right, #13131a, #3bdcff)" }} />
           <span>0</span>
           <span className="ml-auto">1 (材料)</span>
@@ -1007,7 +1007,7 @@ function VariableShellPanel({ modelId }: { modelId: string | null }) {
 
   return (
     <div className="space-y-2">
-      <div className="text-[8px] text-text-muted/60">SDF 隐式场驱动变厚度壳体 — nTopology 风格</div>
+      <div className="text-[11px] text-text-muted/60">SDF 隐式场驱动变厚度壳体 — nTopology 风格</div>
       <ParamSlider label="基础壁厚" value={baseThickness} onChange={setBaseThickness} min={0.5} max={10} step={0.5} unit="mm" width="w-12" />
       <ParamSlider label="厚度变化" value={variation} onChange={setVariation} min={0} max={5} step={0.5} unit="mm" width="w-12" />
       <div className="flex gap-0.5">
@@ -1017,7 +1017,7 @@ function VariableShellPanel({ modelId }: { modelId: string | null }) {
           { v: "curvature_proxy", label: "曲率" },
         ] as const).map((f) => (
           <button key={f.v} onClick={() => setFieldType(f.v)}
-            className={cn("px-1.5 py-0.5 rounded text-[8px]",
+            className={cn("px-1.5 py-0.5 rounded text-[11px]",
               fieldType === f.v ? "bg-accent/70 text-white" : "bg-bg-secondary text-text-muted")}>
             {f.label}
           </button>
@@ -1025,7 +1025,7 @@ function VariableShellPanel({ modelId }: { modelId: string | null }) {
       </div>
       <ActionButton label={loading ? "生成中..." : "生成变厚度壳"} loading={loading} onClick={run} />
       {result && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[9px]">
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[11px]">
           <ResultRow label="最小壁厚" value={`${Number((result as Record<string,unknown>).min_thickness).toFixed(2)} mm`} />
           <ResultRow label="最大壁厚" value={`${Number((result as Record<string,unknown>).max_thickness).toFixed(2)} mm`} />
           <ResultRow label="平均壁厚" value={`${Number((result as Record<string,unknown>).mean_thickness).toFixed(2)} mm`} />
@@ -1054,7 +1054,7 @@ function OrientationPanel() {
       <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
         <Compass size={28} className="opacity-30" />
         <p className="text-xs">请先导入模型</p>
-        <button onClick={() => setStep("import")} className="text-[10px] text-accent hover:underline">前往导入</button>
+        <button onClick={() => setStep("import")} className="text-[12px] text-accent hover:underline">前往导入</button>
       </div>
     );
   }
@@ -1133,7 +1133,7 @@ function OrientationPanel() {
 
           {/* Draft Angle Assessment */}
           <Section title="拔模角评估" icon={<BarChart3 size={11} />}>
-            <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+            <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1.5">
               {(() => {
                 const s = orientationResult.best_score;
                 const minDA = s.min_draft_angle;
@@ -1172,13 +1172,13 @@ function OrientationPanel() {
                   transition={{ delay: i * 0.04 }}
                   onClick={() => applyCandidate(i)}
                   className={cn(
-                    "w-full flex items-center justify-between p-1.5 rounded text-[10px] transition-colors",
+                    "w-full flex items-center justify-between p-1.5 rounded text-[12px] transition-colors",
                     selectedCandidateIdx === i
                       ? "bg-accent/15 ring-1 ring-accent/40"
                       : "bg-bg-secondary hover:bg-bg-hover",
                   )}>
                   <span className={selectedCandidateIdx === i ? "text-accent font-bold" : "text-text-muted"}>#{i + 1}</span>
-                  <span className="font-mono text-text-secondary text-[9px]">
+                  <span className="font-mono text-text-secondary text-[11px]">
                     [{c.direction.map((v) => v.toFixed(2)).join(", ")}]
                   </span>
                   <div className="flex items-center gap-1">
@@ -1199,7 +1199,7 @@ function OrientationPanel() {
             <div className="flex items-center gap-1 mb-1.5">
               {(["X", "Y", "Z"] as const).map((axis, ai) => (
                 <div key={axis} className="flex-1">
-                  <label className="text-[9px] text-text-muted">{axis}</label>
+                  <label className="text-[11px] text-text-muted">{axis}</label>
                   <input
                     type="number" step={0.1} min={-1} max={1}
                     value={manualDir[ai]}
@@ -1208,7 +1208,7 @@ function OrientationPanel() {
                       nd[ai] = parseFloat(e.target.value) || 0;
                       setManualDir(nd);
                     }}
-                    className="w-full text-[10px] bg-bg-secondary border border-border rounded px-1 py-0.5 text-text-primary text-center"
+                    className="w-full text-[12px] bg-bg-secondary border border-border rounded px-1 py-0.5 text-text-primary text-center"
                   />
                 </div>
               ))}
@@ -1251,11 +1251,13 @@ function MoldPanel() {
   const parting = usePartingGeneration();
   const moldGen = useMoldGeneration();
   const coolingDesign = useCoolingChannelDesign();
+  const fetchHeatmap = useUndercutHeatmap();
   const pushHistory = useHistoryStore((s) => s.push);
   const setStep = useAppStore((s) => s.setStep);
   const [wallThickness, setWallThickness] = useState(4.0);
   const [shellType, setShellType] = useState("box");
   const [partingStyle, setPartingStyle] = useState("flat");
+  const [surfaceType, setSurfaceType] = useState("auto");
   const [addFlanges, setAddFlanges] = useState(false);
   const [flangeCount, setFlangeCount] = useState(4);
   const [moldMaterial, setMoldMaterial] = useState("pla");
@@ -1271,7 +1273,7 @@ function MoldPanel() {
       <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
         <Box size={28} className="opacity-30" />
         <p className="text-xs">请先导入模型</p>
-        <button onClick={() => setStep("import")} className="text-[10px] text-accent hover:underline">前往导入</button>
+        <button onClick={() => setStep("import")} className="text-[12px] text-accent hover:underline">前往导入</button>
       </div>
     );
   }
@@ -1286,7 +1288,7 @@ function MoldPanel() {
       </div>
 
       <Section title="1. 脱模方向分析" icon={<Compass size={11} />}
-        badge={orientationResult ? <span className="text-[8px] text-success font-medium">✓</span> : undefined}>
+        badge={orientationResult ? <span className="text-[11px] text-success font-medium">✓</span> : undefined}>
         <ActionButton
           icon={<Compass size={13} />}
           label={isAnalyzing ? "分析中..." : "分析最优方向"}
@@ -1300,7 +1302,7 @@ function MoldPanel() {
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
-            className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1"
+            className="mt-2 p-2 rounded bg-bg-secondary text-[12px] space-y-1"
           >
             <div className="flex justify-between">
               <span className="text-text-muted">最佳方向</span>
@@ -1332,6 +1334,21 @@ function MoldPanel() {
       </Section>
 
       <Section title="2. 分型面生成">
+        <div className="space-y-2 mb-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] text-text-muted">分型面类型</span>
+            <select
+              value={surfaceType}
+              onChange={(e) => setSurfaceType(e.target.value)}
+              className="px-1.5 py-0.5 rounded bg-surface-secondary text-[12px] border border-border-subtle"
+            >
+              <option value="auto">自动</option>
+              <option value="flat">平面</option>
+              <option value="heightfield">高度场 (贴合轮廓)</option>
+              <option value="projected">投影拉伸 (沿分型线)</option>
+            </select>
+          </div>
+        </div>
         <ActionButton
           icon={<SplitSquareVertical size={13} />}
           label={isGeneratingParting ? "生成中..." : "生成分型面"}
@@ -1339,38 +1356,26 @@ function MoldPanel() {
           onClick={() => {
             const t0 = performance.now();
             flog.info("Mold", "生成分型面...");
-            parting.mutate({ modelId }, {
+            parting.mutate({ modelId, surfaceType }, {
               onSuccess: () => { const ms = Math.round(performance.now() - t0); flog.success("Mold", "分型面已生成", undefined, ms); pushHistory({ type: "parting", label: "生成分型面", modelId }); toastSuccess("分型面已生成"); },
               onError: (e) => { flog.error("Mold", `分型面生成失败: ${(e as Error).message}`); toastError("分型面生成失败", (e as Error).message); },
             });
           }}
         />
-        {partingResult && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1"
-          >
-            <div className="flex justify-between">
-              <span className="text-text-muted">分型线数</span>
-              <span>{partingResult.parting_lines.length}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">上模面数</span>
-              <span>{partingResult.n_upper_faces}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">下模面数</span>
-              <span>{partingResult.n_lower_faces}</span>
-            </div>
-          </motion.div>
+        {partingResult?.undercut && partingResult.undercut.severity !== "none" && (
+          <ActionButton
+            icon={<SplitSquareVertical size={13} />}
+            label={fetchHeatmap.isPending ? "加载中..." : "查看 Undercut 热力图"}
+            loading={fetchHeatmap.isPending}
+            onClick={() => { if (modelId) fetchHeatmap.mutate({ modelId }); }}
+          />
         )}
       </Section>
 
       <Section title="3. 模具壳体生成">
         <div className="space-y-2 mb-2">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">壁厚</span>
+            <span className="text-[12px] text-text-muted">壁厚</span>
             <div className="flex items-center gap-1">
               <input
                 type="range"
@@ -1381,28 +1386,28 @@ function MoldPanel() {
                 onChange={(e) => setWallThickness(parseFloat(e.target.value))}
                 className="w-20 accent-accent"
               />
-              <span className="text-[10px] text-text-muted w-10 text-right">{wallThickness}mm</span>
+              <span className="text-[12px] text-text-muted w-10 text-right">{wallThickness}mm</span>
             </div>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">壳类型</span>
+            <span className="text-[12px] text-text-muted">壳类型</span>
             <select
               value={shellType}
               onChange={(e) => setShellType(e.target.value)}
-              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
+              className="text-[12px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
             >
               <option value="box">方形壳体</option>
               <option value="conformal">随形壳体</option>
             </select>
           </div>
 
-          {/* Parting style */}
+          {/* Parting interlock style */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">分型面样式</span>
+            <span className="text-[12px] text-text-muted">锁扣样式</span>
             <select
               value={partingStyle}
               onChange={(e) => setPartingStyle(e.target.value)}
-              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
+              className="text-[12px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
             >
               <option value="flat">平面</option>
               <option value="dovetail">燕尾榫</option>
@@ -1414,11 +1419,11 @@ function MoldPanel() {
 
           {/* Flanges */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">螺丝固定法兰</span>
+            <span className="text-[12px] text-text-muted">螺丝固定法兰</span>
             <button
               onClick={() => setAddFlanges(!addFlanges)}
               className={cn(
-                "px-2 py-0.5 rounded text-[10px] transition-colors",
+                "px-2 py-0.5 rounded text-[12px] transition-colors",
                 addFlanges ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
               )}
             >
@@ -1427,12 +1432,12 @@ function MoldPanel() {
           </div>
           {addFlanges && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-text-muted">法兰数量</span>
+              <span className="text-[12px] text-text-muted">法兰数量</span>
               <div className="flex items-center gap-1">
                 {[2, 4, 6, 8].map((n) => (
                   <button key={n} onClick={() => setFlangeCount(n)}
                     className={cn(
-                      "px-1.5 py-0.5 rounded text-[9px] transition-colors",
+                      "px-1.5 py-0.5 rounded text-[11px] transition-colors",
                       flangeCount === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
                     )}>
                     {n}
@@ -1444,7 +1449,7 @@ function MoldPanel() {
 
           {/* Mold material selection */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">模具材料</span>
+            <span className="text-[12px] text-text-muted">模具材料</span>
             <select
               value={moldMaterial}
               onChange={(e) => {
@@ -1455,7 +1460,7 @@ function MoldPanel() {
                 };
                 setShrinkagePct(shrinkMap[e.target.value] ?? 0);
               }}
-              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
+              className="text-[12px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
             >
               <option value="pla">PLA (FDM)</option>
               <option value="abs">ABS (FDM)</option>
@@ -1469,52 +1474,52 @@ function MoldPanel() {
 
           {/* Shrinkage compensation */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">收缩补偿</span>
+            <span className="text-[12px] text-text-muted">收缩补偿</span>
             <div className="flex items-center gap-1">
               <input type="range" min={0} max={2} step={0.1} value={shrinkagePct}
                 onChange={(e) => setShrinkagePct(parseFloat(e.target.value))}
                 className="w-16 accent-accent" />
-              <span className="text-[10px] text-text-muted w-10 text-right">{shrinkagePct.toFixed(1)}%</span>
+              <span className="text-[12px] text-text-muted w-10 text-right">{shrinkagePct.toFixed(1)}%</span>
             </div>
           </div>
 
           {/* Cooling channels */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">冷却水道</span>
+            <span className="text-[12px] text-text-muted">冷却水道</span>
             <button onClick={() => setAddCooling(!addCooling)}
-              className={cn("px-2 py-0.5 rounded text-[10px] transition-colors",
+              className={cn("px-2 py-0.5 rounded text-[12px] transition-colors",
                 addCooling ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
               {addCooling ? "已启用" : "关闭"}
             </button>
           </div>
           {addCooling && (
             <div className="flex items-center justify-between pl-2 border-l-2 border-accent/30">
-              <span className="text-[10px] text-text-muted">水道直径</span>
+              <span className="text-[12px] text-text-muted">水道直径</span>
               <div className="flex items-center gap-1">
                 <input type="range" min={2} max={8} step={0.5} value={coolingDiameter}
                   onChange={(e) => setCoolingDiameter(parseFloat(e.target.value))}
                   className="w-16 accent-accent" />
-                <span className="text-[10px] text-text-muted w-10 text-right">{coolingDiameter}mm</span>
+                <span className="text-[12px] text-text-muted w-10 text-right">{coolingDiameter}mm</span>
               </div>
             </div>
           )}
 
           {/* Ejector pins */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">顶出机构</span>
+            <span className="text-[12px] text-text-muted">顶出机构</span>
             <button onClick={() => setAddEjectors(!addEjectors)}
-              className={cn("px-2 py-0.5 rounded text-[10px] transition-colors",
+              className={cn("px-2 py-0.5 rounded text-[12px] transition-colors",
                 addEjectors ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
               {addEjectors ? "已启用" : "关闭"}
             </button>
           </div>
           {addEjectors && (
             <div className="flex items-center justify-between pl-2 border-l-2 border-accent/30">
-              <span className="text-[10px] text-text-muted">顶针数量</span>
+              <span className="text-[12px] text-text-muted">顶针数量</span>
               <div className="flex items-center gap-1">
                 {[2, 4, 6, 8].map((n) => (
                   <button key={n} onClick={() => setEjectorCount(n)}
-                    className={cn("w-6 h-5 rounded text-[9px] font-medium transition-colors",
+                    className={cn("w-6 h-5 rounded text-[11px] font-medium transition-colors",
                       ejectorCount === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
                     {n}
                   </button>
@@ -1525,11 +1530,11 @@ function MoldPanel() {
 
           {/* Surface texture - nTopology-style */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">模具表面纹理</span>
+            <span className="text-[12px] text-text-muted">模具表面纹理</span>
             <select
               value={surfaceTexture}
               onChange={(e) => setSurfaceTexture(e.target.value)}
-              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
+              className="text-[12px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
             >
               <option value="none">光滑</option>
               <option value="matte">磨砂 (SPI-C)</option>
@@ -1540,7 +1545,7 @@ function MoldPanel() {
             </select>
           </div>
           {surfaceTexture !== "none" && (
-            <div className="text-[8px] text-text-muted/60 pl-2">
+            <div className="text-[11px] text-text-muted/60 pl-2">
               {surfaceTexture === "matte" ? "Ra 0.5-1.0μm — 消除模具痕迹" :
                surfaceTexture === "fine_grain" ? "Ra 1.0-3.2μm — 半哑光手感" :
                surfaceTexture === "medium_grain" ? "Ra 3.2-6.3μm — 标准工业纹理" :
@@ -1595,7 +1600,7 @@ function MoldPanel() {
             animate={{ opacity: 1, height: "auto" }}
             className="mt-2 space-y-2"
           >
-            <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+            <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
               <div className="flex justify-between">
                 <span className="text-text-muted">壳体数量</span>
                 <span className="text-accent font-semibold">{moldResult.n_shells}</span>
@@ -1607,7 +1612,7 @@ function MoldPanel() {
             </div>
 
             {/* Shells detail */}
-            <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+            <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
               <div className="text-text-muted font-semibold mb-1">壳体详情</div>
               {moldResult.shells.map((sh) => (
                 <div key={sh.shell_id} className="flex justify-between items-center border-t border-border/30 pt-1 mt-1">
@@ -1615,7 +1620,7 @@ function MoldPanel() {
                   <div className="flex items-center gap-2">
                     <span className="text-text-secondary">{sh.face_count.toLocaleString()} 面</span>
                     <span className={cn(
-                      "px-1 py-0.5 rounded text-[8px] font-medium",
+                      "px-1 py-0.5 rounded text-[11px] font-medium",
                       sh.is_printable ? "bg-success/10 text-success" : "bg-warning/10 text-warning",
                     )}>
                       {sh.is_printable ? "可打印" : `拔模角 ${sh.min_draft_angle?.toFixed(1) ?? "0"}°`}
@@ -1627,7 +1632,7 @@ function MoldPanel() {
 
             {/* Pour hole v3 */}
             {moldResult.pour_hole && (
-              <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+              <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
                 <div className="text-text-muted font-semibold mb-1">浇筑口 (v3 智能放置)</div>
                 {typeof moldResult.pour_hole === "object" && !Array.isArray(moldResult.pour_hole) ? (
                   <>
@@ -1639,7 +1644,7 @@ function MoldPanel() {
                       <span className="text-text-muted">直径</span>
                       <span>{(moldResult.pour_hole as { diameter?: number }).diameter?.toFixed(1) ?? "15"} mm</span>
                     </div>
-                    <div className="text-[9px] text-text-muted mt-1 leading-relaxed">
+                    <div className="text-[11px] text-text-muted mt-1 leading-relaxed">
                       基于高度(40%) + 中心性(25%) + 可及性(20%) + 厚度(15%) 综合优化
                     </div>
                   </>
@@ -1651,7 +1656,7 @@ function MoldPanel() {
 
             {/* Vent holes v3 */}
             {moldResult.vent_holes.length > 0 && (
-              <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+              <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
                 <div className="text-text-muted font-semibold mb-1">排气口 ({moldResult.vent_holes.length} 个, BFS仿真)</div>
                 {moldResult.vent_holes.map((v, i) => {
                   const isObj = typeof v === "object" && !Array.isArray(v);
@@ -1666,7 +1671,7 @@ function MoldPanel() {
                     </div>
                   );
                 })}
-                <div className="text-[9px] text-text-muted mt-1 leading-relaxed">
+                <div className="text-[11px] text-text-muted mt-1 leading-relaxed">
                   基于重力流前BFS模拟 + 气穴检测 + 最远点采样
                 </div>
               </div>
@@ -1674,7 +1679,7 @@ function MoldPanel() {
 
             {/* Alignment */}
             {moldResult.alignment_features && moldResult.alignment_features.length > 0 && (
-              <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+              <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
                 <div className="text-text-muted font-semibold mb-1">对齐特征</div>
                 <ResultRow label="定位销" value={`${moldResult.alignment_features.filter(f => f.type === "pin").length} 个`} />
                 <ResultRow label="配合孔" value={`${moldResult.alignment_features.filter(f => f.type === "hole").length} 个`} />
@@ -1692,7 +1697,7 @@ function MoldPanel() {
       {/* Cost estimation */}
       {moldResult && (
         <Section title="成本估算" icon={<BarChart3 size={11} />}>
-          <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+          <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
             {(() => {
               const matCosts: Record<string, { name: string; costPerCm3: number; unit: string }> = {
                 pla: { name: "PLA", costPerCm3: 0.03, unit: "¥" },
@@ -1726,7 +1731,7 @@ function MoldPanel() {
                     <span className="text-text-muted">预计制造时间</span>
                     <span className="font-mono">{printTime.toFixed(1)} h</span>
                   </div>
-                  <div className="text-[8px] text-text-muted/60 mt-1 border-t border-border/30 pt-1">
+                  <div className="text-[11px] text-text-muted/60 mt-1 border-t border-border/30 pt-1">
                     估算仅供参考，实际费用取决于打印参数和后处理
                   </div>
                 </>
@@ -1783,7 +1788,7 @@ function InsertPanel() {
       <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
         <Box size={28} className="opacity-30" />
         <p className="text-xs">请先导入模型</p>
-        <button onClick={() => setStep("import")} className="text-[10px] text-accent hover:underline">前往导入</button>
+        <button onClick={() => setStep("import")} className="text-[12px] text-accent hover:underline">前往导入</button>
       </div>
     );
   }
@@ -1795,7 +1800,7 @@ function InsertPanel() {
   return (
     <div className="space-y-4">
       <div className="p-2 rounded-lg bg-accent/5 border border-accent/15">
-        <p className="text-[10px] text-text-secondary leading-relaxed">
+        <p className="text-[12px] text-text-secondary leading-relaxed">
           内嵌支撑板置于硅胶教具内部，通过锚固特征与硅胶牢固结合，
           通过细小立柱穿过模具壁定位。为教具提供骨骼/组织的真实触感。
         </p>
@@ -1822,7 +1827,7 @@ function InsertPanel() {
       </Section>
 
       <Section title="1. 截面位置分析" icon={<Compass size={11} />}
-        badge={positions.length > 0 ? <span className="text-[9px] text-accent">{positions.length} 个候选</span> : undefined}>
+        badge={positions.length > 0 ? <span className="text-[11px] text-accent">{positions.length} 个候选</span> : undefined}>
         <ActionButton
           icon={<Compass size={13} />}
           label={isAnalyzing ? "分析中..." : "分析截面位置"}
@@ -1863,7 +1868,7 @@ function InsertPanel() {
           {insertType === "conformal" && (
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
               className="p-2 rounded-lg border border-accent/15 bg-accent/5 space-y-2">
-              <div className="text-[9px] text-accent font-semibold uppercase tracking-wider">仿形参数</div>
+              <div className="text-[11px] text-accent font-semibold uppercase tracking-wider">仿形参数</div>
               <ParamSlider label="曲面偏移" value={conformalOffset} onChange={setConformalOffset} min={1} max={8} step={0.5} unit="mm" />
             </motion.div>
           )}
@@ -1874,9 +1879,9 @@ function InsertPanel() {
         <div className="space-y-2.5">
           {/* Mesh Holes Toggle */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-secondary">表面网孔</span>
+            <span className="text-[12px] text-text-secondary">表面网孔</span>
             <button onClick={() => setAddMeshHoles(!addMeshHoles)}
-              className={cn("px-2.5 py-1 rounded text-[10px] font-medium transition-colors",
+              className={cn("px-2.5 py-1 rounded text-[12px] font-medium transition-colors",
                 addMeshHoles ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
               {addMeshHoles ? "已启用" : "关闭"}
             </button>
@@ -1887,8 +1892,8 @@ function InsertPanel() {
 
               {/* nTopology-style lattice pattern selector */}
               <div className="space-y-1">
-                <span className="text-[9px] text-text-muted font-semibold uppercase tracking-wider">网孔图案</span>
-                <div className="text-[8px] text-text-muted/60 mb-0.5">几何图案</div>
+                <span className="text-[11px] text-text-muted font-semibold uppercase tracking-wider">网孔图案</span>
+                <div className="text-[11px] text-text-muted/60 mb-0.5">几何图案</div>
                 <div className="grid grid-cols-4 gap-1">
                   {([
                     { v: "hex", label: "蜂窝", icon: "⬡" },
@@ -1898,7 +1903,7 @@ function InsertPanel() {
                   ] as const).map((p) => (
                     <button key={p.v} onClick={() => setHolePattern(p.v)}
                       className={cn(
-                        "flex flex-col items-center gap-0.5 py-1.5 px-1 rounded-md text-[9px] transition-all",
+                        "flex flex-col items-center gap-0.5 py-1.5 px-1 rounded-md text-[11px] transition-all",
                         holePattern === p.v
                           ? "bg-accent/15 ring-1 ring-accent/50 text-accent font-medium"
                           : "bg-bg-secondary hover:bg-bg-hover text-text-muted",
@@ -1908,7 +1913,7 @@ function InsertPanel() {
                     </button>
                   ))}
                 </div>
-                <div className="text-[8px] text-text-muted/60 mt-1">TPMS 极小曲面</div>
+                <div className="text-[11px] text-text-muted/60 mt-1">TPMS 极小曲面</div>
                 <div className="grid grid-cols-4 gap-1">
                   {([
                     { v: "gyroid", label: "Gyroid", icon: "∿" },
@@ -1921,7 +1926,7 @@ function InsertPanel() {
                   ] as const).map((p) => (
                     <button key={p.v} onClick={() => setHolePattern(p.v)}
                       className={cn(
-                        "flex flex-col items-center gap-0.5 py-1.5 px-1 rounded-md text-[9px] transition-all",
+                        "flex flex-col items-center gap-0.5 py-1.5 px-1 rounded-md text-[11px] transition-all",
                         holePattern === p.v
                           ? "bg-accent/15 ring-1 ring-accent/50 text-accent font-medium"
                           : "bg-bg-secondary hover:bg-bg-hover text-text-muted",
@@ -1931,7 +1936,7 @@ function InsertPanel() {
                     </button>
                   ))}
                 </div>
-                <div className="text-[7px] text-text-muted/40 mt-0.5">
+                <div className="text-[11px] text-text-muted/40 mt-0.5">
                   {holePattern === "gyroid" ? "sin(x)cos(y)+sin(y)cos(z)+sin(z)cos(x) — 三维周期旋转对称" :
                    holePattern === "schwarz_p" ? "cos(x)+cos(y)+cos(z) — 三维立方对称通道" :
                    holePattern === "schwarz_d" ? "Diamond 极小曲面 — 高强度四面体对称" :
@@ -1941,7 +1946,7 @@ function InsertPanel() {
                    holePattern === "frd" ? "Fischer-Koch S — 复杂互连孔隙" :
                    ""}
                 </div>
-                <div className="text-[8px] text-text-muted/55 mt-1 leading-snug">
+                <div className="text-[11px] text-text-muted/55 mt-1 leading-snug">
                   蜂窝 / Voronoi 为圆孔切口；网格为方孔；TPMS 为超椭圆孔形 + 隐式场布孔（与纯体素 TPMS 实体不同，更适配薄仿形板）。
                 </div>
               </div>
@@ -1950,9 +1955,9 @@ function InsertPanel() {
 
               {/* Variable density toggle */}
               <div className="flex items-center justify-between">
-                <span className="text-[9px] text-text-secondary">场驱动密度</span>
+                <span className="text-[11px] text-text-secondary">场驱动密度</span>
                 <button onClick={() => setVariableDensity(!variableDensity)}
-                  className={cn("px-2 py-0.5 rounded text-[9px] transition-colors",
+                  className={cn("px-2 py-0.5 rounded text-[11px] transition-colors",
                     variableDensity ? "bg-accent/80 text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
                   {variableDensity ? "开" : "关"}
                 </button>
@@ -1960,7 +1965,7 @@ function InsertPanel() {
               {variableDensity && (
                 <div className="pl-2 border-l-2 border-accent/20 space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="text-[8px] text-text-muted">密度场类型</span>
+                    <span className="text-[11px] text-text-muted">密度场类型</span>
                     <div className="flex gap-0.5 flex-wrap">
                       {[
                         { v: "edge", label: "边缘" },
@@ -1970,14 +1975,14 @@ function InsertPanel() {
                         { v: "uniform", label: "均匀" },
                       ].map((f) => (
                         <button key={f.v} onClick={() => setDensityField(f.v)}
-                          className={cn("px-1.5 py-0.5 rounded text-[8px]",
+                          className={cn("px-1.5 py-0.5 rounded text-[11px]",
                             densityField === f.v ? "bg-accent/70 text-white" : "bg-bg-secondary text-text-muted")}>
                           {f.label}
                         </button>
                       ))}
                     </div>
                   </div>
-                  <div className="text-[8px] text-text-muted/50">
+                  <div className="text-[11px] text-text-muted/50">
                     {densityField === "edge" ? "边缘孔大中心小 — 增强边缘锚固强度" :
                      densityField === "center" ? "中心孔大边缘小 — 中心减重保持边缘刚性" :
                      densityField === "radial" ? "径向渐变 — 由中心向外逐渐增大" :
@@ -1987,16 +1992,16 @@ function InsertPanel() {
                 </div>
               )}
 
-              <div className="text-[9px] text-text-muted">硅胶渗透通孔，增强板-硅胶结合力</div>
+              <div className="text-[11px] text-text-muted">硅胶渗透通孔，增强板-硅胶结合力</div>
               {/* Brush painting toggle */}
               <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-border/20">
-                <span className="text-[9px] text-text-secondary">手动规划网孔</span>
+                <span className="text-[11px] text-text-secondary">手动规划网孔</span>
                 <button onClick={() => {
                   const s = useInsertStore.getState();
                   s.setHoleBrushActive(!s.holeBrushActive);
                   s.setBrushMode("holes");
                 }}
-                  className={cn("px-2 py-0.5 rounded text-[9px] font-medium transition-colors",
+                  className={cn("px-2 py-0.5 rounded text-[11px] font-medium transition-colors",
                     useInsertStore.getState().holeBrushActive
                       ? "bg-red-500/80 text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
                   {useInsertStore.getState().holeBrushActive ? "绘制中..." : "涂刷"}
@@ -2009,11 +2014,11 @@ function InsertPanel() {
                     min={5} max={40} step={1} unit="mm" />
                   <div className="flex gap-1.5 mt-1">
                     <button onClick={() => useInsertStore.getState().clearHoleBrushRegions()}
-                      className="flex-1 px-1.5 py-0.5 rounded text-[9px] bg-bg-secondary text-text-muted hover:bg-bg-hover">
+                      className="flex-1 px-1.5 py-0.5 rounded text-[11px] bg-bg-secondary text-text-muted hover:bg-bg-hover">
                       清除涂刷
                     </button>
                   </div>
-                  <div className="text-[8px] text-text-muted/60">
+                  <div className="text-[11px] text-text-muted/60">
                     在3D视图中点击/拖动支撑板表面涂刷区域，仅在涂刷范围内生成网孔
                   </div>
                 </motion.div>
@@ -2023,9 +2028,9 @@ function InsertPanel() {
 
           {/* Ribs Toggle */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-secondary">加强筋</span>
+            <span className="text-[12px] text-text-secondary">加强筋</span>
             <button onClick={() => setAddRibs(!addRibs)}
-              className={cn("px-2.5 py-1 rounded text-[10px] font-medium transition-colors",
+              className={cn("px-2.5 py-1 rounded text-[12px] font-medium transition-colors",
                 addRibs ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
               {addRibs ? "已启用" : "关闭"}
             </button>
@@ -2035,16 +2040,16 @@ function InsertPanel() {
               className="pl-2 border-l-2 border-accent/30 space-y-1.5">
               <ParamSlider label="筋高度" value={ribHeight} onChange={setRibHeight} min={1} max={6} step={0.5} unit="mm" />
               <ParamSlider label="筋间距" value={ribSpacing} onChange={setRibSpacing} min={3} max={15} step={1} unit="mm" />
-              <div className="text-[9px] text-text-muted">交叉肋条增强板面刚性</div>
+              <div className="text-[11px] text-text-muted">交叉肋条增强板面刚性</div>
               {/* Rib brush painting */}
               <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-border/20">
-                <span className="text-[9px] text-text-secondary">手动规划加强筋</span>
+                <span className="text-[11px] text-text-secondary">手动规划加强筋</span>
                 <button onClick={() => {
                   const s = useInsertStore.getState();
                   s.setHoleBrushActive(!s.holeBrushActive);
                   s.setBrushMode("ribs");
                 }}
-                  className={cn("px-2 py-0.5 rounded text-[9px] font-medium transition-colors",
+                  className={cn("px-2 py-0.5 rounded text-[11px] font-medium transition-colors",
                     useInsertStore.getState().holeBrushActive && useInsertStore.getState().brushMode === "ribs"
                       ? "bg-blue-500/80 text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
                   {useInsertStore.getState().holeBrushActive && useInsertStore.getState().brushMode === "ribs" ? "绘制中..." : "涂刷"}
@@ -2057,11 +2062,11 @@ function InsertPanel() {
                     min={5} max={40} step={1} unit="mm" />
                   <div className="flex gap-1.5 mt-1">
                     <button onClick={() => useInsertStore.getState().clearRibBrushRegions()}
-                      className="flex-1 px-1.5 py-0.5 rounded text-[9px] bg-bg-secondary text-text-muted hover:bg-bg-hover">
+                      className="flex-1 px-1.5 py-0.5 rounded text-[11px] bg-bg-secondary text-text-muted hover:bg-bg-hover">
                       清除涂刷
                     </button>
                   </div>
-                  <div className="text-[8px] text-text-muted/60">
+                  <div className="text-[11px] text-text-muted/60">
                     在3D视图中涂刷区域，仅在涂刷范围内生成加强筋
                   </div>
                 </motion.div>
@@ -2071,10 +2076,10 @@ function InsertPanel() {
 
           {/* Interlocking Toggle */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-text-secondary">啮合固定</span>
+            <span className="text-[12px] text-text-secondary">啮合固定</span>
             <select value={addInterlocking ?? "none"}
               onChange={(e) => setAddInterlocking(e.target.value === "none" ? null : e.target.value)}
-              className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary">
+              className="text-[12px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary">
               <option value="none">关闭</option>
               <option value="dovetail">燕尾榫</option>
               <option value="bumps">凸起互锁</option>
@@ -2086,7 +2091,7 @@ function InsertPanel() {
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
               className="pl-2 border-l-2 border-accent/30 space-y-1.5">
               <ParamSlider label="特征尺寸" value={interlockSize} onChange={setInterlockSize} min={1} max={4} step={0.5} unit="mm" />
-              <div className="text-[9px] text-text-muted">板面边缘/表面的机械咬合结构</div>
+              <div className="text-[11px] text-text-muted">板面边缘/表面的机械咬合结构</div>
             </motion.div>
           )}
         </div>
@@ -2099,7 +2104,7 @@ function InsertPanel() {
             <div className="flex items-center gap-1">
               {[2, 3, 4, 6].map((n) => (
                 <button key={n} onClick={() => setPillarCount(n)}
-                  className={cn("w-6 h-6 rounded text-[10px] font-medium transition-colors",
+                  className={cn("w-6 h-6 rounded text-[12px] font-medium transition-colors",
                     pillarCount === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
                   {n}
                 </button>
@@ -2167,11 +2172,11 @@ function InsertPanel() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
                     <span className="text-accent font-bold">板{i+1}</span>
-                    <span className="px-1 py-0.5 rounded bg-accent/10 text-accent text-[8px] font-medium">
+                    <span className="px-1 py-0.5 rounded bg-accent/10 text-accent text-[11px] font-medium">
                       {INSERT_TYPE_LABELS[p.insert_type ?? ""] ?? insertType}
                     </span>
                     {p.anchor && (
-                      <span className="px-1 py-0.5 rounded bg-success/10 text-success text-[8px]">
+                      <span className="px-1 py-0.5 rounded bg-success/10 text-success text-[11px]">
                         {p.anchor.type ?? "锚固"}
                       </span>
                     )}
@@ -2179,7 +2184,7 @@ function InsertPanel() {
                   <span className="text-text-muted">{p.face_count.toLocaleString()} 面</span>
                 </div>
                 {p.n_pillars > 0 && (
-                  <div className="text-[10px] text-text-muted">
+                  <div className="text-[12px] text-text-muted">
                     支撑立柱: {p.n_pillars} 根
                   </div>
                 )}
@@ -2265,7 +2270,7 @@ function LatticeGeneratorPanel({ modelId }: { modelId: string | null }) {
 
   return (
     <div className="space-y-2">
-      <div className="text-[8px] text-text-muted/60">在模型体积内生成 3D 晶格结构 — nTopology 风格</div>
+      <div className="text-[11px] text-text-muted/60">在模型体积内生成 3D 晶格结构 — nTopology 风格</div>
       <div className="flex gap-1">
         {([
           { v: "tpms", label: "TPMS 体积" },
@@ -2273,7 +2278,7 @@ function LatticeGeneratorPanel({ modelId }: { modelId: string | null }) {
           { v: "foam", label: "Voronoi 泡沫" },
         ] as const).map((t) => (
           <button key={t.v} onClick={() => setLatticeType(t.v)}
-            className={cn("px-2 py-0.5 rounded text-[8px]",
+            className={cn("px-2 py-0.5 rounded text-[11px]",
               latticeType === t.v ? "bg-accent/70 text-white" : "bg-bg-secondary text-text-muted")}>
             {t.label}
           </button>
@@ -2283,7 +2288,7 @@ function LatticeGeneratorPanel({ modelId }: { modelId: string | null }) {
         <div className="flex gap-0.5 flex-wrap">
           {(["bcc", "fcc", "octet", "kelvin", "diamond"] as const).map((c) => (
             <button key={c} onClick={() => setCellType(c)}
-              className={cn("px-1.5 py-0.5 rounded text-[7px] uppercase",
+              className={cn("px-1.5 py-0.5 rounded text-[11px] uppercase",
                 cellType === c ? "bg-accent/60 text-white" : "bg-bg-secondary text-text-muted")}>
               {c}
             </button>
@@ -2294,7 +2299,7 @@ function LatticeGeneratorPanel({ modelId }: { modelId: string | null }) {
         <div className="flex gap-0.5 flex-wrap">
           {(["gyroid", "schwarz_p", "schwarz_d", "neovius", "lidinoid", "iwp", "frd"] as const).map((t) => (
             <button key={t} onClick={() => setTpmsType(t)}
-              className={cn("px-1.5 py-0.5 rounded text-[7px]",
+              className={cn("px-1.5 py-0.5 rounded text-[11px]",
                 tpmsType === t ? "bg-accent/60 text-white" : "bg-bg-secondary text-text-muted")}>
               {t === "schwarz_p" ? "Schwarz-P" : t === "schwarz_d" ? "Schwarz-D" : t.charAt(0).toUpperCase() + t.slice(1)}
             </button>
@@ -2305,7 +2310,7 @@ function LatticeGeneratorPanel({ modelId }: { modelId: string | null }) {
       <ParamSlider label="壁厚/杆径" value={wallThickness} onChange={setWallThickness} min={0.2} max={3} step={0.1} unit="mm" width="w-12" />
       <ActionButton label={loading ? "生成中..." : "生成 3D 晶格"} loading={loading} onClick={run} />
       {result && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[9px]">
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1 text-[11px]">
           <ResultRow label="晶格类型" value={String((result as Record<string,unknown>).lattice_type)} />
           <ResultRow label="单元数" value={String((result as Record<string,unknown>).cell_count)} />
           <ResultRow label="体积分数" value={`${(Number((result as Record<string,unknown>).volume_fraction) * 100).toFixed(1)}%`} />
@@ -2334,7 +2339,7 @@ function GatingPanel() {
       <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
         <Droplets size={28} className="opacity-30" />
         <p className="text-xs">请先生成模具</p>
-        <button onClick={() => setStep("mold")} className="text-[10px] text-accent hover:underline">前往模具步骤</button>
+        <button onClick={() => setStep("mold")} className="text-[12px] text-accent hover:underline">前往模具步骤</button>
       </div>
     );
   }
@@ -2354,7 +2359,7 @@ function GatingPanel() {
                 { v: "hot", label: "热流道" },
               ].map((opt) => (
                 <button key={opt.v} onClick={() => setRunnerType(opt.v)}
-                  className={cn("px-2 py-0.5 rounded text-[10px] transition-colors",
+                  className={cn("px-2 py-0.5 rounded text-[12px] transition-colors",
                     runnerType === opt.v ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
                   {opt.label}
                 </button>
@@ -2365,7 +2370,7 @@ function GatingPanel() {
             <div className="flex items-center gap-1">
               {[1, 2, 3, 4].map((n) => (
                 <button key={n} onClick={() => setNGates(n)}
-                  className={cn("w-6 h-6 rounded text-[10px] font-medium transition-colors",
+                  className={cn("w-6 h-6 rounded text-[12px] font-medium transition-colors",
                     nGates === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
                   {n}
                 </button>
@@ -2378,7 +2383,7 @@ function GatingPanel() {
             <div className="flex items-center gap-1">
               {[1, 2, 3, 4, 6, 8].map((n) => (
                 <button key={n} onClick={() => setNVents(n)}
-                  className={cn("w-6 h-6 rounded text-[10px] font-medium transition-colors",
+                  className={cn("w-6 h-6 rounded text-[12px] font-medium transition-colors",
                     nVents === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
                   {n}
                 </button>
@@ -2386,7 +2391,7 @@ function GatingPanel() {
             </div>
           </ParamRow>
           {runnerType === "hot" && (
-            <div className="text-[9px] text-accent/80 p-1.5 bg-accent/5 rounded">
+            <div className="text-[11px] text-accent/80 p-1.5 bg-accent/5 rounded">
               热流道可减少材料浪费约 30%，缩短冷却时间，但模具成本更高
             </div>
           )}
@@ -2424,12 +2429,12 @@ function GatingPanel() {
           <ResultCard>
             <ResultRow label="浇口评分" value={`${(gatingResult.gate.score * 100).toFixed(1)}%`} color="text-accent font-bold" />
             <div className="space-y-1 my-1">
-              <div className="text-text-muted text-[9px]">流道平衡</div>
+              <div className="text-text-muted text-[11px]">流道平衡</div>
               <div className="h-1.5 rounded-full bg-bg-hover overflow-hidden">
                 <div className={cn("h-full rounded-full", gatingResult.gate.flow_balance > 0.8 ? "bg-success" : gatingResult.gate.flow_balance > 0.5 ? "bg-accent" : "bg-warning")}
                   style={{ width: `${gatingResult.gate.flow_balance * 100}%` }} />
               </div>
-              <div className="flex justify-between text-[8px] text-text-muted">
+              <div className="flex justify-between text-[11px] text-text-muted">
                 <span>不平衡</span><span>{(gatingResult.gate.flow_balance * 100).toFixed(0)}%</span><span>完美</span>
               </div>
             </div>
@@ -2494,7 +2499,7 @@ function SimPanel() {
       <div className="flex flex-col items-center gap-3 py-8 text-text-muted">
         <Droplets size={28} className="opacity-30" />
         <p className="text-xs">请先生成模具</p>
-        <button onClick={() => setStep("mold")} className="text-[10px] text-accent hover:underline">前往模具步骤</button>
+        <button onClick={() => setStep("mold")} className="text-[12px] text-accent hover:underline">前往模具步骤</button>
       </div>
     );
   }
@@ -2517,7 +2522,7 @@ function SimPanel() {
 
       {/* 2. Gating */}
       <Section title="2. 浇注系统" icon={<Droplets size={11} />}
-        badge={gatingId ? <span className="text-[8px] text-success font-medium">✓</span> : undefined}>
+        badge={gatingId ? <span className="text-[11px] text-success font-medium">✓</span> : undefined}>
         <ActionButton
           icon={<Droplets size={13} />}
           label={isDesigningGating ? "设计中..." : "设计浇注系统"}
@@ -2529,7 +2534,7 @@ function SimPanel() {
         />
         {gatingResult && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-            className="mt-2 p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+            className="mt-2 p-2 rounded bg-bg-secondary text-[12px] space-y-1">
             <div className="flex justify-between">
               <span className="text-text-muted">浇口评分</span>
               <span className="text-accent">{(gatingResult.gate.score * 100).toFixed(1)}%</span>
@@ -2552,11 +2557,11 @@ function SimPanel() {
 
       {/* 3. Simulation */}
       <Section title="3. 灌注仿真" icon={<Zap size={11} />}
-        badge={simResult ? <span className={cn("text-[8px] font-medium", simResult.fill_fraction >= 0.99 ? "text-success" : "text-warning")}>
+        badge={simResult ? <span className={cn("text-[11px] font-medium", simResult.fill_fraction >= 0.99 ? "text-success" : "text-warning")}>
           {(simResult.fill_fraction * 100).toFixed(0)}%
         </span> : undefined}>
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[10px] text-text-muted">仿真级别</span>
+          <span className="text-[12px] text-text-muted">仿真级别</span>
           <div className="flex items-center gap-1">
             {[
               { v: 1, label: "L1 启发式", tip: "快速 ~1s" },
@@ -2564,7 +2569,7 @@ function SimPanel() {
             ].map((opt) => (
               <button key={opt.v} onClick={() => setSimLevel(opt.v)}
                 className={cn(
-                  "px-2 py-0.5 rounded text-[10px] transition-colors",
+                  "px-2 py-0.5 rounded text-[12px] transition-colors",
                   simLevel === opt.v
                     ? "bg-accent text-white"
                     : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
@@ -2601,7 +2606,7 @@ function SimPanel() {
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
             className="mt-2 space-y-2">
             {/* Fill confidence bar */}
-            <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+            <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="text-text-muted font-semibold">充填置信度</span>
                 <span className={cn("font-bold",
@@ -2614,13 +2619,13 @@ function SimPanel() {
               <div className="h-2 rounded-full bg-bg-hover overflow-hidden flex">
                 <div className="h-full bg-success transition-all" style={{ width: `${simResult.fill_fraction * 100}%` }} />
               </div>
-              <div className="flex justify-between text-[8px] text-text-muted">
+              <div className="flex justify-between text-[11px] text-text-muted">
                 <span>0%</span><span>充填率 {(simResult.fill_fraction * 100).toFixed(1)}%</span><span>100%</span>
               </div>
             </div>
 
             {/* Key metrics */}
-            <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+            <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
               <div className="flex justify-between">
                 <span className="text-text-muted">充填时间</span>
                 <span>{simResult.fill_time_seconds.toFixed(1)} s</span>
@@ -2649,7 +2654,7 @@ function SimPanel() {
 
             {/* Defect summary by type */}
             {simResult.defects.length > 0 && (
-              <div className="p-2 rounded border border-warning/20 bg-warning/5 text-[10px] space-y-1">
+              <div className="p-2 rounded border border-warning/20 bg-warning/5 text-[12px] space-y-1">
                 <div className="text-warning font-semibold flex items-center gap-1">
                   <span>⚠</span> 缺陷检测 ({simResult.defects.length})
                 </div>
@@ -2680,7 +2685,7 @@ function SimPanel() {
               </div>
             )}
             {simResult.defects.length === 0 && (
-              <div className="p-2 rounded border border-success/20 bg-success/5 text-[10px] text-success flex items-center gap-1.5">
+              <div className="p-2 rounded border border-success/20 bg-success/5 text-[12px] text-success flex items-center gap-1.5">
                 <CheckCircle2 size={12} /> 未检测到缺陷
               </div>
             )}
@@ -2691,7 +2696,7 @@ function SimPanel() {
       {/* 4. Visualization Data */}
       {simResult && (
         <Section title="4. 可视化" icon={<BarChart3 size={11} />}
-          badge={visualizationData ? <span className="text-[8px] text-success font-medium">已加载</span> : undefined}>
+          badge={visualizationData ? <span className="text-[11px] text-success font-medium">已加载</span> : undefined}>
           {!visualizationData && !isLoadingVisualization && simResult.has_visualization && simId && (
             <ActionButton
               icon={<BarChart3 size={13} />}
@@ -2701,24 +2706,24 @@ function SimPanel() {
             />
           )}
           {isLoadingVisualization && (
-            <div className="flex items-center gap-2 text-[10px] text-text-muted py-2">
+            <div className="flex items-center gap-2 text-[12px] text-text-muted py-2">
               <Loader2 size={12} className="animate-spin" />
               加载可视化数据中...
             </div>
           )}
           {visualizationData && (
             <div className="space-y-2">
-              <div className="text-[9px] text-success p-1.5 bg-success/5 rounded">
+              <div className="text-[11px] text-success p-1.5 bg-success/5 rounded">
                 ✓ 已加载 {(visualizationData.n_points * particleDensity).toLocaleString()} 粒子
                 · {visualizationData.defect_positions.length} 缺陷
               </div>
-              <div className="text-[9px] text-text-muted p-1.5 bg-bg-secondary rounded">
+              <div className="text-[11px] text-text-muted p-1.5 bg-bg-secondary rounded">
                 可视化控制已移至视口下方浮动工具栏
               </div>
             </div>
           )}
           {!simResult.has_visualization && (
-            <div className="text-[10px] text-text-muted p-2 bg-bg-secondary rounded">
+            <div className="text-[12px] text-text-muted p-2 bg-bg-secondary rounded">
               L1 启发式仿真不产生体素数据。请使用 L2 达西流获取完整可视化。
             </div>
           )}
@@ -2728,7 +2733,7 @@ function SimPanel() {
       {/* 5. Surface Overlay */}
       {visualizationData && simId && (
         <Section title="5. 表面叠加" icon={<Layers size={11} />}
-          badge={surfaceMapData ? <span className="text-[8px] text-success font-medium">已加载</span> : undefined}>
+          badge={surfaceMapData ? <span className="text-[11px] text-success font-medium">已加载</span> : undefined}>
           {!surfaceMapData && (
             <ActionButton
               icon={<Layers size={13} />}
@@ -2738,7 +2743,7 @@ function SimPanel() {
             />
           )}
           {surfaceMapData && (
-            <div className="text-[9px] text-success p-1.5 bg-success/5 rounded">
+            <div className="text-[11px] text-success p-1.5 bg-success/5 rounded">
               ✓ 表面映射已叠加于模型表面 — 可在浮动栏切换
             </div>
           )}
@@ -2754,7 +2759,7 @@ function SimPanel() {
                 {(["x", "y", "z"] as const).map((ax) => (
                   <button key={ax} onClick={() => setCrossSectionAxis(ax)}
                     className={cn(
-                      "px-2 py-0.5 rounded text-[10px] transition-colors",
+                      "px-2 py-0.5 rounded text-[12px] transition-colors",
                       crossSectionAxis === ax ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
                     )}>
                     {ax.toUpperCase()}
@@ -2774,7 +2779,7 @@ function SimPanel() {
             {crossSectionData && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-2">
                 <CrossSectionCanvas data={crossSectionData} />
-                <div className="text-[9px] text-text-muted mt-1">
+                <div className="text-[11px] text-text-muted mt-1">
                   {crossSectionData.field} | {crossSectionData.axis.toUpperCase()}轴
                   | 值域 [{crossSectionData.value_range[0].toFixed(2)}, {crossSectionData.value_range[1].toFixed(2)}]
                 </div>
@@ -2787,10 +2792,10 @@ function SimPanel() {
       {/* 7. Analysis Report */}
       {simResult?.analysis && (
         <CollapsibleSection title="7. 综合分析" icon={<BarChart3 size={11} />} defaultOpen={false}
-          badge={<span className={cn("text-[8px] font-bold", simResult.analysis.fill_quality_score > 0.7 ? "text-success" : "text-warning")}>
+          badge={<span className={cn("text-[11px] font-bold", simResult.analysis.fill_quality_score > 0.7 ? "text-success" : "text-warning")}>
             {(simResult.analysis.fill_quality_score * 100).toFixed(0)}%
           </span>}>
-          <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+          <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1.5">
             <div className="text-text-muted font-semibold">均匀性指标</div>
             <AnalysisBar label="充填均匀" value={simResult.analysis.fill_uniformity_index} />
             <AnalysisBar label="压力均匀" value={simResult.analysis.pressure_uniformity_index} />
@@ -2820,7 +2825,7 @@ function SimPanel() {
           </div>
 
           {simResult.analysis.recommendations.length > 0 && (
-            <div className="p-2 rounded border border-accent/20 bg-accent/5 text-[10px] text-text-secondary mt-1.5 space-y-1">
+            <div className="p-2 rounded border border-accent/20 bg-accent/5 text-[12px] text-text-secondary mt-1.5 space-y-1">
               <div className="flex items-center gap-1 font-medium text-accent">
                 <Lightbulb size={11} />
                 优化建议
@@ -2874,7 +2879,7 @@ function SimPanel() {
 
       {/* 9. FEA Structural Analysis */}
       <Section title="9. 有限元分析 (FEA)" icon={<Activity size={11} />}
-        badge={feaResult ? <span className="text-[8px] text-success font-medium">完成</span> : undefined}>
+        badge={feaResult ? <span className="text-[11px] text-success font-medium">完成</span> : undefined}>
         <div className="space-y-2">
           <ParamSelect label="材料" value={feaMaterial} onChange={setFeaMaterial}
             options={[
@@ -2921,7 +2926,7 @@ function SimPanel() {
             );
           })()}
           {feaVisualizationData && (
-            <div className="text-[9px] text-success p-1.5 bg-success/5 rounded mt-1">
+            <div className="text-[11px] text-success p-1.5 bg-success/5 rounded mt-1">
               ✓ FEA可视化已就绪 — 在视口下方浮动栏切换显示场
             </div>
           )}
@@ -3106,7 +3111,7 @@ function ExportPanel() {
         <motion.div
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-lg border border-border/80 bg-bg-secondary/40 p-2.5 space-y-2 text-[10px]"
+          className="rounded-lg border border-border/80 bg-bg-secondary/40 p-2.5 space-y-2 text-[12px]"
         >
           <div className="flex gap-2">
             <FileText size={14} className="text-accent shrink-0 mt-0.5" />
@@ -3165,7 +3170,7 @@ function ExportPanel() {
               </div>
             </div>
           </div>
-          <div className="flex justify-between items-center border-t border-border/50 pt-2 text-[10px]">
+          <div className="flex justify-between items-center border-t border-border/50 pt-2 text-[12px]">
             <span className="text-text-muted">估算导出体积（当前格式）</span>
             <span className="tabular-nums text-text-secondary font-medium">
               {estBytes > 0
@@ -3196,7 +3201,7 @@ function ExportPanel() {
           key={format}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="mt-2 text-[10px] text-text-muted leading-relaxed"
+          className="mt-2 text-[12px] text-text-muted leading-relaxed"
         >
           {formatTip}
         </motion.p>
@@ -3334,7 +3339,7 @@ function ExportPanel() {
             )
           }
         />
-        <div className="mt-2 text-[10px] text-text-muted space-y-0.5">
+        <div className="mt-2 text-[12px] text-text-muted space-y-0.5">
           <div>
             包含:{" "}
             {[modelId && "模型", moldId && "模具壳体", insertId && "内骨骼"]
@@ -3351,7 +3356,7 @@ function ExportPanel() {
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="flex items-center gap-2 rounded-md border border-border/60 bg-bg-secondary/50 px-2.5 py-2 text-[10px] text-text-muted"
+              className="flex items-center gap-2 rounded-md border border-border/60 bg-bg-secondary/50 px-2.5 py-2 text-[12px] text-text-muted"
             >
               <Loader2 size={14} className="animate-spin text-accent shrink-0" />
               <span>正在准备下载…</span>
@@ -3362,7 +3367,7 @@ function ExportPanel() {
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
               className={cn(
-                "rounded-md border px-2.5 py-2 text-[10px] space-y-1",
+                "rounded-md border px-2.5 py-2 text-[12px] space-y-1",
                 lastExport.ok
                   ? "border-success/40 bg-success/5 text-text-secondary"
                   : "border-danger/40 bg-danger/5 text-danger",
@@ -3394,7 +3399,7 @@ function ExportPanel() {
 
       {/* Print readiness checklist */}
       <Section title="打印就绪检查" icon={<CheckCircle2 size={11} />}>
-        <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+        <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1.5">
           {(() => {
             const info = meshInfo;
             const checks = [
@@ -3424,7 +3429,7 @@ function ExportPanel() {
                     <span className={c.ok ? "text-text-secondary" : "text-text-muted"}>
                       {c.label}
                     </span>
-                    {!c.ok && <span className="text-[8px] text-text-muted/50 ml-auto">{c.tip}</span>}
+                    {!c.ok && <span className="text-[11px] text-text-muted/50 ml-auto">{c.tip}</span>}
                   </div>
                 ))}
               </>
@@ -3436,7 +3441,7 @@ function ExportPanel() {
       {/* Manufacturing report */}
       {modelId && moldId && (
         <Section title="制造报告" icon={<FileText size={11} />}>
-          <div className="p-2 rounded bg-bg-secondary text-[10px] space-y-1.5">
+          <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1.5">
             <div className="text-text-muted font-semibold mb-1">工艺参数概要</div>
             <div className="flex justify-between">
               <span className="text-text-muted">模型</span>
@@ -3458,7 +3463,7 @@ function ExportPanel() {
               <span className="text-text-muted">导出格式</span>
               <span className="font-mono uppercase">{format}</span>
             </div>
-            <div className="text-[8px] text-text-muted/60 mt-1 border-t border-border/30 pt-1">
+            <div className="text-[11px] text-text-muted/60 mt-1 border-t border-border/30 pt-1">
               完整的制造报告将随 ZIP 包一同导出
             </div>
           </div>
@@ -3466,7 +3471,7 @@ function ExportPanel() {
       )}
 
       {(exportModel.isError || exportMold.isError || exportInsert.isError || exportAll.isError) && (
-        <p className="text-[10px] text-danger">导出失败，请重试</p>
+        <p className="text-[12px] text-danger">导出失败，请重试</p>
       )}
     </div>
   );
@@ -3477,7 +3482,7 @@ function DesignRulesChecker() {
   const moldResult = useMoldStore((s) => s.moldResult);
   const orientationResult = useMoldStore((s) => s.orientationResult);
 
-  if (!meshInfo) return <div className="text-[10px] text-text-muted py-2">需要先导入模型</div>;
+  if (!meshInfo) return <div className="text-[12px] text-text-muted py-2">需要先导入模型</div>;
 
   const rules: { label: string; status: "pass" | "warn" | "fail" | "na"; detail: string }[] = [];
 
@@ -3548,20 +3553,20 @@ function DesignRulesChecker() {
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-[9px] text-text-muted font-semibold uppercase tracking-wider">设计规则检查</span>
-        <span className={cn("text-[10px] font-bold",
+        <span className="text-[11px] text-text-muted font-semibold uppercase tracking-wider">设计规则检查</span>
+        <span className={cn("text-[12px] font-bold",
           passCount === total ? "text-success" : passCount >= total * 0.7 ? "text-accent" : "text-warning")}>
           {passCount}/{total}
         </span>
       </div>
       {rules.map((r, i) => (
-        <div key={i} className="flex items-center gap-1.5 text-[10px]">
+        <div key={i} className="flex items-center gap-1.5 text-[12px]">
           <span className={cn("w-3 text-center font-bold",
             r.status === "pass" ? "text-success" : r.status === "warn" ? "text-warning" : r.status === "fail" ? "text-danger" : "text-text-muted/40")}>
             {r.status === "pass" ? "✓" : r.status === "warn" ? "!" : r.status === "fail" ? "✗" : "—"}
           </span>
           <span className="text-text-secondary flex-1">{r.label}</span>
-          <span className="text-text-muted text-[9px] text-right max-w-[100px] truncate">{r.detail}</span>
+          <span className="text-text-muted text-[11px] text-right max-w-[100px] truncate">{r.detail}</span>
         </div>
       ))}
     </div>
@@ -3592,21 +3597,21 @@ function MaterialLibrary({ selected, onSelect }: { selected: string; onSelect: (
       <input
         type="text" placeholder="搜索材料..."
         value={filter} onChange={(e) => { setFilter(e.target.value); setExpanded(true); }}
-        className="w-full text-[10px] bg-bg-secondary border border-border rounded px-2 py-1 text-text-primary placeholder:text-text-muted/40"
+        className="w-full text-[12px] bg-bg-secondary border border-border rounded px-2 py-1 text-text-primary placeholder:text-text-muted/40"
       />
       <div className={cn("space-y-0.5", expanded ? "max-h-48" : "max-h-24", "overflow-y-auto")}>
         {filtered.map((m) => (
           <button key={m.id} onClick={() => onSelect(m.id)}
             className={cn(
-              "w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-[10px] transition-all text-left",
+              "w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-[12px] transition-all text-left",
               selected === m.id ? "bg-accent/15 ring-1 ring-accent/40" : "bg-bg-secondary/50 hover:bg-bg-hover",
             )}>
             <div className="w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: m.color }} />
             <div className="flex-1 min-w-0">
               <div className={cn("font-medium truncate", selected === m.id ? "text-accent" : "text-text-secondary")}>{m.name}</div>
-              <div className="text-[8px] text-text-muted">{m.shore} · {m.density}g/cm³</div>
+              <div className="text-[11px] text-text-muted">{m.shore} · {m.density}g/cm³</div>
             </div>
-            <div className="text-right shrink-0 text-[8px] text-text-muted">
+            <div className="text-right shrink-0 text-[11px] text-text-muted">
               <div>{m.tensile}MPa</div>
               <div>{m.elongation}%</div>
             </div>
@@ -3617,7 +3622,7 @@ function MaterialLibrary({ selected, onSelect }: { selected: string; onSelect: (
         const mat = MATERIAL_DB.find(m => m.id === selected);
         if (!mat) return null;
         return (
-          <div className="p-1.5 rounded bg-bg-secondary/50 text-[9px] text-text-muted space-y-0.5">
+          <div className="p-1.5 rounded bg-bg-secondary/50 text-[11px] text-text-muted space-y-0.5">
             <div className="flex justify-between"><span>拉伸强度</span><span className="font-mono">{mat.tensile} MPa</span></div>
             <div className="flex justify-between"><span>断裂伸长</span><span className="font-mono">{mat.elongation}%</span></div>
             <div className="flex justify-between"><span>密度</span><span className="font-mono">{mat.density} g/cm³</span></div>
@@ -3656,7 +3661,7 @@ function QualityChecker({ modelId }: { modelId: string | null }) {
       />
       {quality && (
         <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-          className="p-2 rounded bg-bg-secondary text-[10px] space-y-1">
+          className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
           {Object.entries(quality).map(([k, v]) => {
             if (typeof v === "object" || k === "model_id") return null;
             const label: Record<string, string> = {
@@ -3695,7 +3700,7 @@ function Section({ title, children, icon, badge }: { title: string; children: Re
     <div>
       <div className="flex items-center gap-1.5 mb-2">
         {icon && <span className="text-text-muted">{icon}</span>}
-        <h4 className="text-[10px] font-semibold text-text-muted uppercase tracking-wider flex-1">{title}</h4>
+        <h4 className="text-[12px] font-semibold text-text-muted uppercase tracking-wider flex-1">{title}</h4>
         {badge}
       </div>
       {children}
@@ -3712,7 +3717,7 @@ function CollapsibleSection({ title, children, icon, badge, defaultOpen = false 
       <button onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-1.5 mb-1 group">
         {icon && <span className="text-text-muted">{icon}</span>}
-        <h4 className="text-[10px] font-semibold text-text-muted uppercase tracking-wider flex-1 text-left group-hover:text-text-secondary transition-colors">{title}</h4>
+        <h4 className="text-[12px] font-semibold text-text-muted uppercase tracking-wider flex-1 text-left group-hover:text-text-secondary transition-colors">{title}</h4>
         {badge}
         <motion.span animate={{ rotate: open ? 180 : 0 }} transition={{ duration: 0.2 }}>
           <ChevronDown size={11} className="text-text-muted" />
@@ -3773,14 +3778,14 @@ function StepHint({ icon, text, action, actionLabel }: {
   icon?: React.ReactNode; text: string; action?: () => void; actionLabel?: string;
 }) {
   return (
-    <div className="p-2.5 rounded-lg border border-accent/20 bg-accent/5 text-[10px] text-text-secondary space-y-1.5">
+    <div className="p-2.5 rounded-lg border border-accent/20 bg-accent/5 text-[12px] text-text-secondary space-y-1.5">
       <div className="flex items-start gap-1.5">
         <span className="text-accent mt-0.5 shrink-0">{icon ?? <Lightbulb size={12} />}</span>
         <p className="leading-relaxed">{text}</p>
       </div>
       {action && actionLabel && (
         <button onClick={action}
-          className="w-full text-center py-1 rounded bg-accent/10 hover:bg-accent/20 text-accent text-[10px] font-medium transition-colors">
+          className="w-full text-center py-1 rounded bg-accent/10 hover:bg-accent/20 text-accent text-[12px] font-medium transition-colors">
           {actionLabel}
         </button>
       )}
@@ -3791,7 +3796,7 @@ function StepHint({ icon, text, action, actionLabel }: {
 function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
   return (
     <span className={cn(
-      "px-1.5 py-0.5 rounded text-[8px] font-medium",
+      "px-1.5 py-0.5 rounded text-[11px] font-medium",
       ok ? "bg-success/10 text-success" : "bg-bg-secondary text-text-muted",
     )}>
       {ok ? "✓" : "○"} {label}
@@ -3802,7 +3807,7 @@ function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
 function ParamRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between">
-      <span className="text-[10px] text-text-muted">{label}</span>
+      <span className="text-[12px] text-text-muted">{label}</span>
       {children}
     </div>
   );
@@ -3816,7 +3821,7 @@ function ParamSlider({ label, value, onChange, min, max, step, unit, width = "w-
       <div className="flex items-center gap-1">
         <input type="range" min={min} max={max} step={step} value={value}
           onChange={(e) => onChange(parseFloat(e.target.value))} className={cn(width, "accent-accent")} />
-        <span className="text-[10px] text-text-muted w-12 text-right tabular-nums">
+        <span className="text-[12px] text-text-muted w-12 text-right tabular-nums">
           {value % 1 === 0 ? value : value.toFixed(1)}{unit ?? ""}
         </span>
       </div>
@@ -3830,7 +3835,7 @@ function ParamSelect({ label, value, onChange, options }: {
   return (
     <ParamRow label={label}>
       <select value={value} onChange={(e) => onChange(e.target.value)}
-        className="text-[10px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary">
+        className="text-[12px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary">
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </ParamRow>
@@ -3840,7 +3845,7 @@ function ParamSelect({ label, value, onChange, options }: {
 function ResultCard({ children, className: cls }: { children: React.ReactNode; className?: string }) {
   return (
     <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
-      className={cn("p-2 rounded-lg bg-bg-secondary text-[10px] space-y-1", cls)}>
+      className={cn("p-2 rounded-lg bg-bg-secondary text-[12px] space-y-1", cls)}>
       {children}
     </motion.div>
   );
