@@ -7,7 +7,7 @@ import { useMoldStore } from "../../stores/moldStore";
 import { useSimStore } from "../../stores/simStore";
 import { useInsertStore } from "../../stores/insertStore";
 import { useUploadModel, useSimplifyModel, useSubdivideModel, useTransformModel, useRepairModel, useModelQuality } from "../../hooks/useModelApi";
-import { useOrientationAnalysis, usePartingGeneration, useMoldGeneration, useCoolingChannelDesign, useUndercutHeatmap } from "../../hooks/useMoldApi";
+import { useOrientationAnalysis, usePartingGeneration, useMoldGeneration, useCoolingChannelDesign, useUndercutHeatmap, useHolePreview } from "../../hooks/useMoldApi";
 import { useGatingDesign, useRunSimulation, useRunOptimization, useFetchVisualization, useFetchCrossSection, useFetchSurfaceMap, useRunFEA, useFetchFEAVisualization } from "../../hooks/useSimApi";
 import { useAnalyzePositions, useGenerateInserts, useValidateAssembly } from "../../hooks/useInsertApi";
 import { useThicknessAnalysis, useCurvatureAnalysis, useSymmetryAnalysis, useOverhangAnalysis, useSmoothMesh, useRemeshMesh, useThickenMesh, useOffsetMesh } from "../../hooks/useAnalysisApi";
@@ -1252,14 +1252,26 @@ function MoldPanel() {
   const moldGen = useMoldGeneration();
   const coolingDesign = useCoolingChannelDesign();
   const fetchHeatmap = useUndercutHeatmap();
+  const holePreview = useHolePreview();
   const pushHistory = useHistoryStore((s) => s.push);
   const setStep = useAppStore((s) => s.setStep);
   const [wallThickness, setWallThickness] = useState(4.0);
   const [shellType, setShellType] = useState("box");
   const [partingStyle, setPartingStyle] = useState("flat");
   const [surfaceType, setSurfaceType] = useState("auto");
-  const [addFlanges, setAddFlanges] = useState(false);
-  const [flangeCount, setFlangeCount] = useState(4);
+  const [addScrewHoles, setAddScrewHoles] = useState(false);
+  const [screwSize, setScrewSize] = useState("M4");
+  const [nScrews, setNScrews] = useState(4);
+  const [screwTabThickness, setScrewTabThickness] = useState(5.0);
+  const [addPourHole, setAddPourHole] = useState(true);
+  const [pourDiameter, setPourDiameter] = useState(15.0);
+  const [pourMode, setPourMode] = useState<"auto" | "manual">("auto");
+  const [pourManualPos, setPourManualPos] = useState<[number, number, number]>([0, 0, 0]);
+  const [addVentHoles, setAddVentHoles] = useState(true);
+  const [ventDiameter, setVentDiameter] = useState(3.0);
+  const [nVentHoles, setNVentHoles] = useState(4);
+  const [ventMode, setVentMode] = useState<"auto" | "manual">("auto");
+  const [ventManualPositions, setVentManualPositions] = useState<[number, number, number][]>([]);
   const [moldMaterial, setMoldMaterial] = useState("pla");
   const [shrinkagePct, setShrinkagePct] = useState(0.0);
   const [addCooling, setAddCooling] = useState(false);
@@ -1417,34 +1429,231 @@ function MoldPanel() {
             </select>
           </div>
 
-          {/* Flanges */}
+          {/* Screw fastening (pocket + tab) */}
           <div className="flex items-center justify-between">
-            <span className="text-[12px] text-text-muted">螺丝固定法兰</span>
+            <span className="text-[12px] text-text-muted">螺丝固定孔</span>
             <button
-              onClick={() => setAddFlanges(!addFlanges)}
+              onClick={() => setAddScrewHoles(!addScrewHoles)}
               className={cn(
                 "px-2 py-0.5 rounded text-[12px] transition-colors",
-                addFlanges ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
+                addScrewHoles ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
               )}
             >
-              {addFlanges ? "已启用" : "关闭"}
+              {addScrewHoles ? "已启用" : "关闭"}
             </button>
           </div>
-          {addFlanges && (
-            <div className="flex items-center justify-between">
-              <span className="text-[12px] text-text-muted">法兰数量</span>
-              <div className="flex items-center gap-1">
-                {[2, 4, 6, 8].map((n) => (
-                  <button key={n} onClick={() => setFlangeCount(n)}
-                    className={cn(
-                      "px-1.5 py-0.5 rounded text-[11px] transition-colors",
-                      flangeCount === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
-                    )}>
-                    {n}
-                  </button>
-                ))}
+          {addScrewHoles && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] text-text-muted">螺丝规格</span>
+                <select
+                  value={screwSize}
+                  onChange={(e) => setScrewSize(e.target.value)}
+                  className="text-[12px] bg-bg-secondary border border-border rounded px-1.5 py-0.5 text-text-primary"
+                >
+                  <option value="M2">M2</option>
+                  <option value="M2.5">M2.5</option>
+                  <option value="M3">M3</option>
+                  <option value="M4">M4</option>
+                  <option value="M5">M5</option>
+                  <option value="M6">M6</option>
+                  <option value="M8">M8</option>
+                </select>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] text-text-muted">螺丝数量</span>
+                <div className="flex items-center gap-1">
+                  {[2, 4, 6, 8].map((n) => (
+                    <button key={n} onClick={() => setNScrews(n)}
+                      className={cn(
+                        "px-1.5 py-0.5 rounded text-[11px] transition-colors",
+                        nScrews === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
+                      )}>
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] text-text-muted">螺丝板厚度</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="range" min={3} max={10} step={0.5}
+                    value={screwTabThickness}
+                    onChange={(e) => setScrewTabThickness(Number(e.target.value))}
+                    className="w-16 h-1 accent-accent"
+                  />
+                  <span className="text-[11px] text-text-secondary tabular-nums w-10 text-right">{screwTabThickness}mm</span>
+                </div>
               </div>
             </div>
+          )}
+
+          {/* Pour hole settings */}
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] text-text-muted">浇注口</span>
+            <button onClick={() => setAddPourHole(!addPourHole)}
+              className={cn("px-2 py-0.5 rounded text-[12px] transition-colors",
+                addPourHole ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+              {addPourHole ? "已启用" : "关闭"}
+            </button>
+          </div>
+          {addPourHole && (
+            <div className="space-y-1.5 pl-2 border-l-2 border-accent/30">
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] text-text-muted">直径</span>
+                <div className="flex items-center gap-1">
+                  <input type="range" min={5} max={25} step={1} value={pourDiameter}
+                    onChange={(e) => setPourDiameter(Number(e.target.value))}
+                    className="w-16 h-1 accent-accent" />
+                  <span className="text-[11px] text-text-secondary tabular-nums w-10 text-right">{pourDiameter}mm</span>
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] text-text-muted">布置方式</span>
+                <div className="flex items-center gap-1">
+                  {(["auto", "manual"] as const).map((m) => (
+                    <button key={m} onClick={() => setPourMode(m)}
+                      className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
+                        pourMode === m ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                      {m === "auto" ? "自动" : "手动"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {pourMode === "manual" && (
+                <div className="space-y-1">
+                  <span className="text-[11px] text-text-muted">浇注口位置 (mm)</span>
+                  <div className="flex gap-1">
+                    {(["X", "Y", "Z"] as const).map((axis, ai) => (
+                      <div key={axis} className="flex-1">
+                        <label className="text-[11px] text-text-muted">{axis}</label>
+                        <input type="number" step={1}
+                          value={pourManualPos[ai]}
+                          onChange={(e) => {
+                            const np = [...pourManualPos] as [number, number, number];
+                            np[ai] = parseFloat(e.target.value) || 0;
+                            setPourManualPos(np);
+                          }}
+                          className="w-full text-[12px] bg-bg-secondary border border-border rounded px-1 py-0.5 text-text-primary text-center"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Vent hole settings */}
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] text-text-muted">排气口</span>
+            <button onClick={() => setAddVentHoles(!addVentHoles)}
+              className={cn("px-2 py-0.5 rounded text-[12px] transition-colors",
+                addVentHoles ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+              {addVentHoles ? "已启用" : "关闭"}
+            </button>
+          </div>
+          {addVentHoles && (
+            <div className="space-y-1.5 pl-2 border-l-2 border-accent/30">
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] text-text-muted">直径</span>
+                <div className="flex items-center gap-1">
+                  <input type="range" min={1} max={8} step={0.5} value={ventDiameter}
+                    onChange={(e) => setVentDiameter(Number(e.target.value))}
+                    className="w-16 h-1 accent-accent" />
+                  <span className="text-[11px] text-text-secondary tabular-nums w-10 text-right">{ventDiameter}mm</span>
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] text-text-muted">排气数量</span>
+                <div className="flex items-center gap-1">
+                  {[2, 3, 4, 6].map((n) => (
+                    <button key={n} onClick={() => setNVentHoles(n)}
+                      className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
+                        nVentHoles === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] text-text-muted">布置方式</span>
+                <div className="flex items-center gap-1">
+                  {(["auto", "manual"] as const).map((m) => (
+                    <button key={m} onClick={() => setVentMode(m)}
+                      className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
+                        ventMode === m ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                      {m === "auto" ? "自动" : "手动"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {ventMode === "manual" && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-text-muted">排气口位置列表</span>
+                    <button onClick={() => setVentManualPositions([...ventManualPositions, [0, 0, 0]])}
+                      className="text-[11px] text-accent hover:underline">+ 添加</button>
+                  </div>
+                  {ventManualPositions.map((vp, vi) => (
+                    <div key={vi} className="flex gap-1 items-end">
+                      {(["X", "Y", "Z"] as const).map((axis, ai) => (
+                        <div key={axis} className="flex-1">
+                          {vi === 0 && <label className="text-[11px] text-text-muted">{axis}</label>}
+                          <input type="number" step={1}
+                            value={vp[ai]}
+                            onChange={(e) => {
+                              const nps = [...ventManualPositions];
+                              const np = [...nps[vi]] as [number, number, number];
+                              np[ai] = parseFloat(e.target.value) || 0;
+                              nps[vi] = np;
+                              setVentManualPositions(nps);
+                            }}
+                            className="w-full text-[12px] bg-bg-secondary border border-border rounded px-1 py-0.5 text-text-primary text-center"
+                          />
+                        </div>
+                      ))}
+                      <button onClick={() => setVentManualPositions(ventManualPositions.filter((_, i) => i !== vi))}
+                        className="text-danger text-[11px] px-1 shrink-0">✕</button>
+                    </div>
+                  ))}
+                  {ventManualPositions.length === 0 && (
+                    <div className="text-[11px] text-text-muted/50 text-center py-1">点击「+ 添加」设置排气口坐标</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Preview recommended hole positions */}
+          {(addPourHole || addVentHoles) && (
+            <ActionButton
+              icon={<Pin size={13} />}
+              label={holePreview.isPending ? "计算中..." : "预览推荐位置"}
+              loading={holePreview.isPending}
+              onClick={() => {
+                holePreview.mutate({
+                  modelId,
+                  direction: orientationResult?.best_direction,
+                  pourHoleDiameter: pourDiameter,
+                  ventHoleDiameter: ventDiameter,
+                  nVentHoles,
+                }, {
+                  onSuccess: ({ pourHole, ventHoles }) => {
+                    if (pourHole) {
+                      setPourManualPos(pourHole.position as [number, number, number]);
+                      toastInfo(`推荐浇注口位置: [${pourHole.position.map(v => v.toFixed(1)).join(", ")}]`);
+                    }
+                    if (ventHoles.length > 0) {
+                      setVentManualPositions(ventHoles.map(v => v.position as [number, number, number]));
+                      toastInfo(`推荐 ${ventHoles.length} 个排气口位置`);
+                    }
+                  },
+                  onError: (e) => toastError("位置预览失败", (e as Error).message),
+                });
+              }}
+            />
           )}
 
           {/* Mold material selection */}
@@ -1566,8 +1775,18 @@ function MoldPanel() {
               wallThickness,
               shellType,
               partingStyle,
-              addFlanges,
-              nFlanges: flangeCount,
+              partingSurfaceType: surfaceType,
+              addPourHole: addPourHole,
+              pourHoleDiameter: pourDiameter,
+              pourHolePosition: pourMode === "manual" ? pourManualPos : null,
+              addVentHoles: addVentHoles,
+              ventHoleDiameter: ventDiameter,
+              nVentHoles,
+              ventHolePositions: ventMode === "manual" && ventManualPositions.length > 0 ? ventManualPositions : null,
+              addScrewHoles: addScrewHoles,
+              screwSize,
+              nScrews,
+              screwTabThickness,
               shrinkageCompensation: shrinkagePct,
               addEjectors,
               nEjectors: ejectorCount,
@@ -1576,7 +1795,7 @@ function MoldPanel() {
               onSuccess: ({ moldId: newMoldId, result }) => {
                 const ms = Math.round(performance.now() - t0);
                 flog.success("Mold", `模具生成完成 — ${result.n_shells} 壳体`,
-                  `模具ID: ${newMoldId} | 壳类型: ${shellType} | 分型: ${partingStyle} | 壁厚: ${wallThickness}mm | 法兰: ${addFlanges ? flangeCount + "个" : "无"} | 收缩: ${shrinkagePct}%`, ms);
+                  `模具ID: ${newMoldId} | 壳类型: ${shellType} | 分型: ${partingStyle} | 壁厚: ${wallThickness}mm | 螺丝: ${addScrewHoles ? nScrews + "×" + screwSize : "无"} | 收缩: ${shrinkagePct}%`, ms);
                 pushHistory({
                   type: "mold", label: "生成模具",
                   detail: `${shellType} 壳 / ${partingStyle} 分型 / ${result.n_shells} 壳体`,

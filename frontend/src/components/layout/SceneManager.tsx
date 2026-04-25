@@ -1,9 +1,8 @@
-import { useState, useCallback, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Eye, EyeOff, ChevronRight, ChevronDown,
   Box, Layers, Pin, ThermometerSun, Droplets,
-  Lock, Unlock, Focus, Trash2, Copy,
   ChevronsUpDown, Search, SlidersHorizontal,
   Grid3x3, Blend,
 } from "lucide-react";
@@ -429,7 +428,6 @@ export function SceneManager() {
           </button>
           <button
             onClick={() => {
-              const allVisible = nodes.every((n) => n.visible);
               nodes.forEach((n) => n.onToggleVisible());
             }}
             className="p-0.5 rounded hover:bg-bg-hover text-text-muted transition-colors"

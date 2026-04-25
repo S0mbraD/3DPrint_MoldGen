@@ -82,10 +82,12 @@ class MoldConfig:
     add_pour_hole: bool = True
     pour_hole_diameter: float = 15.0
     pour_funnel_angle: float = 30.0   # funnel taper degrees
+    pour_hole_position: list[float] | None = None  # manual [x,y,z] or None=auto
     # Vent
     add_vent_holes: bool = True
     vent_hole_diameter: float = 3.0
     n_vent_holes: int = 4
+    vent_hole_positions: list[list[float]] | None = None  # manual [[x,y,z],...] or None=auto
     # Draft
     draft_angle_check: bool = True
     min_draft_angle: float = 1.0      # degrees
@@ -1057,14 +1059,28 @@ class MoldBuilder:
 
         pour_hole = None
         if self.config.add_pour_hole:
-            pour_hole = self._compute_pour_gate(tm_model, cavity, direction)
+            if self.config.pour_hole_position is not None:
+                pour_hole = self._make_manual_pour_hole(
+                    np.asarray(self.config.pour_hole_position, dtype=np.float64),
+                    tm_model, direction,
+                )
+                logger.info("Pour hole: manual position %s", pour_hole.position.round(1).tolist())
+            else:
+                pour_hole = self._compute_pour_gate(tm_model, cavity, direction)
 
         vent_holes: list[HoleFeature] = []
         if self.config.add_vent_holes:
-            pour_pos = pour_hole.position if pour_hole else None
-            vent_holes = self._compute_vent_holes(
-                tm_model, direction, pour_pos,
-            )
+            if self.config.vent_hole_positions is not None and len(self.config.vent_hole_positions) > 0:
+                vent_holes = self._make_manual_vent_holes(
+                    [np.asarray(p, dtype=np.float64) for p in self.config.vent_hole_positions],
+                    tm_model, direction,
+                )
+                logger.info("Vent holes: %d manual positions", len(vent_holes))
+            else:
+                pour_pos = pour_hole.position if pour_hole else None
+                vent_holes = self._compute_vent_holes(
+                    tm_model, direction, pour_pos,
+                )
 
         # ── Cut holes into shells ──
         shells = self._cut_holes_in_shells(
@@ -2008,7 +2024,11 @@ class MoldBuilder:
         half_u = abs(float(model_extent @ u_ax)) / 2
         half_v = abs(float(model_extent @ v_ax)) / 2
 
-        wall_mid = (c.clearance + c.margin + c.wall_thickness) / 2
+        # Place screw centers near the outer face of the mold wall (80%
+        # toward outside) so the pocket cuts inward from the surface without
+        # reaching the cavity.  The old midpoint position (50%) left too
+        # little clearance for the pocket on the cavity side.
+        wall_offset = c.clearance + (c.margin + c.wall_thickness) * 0.8
         avail_wall = c.margin + c.wall_thickness - c.clearance
         if avail_wall < spec["through"] + 2.0:
             logger.warning(
@@ -2019,46 +2039,76 @@ class MoldBuilder:
 
         tab = c.screw_tab_thickness
 
-        # Pocket must extend BEYOND outer wall surface to prevent thin shells.
-        # avail_wall+4 guarantees 2mm overshoot on each side; boolean ignores
-        # the part outside the shell, only cuts what overlaps.
-        pocket_xy = max(
-            max(spec["head"], spec["nut"]) * 2.5,
-            avail_wall + 4.0,
-        )
+        # Minimum pocket size: must fit the bolt head/nut with clearance
+        min_pocket_xy = max(spec["head"], spec["nut"]) + 2.0
 
         # ── Build positions: corners first, then edge midpoints ──
-        positions: list[np.ndarray] = []
+        raw_positions: list[np.ndarray] = []
         corners = [(+1, +1), (+1, -1), (-1, +1), (-1, -1)]
         for su, sv in corners[:min(c.n_screws, 4)]:
             pos = (center
-                   + su * (half_u + wall_mid) * u_ax
-                   + sv * (half_v + wall_mid) * v_ax)
+                   + su * (half_u + wall_offset) * u_ax
+                   + sv * (half_v + wall_offset) * v_ax)
             pos -= up * float(np.dot(pos - center, up))
-            positions.append(pos)
+            raw_positions.append(pos)
 
         if c.n_screws > 4:
             edges = [(+1, 0), (-1, 0), (0, +1), (0, -1)]
             for su, sv in edges[:c.n_screws - 4]:
                 pos = (center
-                       + (su * (half_u + wall_mid) if su else 0) * u_ax
-                       + (sv * (half_v + wall_mid) if sv else 0) * v_ax)
+                       + (su * (half_u + wall_offset) if su else 0) * u_ax
+                       + (sv * (half_v + wall_offset) if sv else 0) * v_ax)
                 pos -= up * float(np.dot(pos - center, up))
-                positions.append(pos)
+                raw_positions.append(pos)
 
-        # ── Proximity safety check ──
-        safe_dist = spec["through"] / 2 + c.clearance + 0.5
-        try:
-            _, dists, _ = tm_model.nearest.on_surface(np.array(positions))
-            keep = [i for i, d in enumerate(dists) if d >= safe_dist]
-            if len(keep) < len(positions):
-                logger.warning(
-                    "Dropped %d/%d screw positions too close to cavity",
-                    len(positions) - len(keep), len(positions),
+        # ── Cavity-aware pocket sizing per position ──
+        # For each position, sample the pocket footprint to find the
+        # minimum distance to the model surface.  The pocket must NOT
+        # breach the cavity wall: pocket_xy/2 <= dist_to_model - min_wall.
+        min_wall_reserve = c.clearance + c.wall_thickness * 0.5
+        positions: list[np.ndarray] = []
+        pocket_sizes: list[float] = []
+
+        for pos in raw_positions:
+            # Sample a grid of points across the potential pocket footprint
+            # to find the closest any part of the pocket gets to the model
+            max_pocket = avail_wall + 4.0
+            sample_offsets = [
+                pos,
+                pos + u_ax * max_pocket / 2,
+                pos - u_ax * max_pocket / 2,
+                pos + v_ax * max_pocket / 2,
+                pos - v_ax * max_pocket / 2,
+                pos + (u_ax + v_ax) * max_pocket / (2 * 1.414),
+                pos + (u_ax - v_ax) * max_pocket / (2 * 1.414),
+                pos - (u_ax + v_ax) * max_pocket / (2 * 1.414),
+                pos - (u_ax - v_ax) * max_pocket / (2 * 1.414),
+            ]
+            try:
+                _, dists, _ = tm_model.nearest.on_surface(
+                    np.array(sample_offsets),
                 )
-                positions = [positions[i] for i in keep]
-        except Exception:
-            pass
+                min_dist = float(np.min(dists))
+            except Exception:
+                min_dist = wall_offset
+
+            # Maximum allowable pocket half-width at this position
+            max_half = min_dist - min_wall_reserve
+            if max_half < min_pocket_xy / 2:
+                logger.warning(
+                    "Screw at [%.1f,%.1f,%.1f]: cavity too close (%.1fmm), "
+                    "min pocket needs %.1fmm — skipping",
+                    *pos, min_dist, min_pocket_xy / 2 + min_wall_reserve,
+                )
+                continue
+
+            # Pocket extends from the screw center to the outer shell face,
+            # capped to not breach cavity wall.  Add 2mm overshoot outward
+            # to cut cleanly through the shell outer surface.
+            pocket_xy = min(max_half * 2, max_pocket)
+            pocket_xy = max(pocket_xy, min_pocket_xy)
+            positions.append(pos)
+            pocket_sizes.append(pocket_xy)
 
         if not positions:
             return shells, []
@@ -2078,7 +2128,9 @@ class MoldBuilder:
             sh_h_max = float(verts_h.max())
             is_upper = ((sh_h_min + sh_h_max) / 2) > center_h
 
-            for pos in positions:
+            for pi, pos in enumerate(positions):
+                pxy = pocket_sizes[pi]
+
                 # ── Step 1: Rectangular pocket from outer face to tab ──
                 if is_upper:
                     pocket_lo = center_h + tab
@@ -2099,15 +2151,15 @@ class MoldBuilder:
                 # Primary: oriented box built from world-space vertices
                 pocket_box = _make_oriented_box(
                     pocket_center, u_ax, v_ax, up,
-                    pocket_xy, pocket_xy, pocket_h,
+                    pxy, pxy, pocket_h,
                 )
                 result = self._robust_boolean_subtract(tm_shell, pocket_box)
                 if result is not None and len(result.faces) > 10:
                     tm_shell = result
                     pocket_ok = True
                     logger.info(
-                        "Pocket box OK at [%.1f,%.1f,%.1f]  %d faces",
-                        *pocket_center, len(tm_shell.faces),
+                        "Pocket box OK at [%.1f,%.1f,%.1f] size=%.1fmm %d faces",
+                        *pocket_center, pxy, len(tm_shell.faces),
                     )
 
                 # Fallback: cylindrical pocket (always works with boolean)
@@ -2119,7 +2171,7 @@ class MoldBuilder:
                     )
                     pocket_cyl = _make_cylinder(
                         pocket_center, up,
-                        radius=pocket_xy / 2.0,
+                        radius=pxy / 2.0,
                         height=pocket_h + 1.0,
                     )
                     result = self._robust_boolean_subtract(tm_shell, pocket_cyl)
@@ -2191,9 +2243,10 @@ class MoldBuilder:
                 counterbore_depth=cb_depth if c.screw_counterbore else 0.0,
             ))
 
+        avg_pocket = sum(pocket_sizes) / max(len(pocket_sizes), 1) if pocket_sizes else 0
         logger.info(
-            "Screw holes: %d × %s pocket+tab (tab=%.1fmm, pocket=%.1fmm sq)",
-            len(features), c.screw_size, tab, pocket_xy,
+            "Screw holes: %d × %s pocket+tab (tab=%.1fmm, avg pocket=%.1fmm sq)",
+            len(features), c.screw_size, tab, avg_pocket,
         )
         return updated_shells, features
 
@@ -2588,6 +2641,112 @@ class MoldBuilder:
             extents=box_size,
             transform=trimesh.transformations.translation_matrix(box_center),
         ).to_mesh()
+
+    # ═══════════════ Manual Pour / Vent Placement ══════════════
+
+    def _make_manual_pour_hole(
+        self, user_pos: np.ndarray,
+        tm_model: trimesh.Trimesh, direction: np.ndarray,
+    ) -> HoleFeature:
+        """Create pour hole at a user-specified surface point.
+
+        Projects the user point onto the model surface, then offsets to the mold
+        exterior along the mold direction.  Validates position is in the upper
+        half of the model (pour holes should be on top for gravity filling).
+        """
+        c = self.config
+        d = direction / (np.linalg.norm(direction) + 1e-12)
+
+        closest, _, _ = tm_model.nearest.on_surface([user_pos])
+        surface_pt = closest[0]
+
+        # Determine height relative to model centroid
+        center_h = float(tm_model.centroid @ d)
+        pt_h = float(surface_pt @ d)
+        model_h = float(np.ptp(tm_model.vertices @ d))
+
+        # If point is in the lower half, shift to the nearest upper-half point
+        if pt_h < center_h:
+            logger.info(
+                "Manual pour point is below centroid — projecting to upper half"
+            )
+            surface_pt = surface_pt + d * (center_h - pt_h + model_h * 0.1)
+            closest, _, _ = tm_model.nearest.on_surface([surface_pt])
+            surface_pt = closest[0]
+
+        offset = d * (c.margin + c.wall_thickness + 5.0)
+        gate_pos = surface_pt + offset
+
+        mesh_data = None
+        try:
+            funnel = self._make_pour_funnel(gate_pos, d)
+            mesh_data = MeshData.from_trimesh(funnel)
+        except Exception:
+            pass
+
+        return HoleFeature(
+            position=gate_pos,
+            diameter=c.pour_hole_diameter,
+            hole_type="pour",
+            score=1.0,
+            mesh=mesh_data,
+        )
+
+    def _make_manual_vent_holes(
+        self, user_positions: list[np.ndarray],
+        tm_model: trimesh.Trimesh, direction: np.ndarray,
+    ) -> list[HoleFeature]:
+        """Create vent holes at user-specified surface points.
+
+        Projects each user position onto the model surface, validates minimum
+        spacing between vents, then offsets to the mold exterior.
+        """
+        c = self.config
+        d = direction / (np.linalg.norm(direction) + 1e-12)
+        offset = d * (c.margin + c.wall_thickness + 2.0)
+        holes: list[HoleFeature] = []
+        min_spacing = c.vent_hole_diameter * 3.0
+
+        for upos in user_positions:
+            closest, _, _ = tm_model.nearest.on_surface([upos])
+            surface_pt = closest[0]
+            pos = surface_pt + offset
+
+            # Minimum spacing check: skip vents too close to each other
+            too_close = False
+            for prev in holes:
+                if np.linalg.norm(pos - prev.position) < min_spacing:
+                    logger.warning(
+                        "Manual vent at [%.1f,%.1f,%.1f] too close to "
+                        "existing vent — skipping",
+                        *upos,
+                    )
+                    too_close = True
+                    break
+            if too_close:
+                continue
+
+            mesh_data = None
+            try:
+                tube = _make_cylinder(
+                    pos, d,
+                    radius=c.vent_hole_diameter / 2.0,
+                    height=c.wall_thickness + 2.0,
+                )
+                mesh_data = MeshData.from_trimesh(tube)
+            except Exception:
+                pass
+
+            holes.append(HoleFeature(
+                position=pos,
+                diameter=c.vent_hole_diameter,
+                hole_type="vent",
+                score=1.0,
+                mesh=mesh_data,
+            ))
+
+        logger.info("Manual vent holes: %d/%d placed", len(holes), len(user_positions))
+        return holes
 
     # ═══════════════ Pour Gate (v3 Algorithm) ═══════════════════
 

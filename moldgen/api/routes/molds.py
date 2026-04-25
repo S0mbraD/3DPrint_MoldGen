@@ -228,7 +228,12 @@ class MoldRequest(BaseModel):
     parting_pitch: float = 10.0
     add_alignment_pins: bool = True
     add_pour_hole: bool = True
+    pour_hole_diameter: float = 15.0
+    pour_hole_position: list[float] | None = None  # manual [x,y,z] or null=auto
     add_vent_holes: bool = True
+    vent_hole_diameter: float = 3.0
+    n_vent_holes: int = 4
+    vent_hole_positions: list[list[float]] | None = None  # manual [[x,y,z],...] or null=auto
     # Screw fastening (pocket + tab)
     add_screw_holes: bool = False
     screw_size: str = "M4"
@@ -296,7 +301,12 @@ async def generate_mold(model_id: str, req: MoldRequest | None = None):
         parting_pitch=req.parting_pitch,
         add_alignment_pins=req.add_alignment_pins,
         add_pour_hole=req.add_pour_hole,
+        pour_hole_diameter=req.pour_hole_diameter,
+        pour_hole_position=req.pour_hole_position,
         add_vent_holes=req.add_vent_holes,
+        vent_hole_diameter=req.vent_hole_diameter,
+        n_vent_holes=req.n_vent_holes,
+        vent_hole_positions=req.vent_hole_positions,
         add_screw_holes=req.add_screw_holes,
         screw_size=req.screw_size,
         n_screws=req.n_screws,
@@ -326,6 +336,56 @@ async def generate_mold(model_id: str, req: MoldRequest | None = None):
     )
 
     return {"model_id": model_id, "mold_id": mold_id, "result": rd}
+
+
+# ── Pour / Vent Preview ──────────────────────────────────────────────
+
+class HolePreviewRequest(BaseModel):
+    direction: list[float] | None = None
+    pour_hole_diameter: float = 15.0
+    vent_hole_diameter: float = 3.0
+    n_vent_holes: int = 4
+
+
+@router.post("/{model_id}/mold/hole-preview")
+async def preview_hole_positions(model_id: str, req: HolePreviewRequest | None = None):
+    """Preview recommended pour/vent positions without full mold generation."""
+    import numpy as np
+    mesh = _get_mesh(model_id)
+    req = req or HolePreviewRequest()
+
+    if req.direction:
+        direction = np.array(req.direction, dtype=np.float64)
+    else:
+        ori = _orientation_results.get(model_id)
+        if ori is None:
+            raise HTTPException(400, "No direction. Run orientation analysis first or provide one.")
+        direction = ori.best_direction
+
+    config = MoldConfig(
+        pour_hole_diameter=req.pour_hole_diameter,
+        vent_hole_diameter=req.vent_hole_diameter,
+        n_vent_holes=req.n_vent_holes,
+    )
+    builder = MoldBuilder(config)
+
+    def _compute():
+        tm = mesh.to_trimesh()
+        pour = builder._compute_pour_gate(tm, tm, direction)
+        vents = builder._compute_vent_holes(tm, direction, pour.position)
+        return pour, vents
+
+    try:
+        pour, vents = await asyncio.to_thread(_compute)
+    except Exception as e:
+        logger.exception("Hole preview failed")
+        raise HTTPException(500, f"Hole preview error: {e}") from e
+
+    return {
+        "model_id": model_id,
+        "pour_hole": pour.to_dict(),
+        "vent_holes": [v.to_dict() for v in vents],
+    }
 
 
 class MultiPartMoldRequest(BaseModel):

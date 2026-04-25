@@ -153,13 +153,20 @@ export function useMoldGeneration() {
       clearance = 0.3,
       shellType = "box",
       partingStyle = "flat",
+      partingSurfaceType = "flat",
       partingDepth = 3.0,
       partingPitch = 10.0,
-      addFlanges = false,
-      flangeWidth = 12.0,
-      flangeThickness = 4.0,
-      screwHoleDiameter = 4.0,
-      nFlanges = 4,
+      addPourHole = true,
+      pourHoleDiameter = 15.0,
+      pourHolePosition,
+      addVentHoles = true,
+      ventHoleDiameter = 3.0,
+      nVentHoles = 4,
+      ventHolePositions,
+      addScrewHoles = false,
+      screwSize = "M4",
+      nScrews = 4,
+      screwTabThickness = 5.0,
       shrinkageCompensation = 0.0,
       addEjectors = false,
       nEjectors = 4,
@@ -170,13 +177,20 @@ export function useMoldGeneration() {
       clearance?: number;
       shellType?: string;
       partingStyle?: string;
+      partingSurfaceType?: string;
       partingDepth?: number;
       partingPitch?: number;
-      addFlanges?: boolean;
-      flangeWidth?: number;
-      flangeThickness?: number;
-      screwHoleDiameter?: number;
-      nFlanges?: number;
+      addPourHole?: boolean;
+      pourHoleDiameter?: number;
+      pourHolePosition?: number[] | null;
+      addVentHoles?: boolean;
+      ventHoleDiameter?: number;
+      nVentHoles?: number;
+      ventHolePositions?: number[][] | null;
+      addScrewHoles?: boolean;
+      screwSize?: string;
+      nScrews?: number;
+      screwTabThickness?: number;
       shrinkageCompensation?: number;
       addEjectors?: boolean;
       nEjectors?: number;
@@ -187,18 +201,25 @@ export function useMoldGeneration() {
         clearance,
         shell_type: shellType,
         parting_style: partingStyle,
+        parting_surface_type: partingSurfaceType,
         parting_depth: partingDepth,
         parting_pitch: partingPitch,
-        add_flanges: addFlanges,
-        flange_width: flangeWidth,
-        flange_thickness: flangeThickness,
-        screw_hole_diameter: screwHoleDiameter,
-        n_flanges: nFlanges,
+        add_pour_hole: addPourHole,
+        pour_hole_diameter: pourHoleDiameter,
+        add_vent_holes: addVentHoles,
+        vent_hole_diameter: ventHoleDiameter,
+        n_vent_holes: nVentHoles,
+        add_screw_holes: addScrewHoles,
+        screw_size: screwSize,
+        n_screws: nScrews,
+        screw_tab_thickness: screwTabThickness,
         shrinkage_compensation: shrinkageCompensation,
         add_ejectors: addEjectors,
         n_ejectors: nEjectors,
       };
       if (direction) body.direction = direction;
+      if (pourHolePosition) body.pour_hole_position = pourHolePosition;
+      if (ventHolePositions && ventHolePositions.length > 0) body.vent_hole_positions = ventHolePositions;
 
       const resp = await fetch(`${API}/${modelId}/mold/generate`, {
         method: "POST",
@@ -214,6 +235,43 @@ export function useMoldGeneration() {
     },
     onSuccess: ({ moldId, result }) => store.setMoldResult(moldId, result),
     onError: () => store.setGeneratingMold(false),
+  });
+}
+
+export function useHolePreview() {
+  return useMutation({
+    mutationFn: async ({
+      modelId,
+      direction,
+      pourHoleDiameter = 15.0,
+      ventHoleDiameter = 3.0,
+      nVentHoles = 4,
+    }: {
+      modelId: string;
+      direction?: number[];
+      pourHoleDiameter?: number;
+      ventHoleDiameter?: number;
+      nVentHoles?: number;
+    }) => {
+      const body: Record<string, unknown> = {
+        pour_hole_diameter: pourHoleDiameter,
+        vent_hole_diameter: ventHoleDiameter,
+        n_vent_holes: nVentHoles,
+      };
+      if (direction) body.direction = direction;
+
+      const resp = await fetch(`${API}/${modelId}/mold/hole-preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      return {
+        pourHole: data.pour_hole as { position: number[]; diameter: number; type: string; score: number },
+        ventHoles: data.vent_holes as { position: number[]; diameter: number; type: string; score: number }[],
+      };
+    },
   });
 }
 

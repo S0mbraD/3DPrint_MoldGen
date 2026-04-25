@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  Cpu, HardDrive, Triangle, Box, Layers, FlaskConical,
+  Cpu, HardDrive, Triangle, Box, Layers,
   Wifi, WifiOff, Bot, History, Gauge, Zap,
 } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";

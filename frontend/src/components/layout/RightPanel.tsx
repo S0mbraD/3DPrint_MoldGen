@@ -4,10 +4,10 @@ import {
   ChevronRight, Info, Layers, Droplets, Triangle,
   CheckCircle, AlertTriangle, Compass, Boxes, Pin,
   FlaskConical, Clock, Hash, Ruler,
-  Box, ThermometerSun, BarChart3, SlidersHorizontal,
+  Box, BarChart3, SlidersHorizontal,
   Activity, Gauge,
 } from "lucide-react";
-import { useAppStore, type WorkflowStep } from "../../stores/appStore";
+import { useAppStore } from "../../stores/appStore";
 import { useModelStore } from "../../stores/modelStore";
 import { useMoldStore } from "../../stores/moldStore";
 import { useInsertStore } from "../../stores/insertStore";
@@ -137,7 +137,7 @@ function PropertiesTab() {
   const { modelId, filename, meshInfo } = useModelStore();
   const { orientationResult, moldResult, partingResult } = useMoldStore();
   const { insertId, plates, assemblyValid } = useInsertStore();
-  const { gatingResult, simResult, optimizationResult, visualizationData } = useSimStore();
+  const { gatingResult, simResult, optimizationResult } = useSimStore();
 
   if (!modelId) {
     return (
@@ -245,6 +245,9 @@ function PropertiesTab() {
                 value={({ mild: "轻微", moderate: "中等", severe: "严重" } as Record<string, string>)[moldResult.undercut_severity] ?? moldResult.undercut_severity}
                 valueClass={moldResult.undercut_severity === "severe" ? "text-danger" : "text-warning"}
               />
+            )}
+            {moldResult.screw_holes && moldResult.screw_holes.length > 0 && (
+              <PropRow label="螺丝固定" value={`${moldResult.screw_holes.length}×${moldResult.screw_holes[0].screw_size}`} />
             )}
             {moldResult.shells.map((sh) => (
               <PropRow
@@ -364,8 +367,7 @@ function PropertiesTab() {
 function StatsTab() {
   const meshInfo = useModelStore((s) => s.meshInfo);
   const moldResult = useMoldStore((s) => s.moldResult);
-  const { gatingResult, simResult, visualizationData } = useSimStore();
-  const insertPlates = useInsertStore((s) => s.plates);
+  const { gatingResult, simResult } = useSimStore();
   const { currentStep } = useAppStore();
 
   const steps = [
