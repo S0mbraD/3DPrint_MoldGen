@@ -1,3 +1,5 @@
+> 📖 [文档中心](README.md) | [← 上一篇: AI指令](07-ai-prompts.md) | [下一篇: 部署指南 →](09-deployment.md)
+
 # 内置 Agent 系统设计
 
 ## 1. 设计理念
@@ -748,3 +750,7 @@ ERROR_HANDLING = {
     }
 }
 ```
+
+---
+
+> 📖 [文档中心](README.md) | [← 上一篇: AI指令](07-ai-prompts.md) | [下一篇: 部署指南 →](09-deployment.md) | [返回项目主页](../README.md)

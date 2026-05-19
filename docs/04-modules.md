@@ -1,3 +1,5 @@
+> 📖 [文档中心](README.md) | [← 上一篇: 核心算法](03-algorithms.md) | [下一篇: 技术栈 →](05-tech-stack.md)
+
 # 模块详细设计
 
 ## 1. mesh_io 模块 — 多格式模型 I/O
@@ -2844,3 +2846,7 @@ SettingsDialog → UiSettings ─ 设置面板 UI
 
 - `html` 过渡动画: `transition: background-color 0.3s, color 0.3s`（主题切换平滑）
 - `.no-animations` 全局类: 禁用所有 `animation-duration` 和 `transition-duration`
+
+---
+
+> 📖 [文档中心](README.md) | [← 上一篇: 核心算法](03-algorithms.md) | [下一篇: 技术栈 →](05-tech-stack.md) | [返回项目主页](../README.md)

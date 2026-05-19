@@ -1,3 +1,5 @@
+> 📖 [文档中心](README.md) | [← 上一篇: 部署指南](09-deployment.md) | [下一篇: 自适应分型面 →](11-adaptive-parting.md)
+
 # 本地 AI 模型系统
 
 ## 1. 系统概述
@@ -189,3 +191,7 @@ CreativeAgent.execute()
 **本地 vs 云端权衡：**
 - 本地：无网络依赖、无 API 成本、隐私保护，但需要 GPU 显存
 - 云端：无需本地 GPU、更新模型无成本，但需要 API Key 和网络
+
+---
+
+> 📖 [文档中心](README.md) | [← 上一篇: 部署指南](09-deployment.md) | [下一篇: 自适应分型面 →](11-adaptive-parting.md) | [返回项目主页](../README.md)

@@ -1,3 +1,5 @@
+> 📖 [文档中心](README.md) | [← 上一篇: 路线图](06-roadmap.md) | [下一篇: Agent系统 →](08-agent-system.md)
+
 # AI 辅助开发 Prompt 指令集
 
 本文档提供用于指导 AI (如 Claude Opus 4.6) 辅助开发 MoldGen 项目的 Prompt 模板。
@@ -1120,3 +1122,7 @@ class XxxAgent(BaseAgent):
 - 第二次做肝脏模型 → 自动推荐上次成功的参数
 - 常做心脏模型 → frequent_organs 排序正确
 ```
+
+---
+
+> 📖 [文档中心](README.md) | [← 上一篇: 路线图](06-roadmap.md) | [下一篇: Agent系统 →](08-agent-system.md) | [返回项目主页](../README.md)

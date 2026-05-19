@@ -1,3 +1,5 @@
+> 📖 [文档中心](README.md) | [← 上一篇: 本地模型](10-local-models.md) | [下一篇: 错误记录 →](error-log.md)
+
 # 11. 自适应分型面系统
 
 > 版本: v4.0 — 2026-04-18
@@ -323,3 +325,7 @@ POST /{model_id}/mold/generate
 3. "Automatic Determination of 3-D Parting Lines and Surfaces"
 4. "Algorithm for automatic parting surface extension"
 5. "Generation of optimal parting direction based on undercut features"
+
+---
+
+> 📖 [文档中心](README.md) | [← 上一篇: 本地模型](10-local-models.md) | [下一篇: 错误记录 →](error-log.md) | [返回项目主页](../README.md)

@@ -1,3 +1,5 @@
+> 📖 [文档中心](README.md) | [下一篇: 系统架构设计 →](02-architecture.md)
+
 # 技术调研与竞品分析
 
 ## 1. 竞品分析
@@ -139,3 +141,7 @@ qwen = OpenAI(api_key="...", base_url="https://dashscope.aliyuncs.com/compatible
 5. **统一 SDK 协议**：所有 AI 均通过 OpenAI 兼容 SDK 接入，架构统一
 6. **医学教具方向**已有工业验证（3Deus Dynamics, ERCP训练模型等）
 7. **复合结构**（支撑板+硅胶灌注）是核心差异化，AI 辅助设计是创新点
+
+---
+
+> 📖 [文档中心](README.md) | [下一篇: 系统架构设计 →](02-architecture.md) | [返回项目主页](../README.md)

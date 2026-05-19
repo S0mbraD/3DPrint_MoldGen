@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect width="120" height="120" rx="24" fill="url(#g)"/>
+  <text x="60" y="52" text-anchor="middle" font-family="system-ui,sans-serif" font-size="28" font-weight="700" fill="white">Mold</text>
+  <text x="60" y="82" text-anchor="middle" font-family="system-ui,sans-serif" font-size="28" font-weight="700" fill="#c4b5fd">Gen</text>
+</svg>

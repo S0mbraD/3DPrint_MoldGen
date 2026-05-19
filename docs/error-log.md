@@ -1,3 +1,5 @@
+> 📖 [文档中心](README.md) | [← 上一篇: 自适应分型面](11-adaptive-parting.md)
+
 # 错误与教训记录 — 开发过程中的理解偏差与修复
 
 > 本文档记录开发过程中出现的理解错误、技术问题及修复方案，供后续开发参考避免重犯。
@@ -963,3 +965,7 @@
 | `lib.rs` | sidecar 启动 + Python fallback + 退出清理 |
 | `tauri.conf.json` | `externalBin` + NSIS 中文 |
 | `scripts/build_backend.py` | PyInstaller 后端打包 |
+
+---
+
+> 📖 [文档中心](README.md) | [← 上一篇: 自适应分型面](11-adaptive-parting.md) | [返回项目主页](../README.md)

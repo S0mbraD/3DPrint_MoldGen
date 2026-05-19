@@ -1,3 +1,5 @@
+> 📖 [文档中心](README.md) | [← 上一篇: 系统架构](02-architecture.md) | [下一篇: 模块设计 →](04-modules.md)
+
 # 核心算法设计
 
 ## 1. 模型预处理算法
@@ -2297,3 +2299,7 @@ Voronoi 泡沫: Lloyd 松弛 + k=2 最近邻距离差 → 壳体
 aspect_ratio, min/max angle, edge_length stats
 euler=V-E+F, genus=(2-euler)/2, compactness=36πV²/A³
 ```
+
+---
+
+> 📖 [文档中心](README.md) | [← 上一篇: 系统架构](02-architecture.md) | [下一篇: 模块设计 →](04-modules.md) | [返回项目主页](../README.md)

@@ -1,3 +1,5 @@
+> 📖 [文档中心](README.md) | [← 上一篇: Agent系统](08-agent-system.md) | [下一篇: 本地模型 →](10-local-models.md)
+
 # MoldGen 部署与使用指南
 
 ## 目录
@@ -551,3 +553,7 @@ CMD ["python3", "-m", "uvicorn", "moldgen.main:app", "--host", "0.0.0.0"]
 | **RightPanel** | 扩展 SimInfoSection：质量评分、均匀性指标、壁厚、滞流区、温度、固化进度、体素统计 |
 | **simStore.ts** | 新增 VisualizationData、CrossSectionData 类型及动画/热力图全部状态 |
 | **useSimApi.ts** | 新增 useFetchVisualization、useFetchAnalysis、useFetchCrossSection hooks |
+
+---
+
+> 📖 [文档中心](README.md) | [← 上一篇: Agent系统](08-agent-system.md) | [下一篇: 本地模型 →](10-local-models.md) | [返回项目主页](../README.md)
