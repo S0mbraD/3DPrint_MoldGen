@@ -43,6 +43,7 @@ import {
   useDeleteModel,
 } from "../../hooks/useGenerateApi";
 import { cn } from "../../lib/utils";
+import { useSettingsStore, type AccentColor } from "../../stores/settingsStore";
 
 type SettingsTab = "api" | "agent" | "models" | "mold" | "simulation" | "insert" | "gpu" | "ui" | "about";
 
@@ -61,6 +62,7 @@ const TABS: { id: SettingsTab; label: string; icon: typeof Key }[] = [
 export function SettingsDialog() {
   const { settingsOpen, setSettingsOpen } = useAppStore();
   const [tab, setTab] = useState<SettingsTab>("api");
+  const scale = useSettingsStore((s) => s.fontSize) / 13;
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -93,7 +95,9 @@ export function SettingsDialog() {
             transition={{ type: "spring", stiffness: 400, damping: 30 }}
             className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
           >
-            <div className="bg-bg-panel border border-border rounded-xl shadow-2xl w-[780px] max-h-[600px] flex overflow-hidden pointer-events-auto">
+            <div className="bg-bg-panel border border-border rounded-xl shadow-2xl w-[780px] max-h-[600px] flex overflow-hidden pointer-events-auto"
+              style={{ zoom: scale !== 1 ? scale : undefined }}
+            >
               <div className="w-[180px] bg-bg-secondary border-r border-border py-3 shrink-0">
                 <div className="px-4 mb-3">
                   <h2 className="text-sm font-bold text-text-primary">设置</h2>
@@ -973,16 +977,117 @@ function GpuSettings() {
 }
 
 function UiSettings() {
+  const s = useSettingsStore();
+
+  const themeOptions = [
+    { value: "dark", label: "深色" },
+    { value: "light", label: "浅色" },
+    { value: "system", label: "跟随系统" },
+  ];
+
+  const densityOptions = [
+    { value: "compact", label: "紧凑" },
+    { value: "normal", label: "标准" },
+    { value: "comfortable", label: "宽松" },
+  ];
+
+  const accentOptions: { value: string; color: string; label: string }[] = [
+    { value: "indigo", color: "#6366f1", label: "靛蓝" },
+    { value: "blue", color: "#3b82f6", label: "蓝" },
+    { value: "emerald", color: "#10b981", label: "翠绿" },
+    { value: "rose", color: "#f43f5e", label: "玫红" },
+    { value: "amber", color: "#f59e0b", label: "琥珀" },
+    { value: "violet", color: "#8b5cf6", label: "紫罗兰" },
+    { value: "cyan", color: "#06b6d4", label: "青" },
+  ];
+
   return (
-    <div className="space-y-4">
-      <p className="text-[11px] text-text-muted">界面偏好设置</p>
-      <SettingToggle label="显示网格辅助线" checked={true} onChange={() => {}} />
-      <SettingToggle label="显示方向箭头" checked={true} onChange={() => {}} />
-      <SettingToggle label="显示坐标轴" checked={true} onChange={() => {}} />
-      <SettingToggle label="启用模型自动旋转" checked={false} onChange={() => {}} />
-      <SettingSelect label="语言" value="zh" options={[
-        { value: "zh", label: "中文" }, { value: "en", label: "English" },
-      ]} onChange={() => {}} />
+    <div className="space-y-6">
+      {/* ── 主题 ── */}
+      <div>
+        <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-3">主题与外观</h4>
+        <div className="space-y-4">
+          <SettingSelect label="明暗模式" value={s.themeMode} options={themeOptions}
+            onChange={(v) => s.setThemeMode(v as "dark" | "light" | "system")} />
+
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-text-secondary">强调色</span>
+            <div className="flex gap-1.5">
+              {accentOptions.map((a) => (
+                <button
+                  key={a.value}
+                  title={a.label}
+                  onClick={() => s.setAccentColor(a.value as AccentColor)}
+                  className={cn(
+                    "w-5 h-5 rounded-full border-2 transition-transform hover:scale-110",
+                    s.accentColor === a.value ? "border-white scale-110" : "border-transparent",
+                  )}
+                  style={{ backgroundColor: a.color }}
+                />
+              ))}
+            </div>
+          </div>
+
+          <SettingSelect label="界面密度" value={s.uiDensity} options={densityOptions}
+            onChange={(v) => s.setUIDensity(v as "compact" | "normal" | "comfortable")} />
+        </div>
+      </div>
+
+      {/* ── 字体 ── */}
+      <div>
+        <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-3">字体大小</h4>
+        <div className="space-y-4">
+          <SettingSlider label="基础字体 (px)" min={10} max={18} step={1}
+            value={s.fontSize} onChange={s.setFontSize} />
+          <SettingSlider label="面板字体 (px)" min={10} max={16} step={1}
+            value={s.panelFontSize} onChange={s.setPanelFontSize} />
+          <SettingSlider label="等宽字体 (px)" min={10} max={16} step={1}
+            value={s.monoFontSize} onChange={s.setMonoFontSize} />
+        </div>
+      </div>
+
+      {/* ── 圆角 ── */}
+      <div>
+        <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-3">边框与形状</h4>
+        <SettingSlider label="圆角半径 (px)" min={0} max={16} step={2}
+          value={s.borderRadius} onChange={s.setBorderRadius} />
+      </div>
+
+      {/* ── 3D 视口 ── */}
+      <div>
+        <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-3">3D 视口</h4>
+        <div className="space-y-3">
+          <SettingToggle label="显示网格" checked={s.showGrid} onChange={s.setShowGrid} />
+          <SettingToggle label="显示坐标轴" checked={s.showAxes} onChange={s.setShowAxes} />
+          <SettingToggle label="显示方向标识" checked={s.showGizmo} onChange={s.setShowGizmo} />
+          <SettingToggle label="模型自动旋转" checked={s.autoRotate} onChange={s.setAutoRotate} />
+          <SettingToggle label="抗锯齿" checked={s.antiAlias} onChange={s.setAntiAlias} />
+        </div>
+      </div>
+
+      {/* ── 交互 ── */}
+      <div>
+        <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-3">交互行为</h4>
+        <div className="space-y-3">
+          <SettingToggle label="启用动画效果" checked={s.enableAnimations} onChange={s.setEnableAnimations} />
+          <SettingToggle label="删除前确认" checked={s.confirmBeforeDelete} onChange={s.setConfirmBeforeDelete} />
+          <SettingToggle label="自动保存" checked={s.autoSave} onChange={s.setAutoSave} />
+          {s.autoSave && (
+            <SettingSlider label="保存间隔 (秒)" min={10} max={300} step={10}
+              value={s.autoSaveInterval} onChange={s.setAutoSaveInterval} />
+          )}
+        </div>
+      </div>
+
+      {/* ── 重置 ── */}
+      <div className="pt-2 border-t border-border">
+        <button
+          onClick={s.resetAll}
+          className="text-[11px] text-danger hover:underline"
+        >
+          恢复所有设置为默认值
+        </button>
+      </div>
     </div>
   );
 }

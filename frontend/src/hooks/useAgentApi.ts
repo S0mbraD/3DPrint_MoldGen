@@ -40,6 +40,10 @@ export function useAgentExecute() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
       });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Agent 执行失败 (${res.status})`);
+      }
       return res.json();
     },
     onSuccess: (data) => {

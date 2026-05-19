@@ -40,22 +40,18 @@ import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
 
+from moldgen.core.boolean_ops import boolean_subtract as _bool_subtract
+from moldgen.core.boolean_ops import boolean_union as _bool_union
+from moldgen.core.boolean_ops import batch_subtract as _batch_subtract
 from moldgen.core.mesh_data import MeshData
+from moldgen.core.mesh_repair import (
+    clean_trimesh as _clean_mesh,
+    repair_trimesh as _repair_mesh,
+    stitch_boundaries as _stitch_boundaries,
+    voxel_repair as _voxel_repair_impl,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _clean_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    try:
-        mask = mesh.nondegenerate_faces()
-        mesh.update_faces(mask)
-    except (AttributeError, Exception):
-        pass
-    try:
-        mesh.remove_unreferenced_vertices()
-    except (AttributeError, Exception):
-        pass
-    return mesh
 
 
 # ═══════════════════════ Enums ══════════════════════════════════════════
@@ -73,7 +69,7 @@ class InsertType(StrEnum):
     FLAT = "flat"
     CONFORMAL = "conformal"
     RIBBED = "ribbed"       # legacy — now use flat + add_ribs=True
-    LATTICE = "lattice"     # legacy — now use flat + add_mesh_holes=True
+    LATTICE = "lattice"     # 3D lattice structure (SC/BCC/FCC)
 
 
 class AnchorType(StrEnum):
@@ -354,7 +350,6 @@ class InsertGenerator:
                             quality["circ_mean"], quality["circ_gt90_pct"])
                 if quality["circ_mean"] < 0.88 or quality["circ_gt90_pct"] < 70:
                     logger.info("Quality below threshold — re-generating with 1.5x cap")
-                    saved_max = self._iterative_subdivide.__defaults__  # type: ignore[attr-defined]
                     self._subdivision_boost = 1.5
                     plate_mesh = self._generate_conformal(
                         model, position,
@@ -371,32 +366,28 @@ class InsertGenerator:
             if want_ribs:
                 features_applied.append("ribs")
 
+        elif itype == InsertType.LATTICE:
+            plate_mesh = self._generate_lattice(model, position)
+            features_applied.append("lattice")
+
         else:
-            # Flat / legacy types
+            # Flat / RIBBED types
             if itype == InsertType.RIBBED:
                 plate_mesh = self._generate_flat(model, position)
                 cfg.add_ribs = True
-            elif itype == InsertType.LATTICE:
-                plate_mesh = self._generate_flat(model, position)
-                cfg.add_mesh_holes = True
             else:
                 plate_mesh = self._generate_flat(model, position)
 
-            # Post-hoc features for flat plates
-            if cfg.add_mesh_holes:
-                n_holes = max(4, int(
-                    plate_mesh.area * cfg.mesh_hole_density
-                    / (cfg.mesh_hole_size ** 2)
-                ))
-                n_holes = min(n_holes, 50)
-                plate_mesh, _ = self._add_mesh_holes(
-                    plate_mesh, n_holes, cfg.mesh_hole_size,
-                )
-                features_applied.append("mesh_holes")
-
+            # Post-hoc features for flat plates.
+            # Ribs first (boolean union on simple geometry succeeds more
+            # reliably), then holes (boolean subtraction).
             if cfg.add_ribs:
                 plate_mesh = self._apply_ribs(plate_mesh, position)
                 features_applied.append("ribs")
+
+            if cfg.add_mesh_holes:
+                plate_mesh = self._apply_pattern_holes(plate_mesh, position, model)
+                features_applied.append("mesh_holes")
 
         # Ensure plate sits inside the model (conformal plates are already
         # surface-projected; _ensure_interior would destructively scale ribs)
@@ -418,11 +409,31 @@ class InsertGenerator:
                 plate_mesh, _ = self._add_bumps(plate_mesh, n_feat, cfg.interlock_feature_size)
             features_applied.append(f"interlock_{interlock_type}")
 
+        # Final comprehensive repair for 3D-printing compatibility.
+        # Skip fill_holes when mesh_holes are present (to avoid closing
+        # intentional through-holes created by boolean subtraction).
+        has_holes = "mesh_holes" in features_applied
+        _repair_mesh(plate_mesh, fill=not has_holes)
+
+        if not plate_mesh.is_watertight and not has_holes:
+            try:
+                trimesh.repair.fill_holes(plate_mesh)
+                trimesh.repair.fix_normals(plate_mesh, multibody=True)
+            except Exception:
+                pass
+
+        if not plate_mesh.is_watertight:
+            logger.info(
+                "Plate mesh has minor non-manifold edges (%d faces); "
+                "acceptable for most slicers",
+                len(plate_mesh.faces),
+            )
+
         plate_data = MeshData.from_trimesh(plate_mesh)
-        vol = float(plate_mesh.volume) if plate_mesh.is_watertight else 0.0
+        vol = float(plate_mesh.volume) if plate_mesh.is_watertight else float(plate_mesh.convex_hull.volume * 0.3)
 
         effective_type = itype.value
-        if itype in (InsertType.RIBBED, InsertType.LATTICE):
+        if itype == InsertType.RIBBED:
             effective_type = "flat"
 
         plate = InsertPlate(
@@ -587,10 +598,10 @@ class InsertGenerator:
                 all_valid = False
 
             if plate.anchor is None:
-                messages.append(f"板{i+1}: 未添加锚固结构，硅胶结合可能不牢固")
+                messages.append(f"板{i+1}: ⚠ 未添加锚固结构，硅胶结合可能不牢固")
 
             if len(plate.pillars) < 2:
-                messages.append(f"板{i+1}: 支撑立柱不足（{len(plate.pillars)}根）")
+                messages.append(f"板{i+1}: ⚠ 支撑立柱不足（{len(plate.pillars)}根）")
 
         if all_valid and not messages:
             messages.append("装配验证通过")
@@ -651,7 +662,18 @@ class InsertGenerator:
         # ── Stage 1: base conformal grid ──
         plate = self._conformal_base_grid(model, pos)
         if plate is None or len(plate.faces) < 4:
-            return self._generate_flat(model, pos)
+            logger.info("Conformal grid failed, falling back to flat plate")
+            flat = self._generate_flat(model, pos)
+            if integrate_holes:
+                _repair_mesh(flat)
+                n_holes = max(4, int(
+                    flat.area * self.config.mesh_hole_density
+                    / (self.config.mesh_hole_size ** 2)
+                ))
+                n_holes = min(n_holes, 50)
+                holed, _ = self._add_mesh_holes(flat, n_holes, self.config.mesh_hole_size)
+                return holed
+            return flat
 
         if not integrate_holes and not integrate_ribs:
             return plate
@@ -682,7 +704,7 @@ class InsertGenerator:
         if integrate_holes:
             plate = self._carve_holes(plate, up, u_ax, v_ax, centroid, half_span)
 
-        _clean_mesh(plate)
+        _repair_mesh(plate, fill=not integrate_holes)
         return plate
 
     # ------------------------------------------------------------------
@@ -738,6 +760,19 @@ class InsertGenerator:
         max_dist = half_span * 0.8
         valid = dists < max_dist
 
+        # Clip to actual model projection silhouette (elliptical distance
+        # from center on the insert plane) to avoid square corner protrusions
+        proj_u = (grid_3d - plane_origin[None, :]) @ u_ax
+        proj_v = (grid_3d - plane_origin[None, :]) @ v_ax
+        surf_u = (surf_pts - plane_origin[None, :]) @ u_ax
+        surf_v = (surf_pts - plane_origin[None, :]) @ v_ax
+        model_proj_radius = np.sqrt(surf_u ** 2 + surf_v ** 2)
+        if np.any(valid):
+            valid_radii = model_proj_radius[valid]
+            max_model_r = float(np.percentile(valid_radii, 95)) + 2.0
+            grid_radius = np.sqrt(proj_u ** 2 + proj_v ** 2)
+            valid = valid & (grid_radius < max_model_r)
+
         if np.sum(valid) < 9:
             return None
 
@@ -745,15 +780,8 @@ class InsertGenerator:
         sn_unit = surf_normals / (sn_len + 1e-12)
         offset = cfg.conformal_offset
 
-        # All valid points use surface-projected positions
-        close_mask = dists < offset * 5
-        inner = np.where(
-            close_mask[:, None],
-            surf_pts - sn_unit * offset,
-            grid_3d - up[None, :] * offset,
-        )
-        outer_dir = np.where(close_mask[:, None], sn_unit, up[None, :])
-        outer = inner + outer_dir * cfg.thickness
+        inner = surf_pts - sn_unit * offset
+        outer = inner + sn_unit * cfg.thickness
 
         # Build quad grid → triangle faces
         ri, ci = np.meshgrid(
@@ -778,46 +806,55 @@ class InsertGenerator:
             np.column_stack([tl + n_pts, bl + n_pts, br + n_pts]),
         ])
 
-        # Stitch boundary edges between inner and outer sheets
-        valid_grid = valid.reshape(grid_res, grid_res)
-        stitch_faces: list[np.ndarray] = []
-        for r in range(grid_res):
-            for c_i in range(grid_res):
-                if not valid_grid[r, c_i]:
-                    continue
-                idx = r * grid_res + c_i
-                # Check each of 4 neighbors — if neighbor is invalid, this is a boundary
-                for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-                    nr, nc = r + dr, c_i + dc
-                    is_boundary = False
-                    if nr < 0 or nr >= grid_res or nc < 0 or nc >= grid_res:
-                        is_boundary = True
-                    elif not valid_grid[nr, nc]:
-                        is_boundary = True
-                    if not is_boundary:
-                        continue
-                    # Find the next valid neighbor along the boundary direction
-                    if dr == 0 and dc == 1 and c_i + 1 < grid_res and valid_grid[r, c_i]:
-                        pass  # right neighbor invalid → stitch right edge
-                    nxt_r, nxt_c = r + abs(dc), c_i + abs(dr)
-                    if nxt_r >= grid_res or nxt_c >= grid_res:
-                        continue
-                    if not valid_grid[nxt_r, nxt_c]:
-                        continue
-                    nxt_idx = nxt_r * grid_res + nxt_c
-                    stitch_faces.append(np.array([idx, nxt_idx, nxt_idx + n_pts]))
-                    stitch_faces.append(np.array([idx, nxt_idx + n_pts, idx + n_pts]))
+        # Stitch boundary edges between inner and outer sheets.
+        # Build the mesh first with just inner+outer faces, then find all
+        # boundary edges (edges shared by only 1 face) on the inner surface
+        # and create quad stitches connecting them to the outer surface.
+        all_verts = np.vstack([inner, outer])
+        sheet_faces = np.vstack([inner_f, outer_f])
 
-        all_faces = [inner_f, outer_f]
-        if stitch_faces:
-            all_faces.append(np.array(stitch_faces))
+        from collections import Counter
+        all_edges = np.sort(np.vstack([
+            sheet_faces[:, [0, 1]],
+            sheet_faces[:, [1, 2]],
+            sheet_faces[:, [0, 2]],
+        ]), axis=1)
+        edge_counts = Counter(map(tuple, all_edges.tolist()))
+        boundary_edge_list = [e for e, c in edge_counts.items() if c == 1]
 
+        stitch_faces_list: list[list[int]] = []
+        for a, b in boundary_edge_list:
+            if a < n_pts and b < n_pts:
+                stitch_faces_list.append([a, b, b + n_pts])
+                stitch_faces_list.append([a, b + n_pts, a + n_pts])
+
+        all_face_arrays = [sheet_faces]
+        if stitch_faces_list:
+            all_face_arrays.append(np.array(stitch_faces_list))
+
+        raw_faces = np.vstack(all_face_arrays)
         plate = trimesh.Trimesh(
-            vertices=np.vstack([inner, outer]),
-            faces=np.vstack(all_faces),
-            process=True,
+            vertices=all_verts,
+            faces=raw_faces,
+            process=False,
         )
-        _clean_mesh(plate)
+
+        deg_mask = plate.nondegenerate_faces()
+        n_degenerate = int(np.sum(~deg_mask))
+        n_sheet = len(inner_f) + len(outer_f)
+
+        if n_degenerate > n_sheet * 0.5:
+            logger.warning(
+                "Conformal grid: %d/%d sheet faces degenerate (model too flat "
+                "for conformal), falling back to flat plate",
+                n_degenerate, n_sheet,
+            )
+            return None
+
+        try:
+            trimesh.repair.fix_normals(plate, multibody=True)
+        except Exception:
+            pass
         return plate
 
     # ------------------------------------------------------------------
@@ -878,15 +915,13 @@ class InsertGenerator:
         centroid: np.ndarray,
         half_span: float,
     ) -> trimesh.Trimesh:
-        """Remove faces inside holes, then snap boundary vertices to circles.
+        """Create through-holes in a conformal plate.
 
-        Improvement over v1: pre-subdivides faces near hole boundaries so
-        the carved edge follows the circle more closely, producing rounder
-        holes even on coarse meshes.  Variable-radius holes (from TPMS
-        adaptive sizing) are handled natively.
+        Primary path: boolean subtraction of cylinders (produces watertight
+        geometry that survives downstream ``fill_holes`` calls).
 
-        If ``config.custom_hole_regions`` is set, only holes whose centre
-        falls inside at least one painted region are carved.
+        Fallback: face removal with boundary snapping (not watertight, but
+        preserves hole visuals if boolean engine is unavailable).
         """
         cfg = self.config
         holes = self._hole_layout(half_span, cfg)
@@ -899,20 +934,127 @@ class InsertGenerator:
                 return plate
 
         holes_arr = np.array(holes, dtype=np.float64)
-        from moldgen.core.tpms import TPMS_REGISTRY
 
+        # ── Primary path: boolean subtraction ──
+        # Convert UV hole positions to 3D and cut cylinders.
+        bool_result = self._boolean_carve_holes(
+            plate, holes_arr, u_ax, v_ax, centroid, up,
+        )
+        if bool_result is not None:
+            logger.info(
+                "Carved %d holes via boolean subtraction (pattern=%s)",
+                len(holes), cfg.hole_pattern,
+            )
+            return bool_result
+
+        # ── Fallback: face removal ──
+        logger.info("Boolean carve failed, falling back to face removal")
+        return self._face_removal_carve_holes(
+            plate, holes_arr, u_ax, v_ax, centroid, half_span,
+        )
+
+    def _boolean_carve_holes(
+        self,
+        plate: trimesh.Trimesh,
+        holes_arr: np.ndarray,
+        u_ax: np.ndarray,
+        v_ax: np.ndarray,
+        centroid: np.ndarray,
+        up: np.ndarray,
+    ) -> trimesh.Trimesh | None:
+        """Subtract cylinders at each hole position from the plate.
+
+        Uses batch strategy: union all cutters first, then a single boolean
+        subtraction.  This avoids floating-point error accumulation from
+        sequential subtractions and is significantly faster.
+        """
+        cfg = self.config
+        from moldgen.core.tpms import TPMS_REGISTRY
         pattern = cfg.hole_pattern
-        # ── Phase 0: adaptive pre-subdivision near hole boundaries ────
+
+        work = plate.copy()
+        if not work.is_watertight:
+            _repair_mesh(work)
+            if not work.is_watertight:
+                return None
+
+        cyl_height = cfg.thickness * 6
+        cutters: list[trimesh.Trimesh] = []
+
+        for hu, hv, hr in holes_arr:
+            radius = float(hr)
+            if radius < 0.5:
+                continue
+
+            if pattern == "grid":
+                cutter = trimesh.creation.box(
+                    extents=[radius * 2 * 0.92, radius * 2 * 0.92, cyl_height],
+                )
+            elif pattern == "diamond":
+                cutter = trimesh.creation.cylinder(
+                    radius=radius, height=cyl_height, sections=4,
+                )
+            elif pattern in TPMS_REGISTRY:
+                cutter = trimesh.creation.cylinder(
+                    radius=radius, height=cyl_height, sections=16,
+                )
+            else:
+                cutter = trimesh.creation.cylinder(
+                    radius=radius, height=cyl_height, sections=12,
+                )
+
+            hole_center_3d = centroid + hu * u_ax + hv * v_ax
+            local_n = self._local_face_normal(work, hole_center_3d, up)
+            rot = self._align_z_to(local_n)
+            cutter.apply_transform(rot)
+            cutter.apply_translation(hole_center_3d)
+            cutters.append(cutter)
+
+        if not cutters:
+            return None
+
+        # Batch: concatenate all cutters and subtract once (fast path)
+        combined_cutter = trimesh.util.concatenate(cutters)
+        result = self._manifold_subtract(work, combined_cutter)
+        if result is not None and len(result.faces) > 4:
+            _repair_mesh(result, fill=False)
+            return result
+
+        # Sequential fallback (for complex surfaces where batch fails)
+        holes_cut = 0
+        for cutter in cutters:
+            new_result = self._manifold_subtract(work, cutter)
+            if new_result is not None and len(new_result.faces) > 4:
+                work = new_result
+                holes_cut += 1
+        if holes_cut > 0:
+            _repair_mesh(work, fill=False)
+            return work
+        return None
+
+    def _face_removal_carve_holes(
+        self,
+        plate: trimesh.Trimesh,
+        holes_arr: np.ndarray,
+        u_ax: np.ndarray,
+        v_ax: np.ndarray,
+        centroid: np.ndarray,
+        half_span: float,
+    ) -> trimesh.Trimesh:
+        """Face-removal fallback for hole carving (legacy path)."""
+        cfg = self.config
+        from moldgen.core.tpms import TPMS_REGISTRY
+        pattern = cfg.hole_pattern
+
         plate = self._subdivide_near_holes(plate, holes_arr, u_ax, v_ax, centroid, passes=2)
 
-        # ── Phase 1: face removal — shape depends on pattern (nTopology-style distinction)
         fc = plate.triangles_center
         fc_c = fc - centroid
         fu = fc_c @ u_ax
         fv = fc_c @ v_ax
 
         keep = np.ones(len(plate.faces), dtype=bool)
-        for hu, hv, hr in holes:
+        for hu, hv, hr in holes_arr:
             safe_r = max(float(hr), 1e-6)
             if pattern in TPMS_REGISTRY:
                 du = (fu - hu) / safe_r
@@ -934,16 +1076,14 @@ class InsertGenerator:
         result.update_faces(keep)
         result.remove_unreferenced_vertices()
 
-        # ── Phase 2: circular snap only when holes are rotationally symmetric ──────────
         if pattern not in TPMS_REGISTRY and pattern not in ("grid", "diamond"):
             result = self._snap_hole_boundaries(result, holes_arr, u_ax, v_ax, centroid)
 
-        # ── Phase 3: boundary smoothing ─────────────
         result = self._smooth_boundary_ring(result, iterations=3)
 
         logger.info(
-            "Carved %d faces for %d holes pattern=%s (%.1f%% removed)",
-            n_removed, len(holes), pattern, 100 * n_removed / len(plate.faces),
+            "Carved %d faces for %d holes pattern=%s (%.1f%% removed, face-removal fallback)",
+            n_removed, len(holes_arr), pattern, 100 * n_removed / len(plate.faces),
         )
         return result
 
@@ -1710,14 +1850,37 @@ class InsertGenerator:
             prisms = prisms[::step][:MAX_PRISMS]
 
         try:
-            combined = trimesh.util.concatenate([plate_mesh] + prisms)
-            _clean_mesh(combined)
+            rib_mesh = trimesh.util.concatenate(prisms)
+            _repair_mesh(rib_mesh)
+
+            if plate_mesh.is_watertight:
+                merged = self._manifold_union(plate_mesh, rib_mesh)
+                if merged is not None and len(merged.faces) > len(plate_mesh.faces):
+                    logger.info("Ribs: boolean union %d prisms (%d faces)", len(prisms), len(merged.faces))
+                    return merged
+
+            combined = trimesh.util.concatenate([plate_mesh, rib_mesh])
+            _repair_mesh(combined)
+
+            if not combined.is_watertight:
+                voxel_fixed = self._voxel_repair(combined)
+                if voxel_fixed is not None:
+                    logger.info("Ribs: voxel repair recovered watertightness (%d faces)", len(voxel_fixed.faces))
+                    return voxel_fixed
+
             logger.info("Ribs: %d face prisms on plate (%d total faces)", len(prisms), len(combined.faces))
             return combined
         except Exception:
             return plate_mesh
 
     def _generate_lattice(self, model: MeshData, pos: InsertPosition) -> trimesh.Trimesh:
+        """Generate a 3D lattice structure (SC / BCC / FCC) as an insert plate.
+
+        Supports three lattice types via ``config.lattice_type``:
+          - ``sc``  : simple cubic — axis-aligned struts only
+          - ``bcc`` : body-centered cubic — SC + body diagonals
+          - ``fcc`` : face-centered cubic — SC + face diagonals
+        """
         cfg = self.config
         normal = np.asarray(pos.normal, dtype=np.float64)
         extents = model.extents
@@ -1726,13 +1889,14 @@ class InsertGenerator:
         axes = [i for i in range(3) if i != main_ax]
         cell = cfg.lattice_cell_size
         r = cfg.lattice_strut_diameter / 2
+        ltype = cfg.lattice_type.lower()
 
         span = [float(extents[axes[0]]) * cfg.plate_scale,
                 float(extents[axes[1]]) * cfg.plate_scale if len(axes) > 1 else cell * 2,
                 cfg.thickness]
-        nx = max(2, min(6, int(span[0] / cell)))
-        ny = max(2, min(6, int(span[1] / cell)))
-        nz = max(1, min(2, int(span[2] / cell) + 1))
+        nx = max(2, min(10, int(span[0] / cell)))
+        ny = max(2, min(10, int(span[1] / cell)))
+        nz = max(1, min(3, int(span[2] / cell) + 1))
 
         origin = center.copy()
         origin[axes[0]] -= nx * cell / 2
@@ -1740,27 +1904,59 @@ class InsertGenerator:
             origin[axes[1]] -= ny * cell / 2
         origin[main_ax] -= nz * cell / 2
 
+        def _node(ix: int, iy: int, iz: int) -> np.ndarray:
+            pt = origin.copy()
+            pt[axes[0]] += ix * cell
+            if len(axes) > 1:
+                pt[axes[1]] += iy * cell
+            pt[main_ax] += iz * cell
+            return pt
+
         endpoints: list[tuple[np.ndarray, np.ndarray]] = []
+
         for ix in range(nx + 1):
             for iy in range(ny + 1):
                 for iz in range(nz + 1):
-                    pt = origin.copy()
-                    pt[axes[0]] += ix * cell
-                    if len(axes) > 1:
-                        pt[axes[1]] += iy * cell
-                    pt[main_ax] += iz * cell
-
+                    pt = _node(ix, iy, iz)
                     if ix < nx:
-                        end = pt.copy(); end[axes[0]] += cell
-                        endpoints.append((pt.copy(), end))
+                        endpoints.append((pt, _node(ix + 1, iy, iz)))
                     if len(axes) > 1 and iy < ny:
-                        end = pt.copy(); end[axes[1]] += cell
-                        endpoints.append((pt.copy(), end))
+                        endpoints.append((pt, _node(ix, iy + 1, iz)))
                     if iz < nz:
-                        end = pt.copy(); end[main_ax] += cell
-                        endpoints.append((pt.copy(), end))
+                        endpoints.append((pt, _node(ix, iy, iz + 1)))
 
-        MAX_STRUTS = 120
+        if ltype == "bcc":
+            for ix in range(nx):
+                for iy in range(ny):
+                    for iz in range(nz):
+                        c = _node(ix, iy, iz) + np.array([
+                            cell / 2 if d == axes[0] else
+                            (cell / 2 if len(axes) > 1 and d == axes[1] else
+                             (cell / 2 if d == main_ax else 0))
+                            for d in range(3)
+                        ])
+                        for di in (0, 1):
+                            for dj in (0, 1):
+                                for dk in (0, 1):
+                                    corner = _node(ix + di, iy + dj, iz + dk)
+                                    endpoints.append((c, corner))
+
+        elif ltype == "fcc":
+            for ix in range(nx):
+                for iy in range(ny):
+                    for iz in range(nz):
+                        fc_xy = _node(ix, iy, iz) + np.array([
+                            cell / 2 if d == axes[0] else
+                            (cell / 2 if len(axes) > 1 and d == axes[1] else 0)
+                            for d in range(3)
+                        ])
+                        for di in (0, 1):
+                            for dj in (0, 1):
+                                endpoints.append((fc_xy, _node(ix + di, iy + dj, iz)))
+                                if iz < nz:
+                                    endpoints.append((fc_xy, _node(ix + di, iy + dj, iz + 1)))
+
+        MAX_STRUTS = 300
         if len(endpoints) > MAX_STRUTS:
             step = max(1, len(endpoints) // MAX_STRUTS)
             endpoints = endpoints[::step][:MAX_STRUTS]
@@ -1773,9 +1969,65 @@ class InsertGenerator:
 
         if not parts:
             return self._generate_flat(model, pos)
+
         combined = trimesh.util.concatenate(parts)
-        _clean_mesh(combined)
+        _repair_mesh(combined)
+
+        if not combined.is_watertight:
+            voxel_fixed = self._voxel_repair(combined)
+            if voxel_fixed is not None:
+                combined = voxel_fixed
+                logger.info("Lattice: voxel repair recovered watertightness (%d faces)", len(combined.faces))
+
+        logger.info("Lattice (%s): %d struts → %d faces", ltype, len(endpoints), len(combined.faces))
         return combined
+
+    # ═══════════════════════ Pattern Holes for Flat Plates ═══════════════
+
+    def _apply_pattern_holes(
+        self, plate: trimesh.Trimesh, pos: InsertPosition, model: MeshData,
+    ) -> trimesh.Trimesh:
+        """Apply hole_pattern-aware holes to a flat plate via boolean subtraction.
+
+        Uses the same ``_hole_layout`` as conformal plates to respect the
+        configured ``hole_pattern`` (hex/grid/diamond/voronoi/TPMS) instead
+        of random farthest-point sampling.
+        """
+        cfg = self.config
+        normal = np.asarray(pos.normal, dtype=np.float64)
+        up = normal / (np.linalg.norm(normal) + 1e-12)
+        arb = np.array([1.0, 0, 0]) if abs(up[0]) < 0.9 else np.array([0.0, 1, 0])
+        u_ax = np.cross(up, arb); u_ax /= (np.linalg.norm(u_ax) + 1e-12)
+        v_ax = np.cross(up, u_ax); v_ax /= (np.linalg.norm(v_ax) + 1e-12)
+        centroid = plate.vertices.mean(axis=0)
+
+        plate_bounds = np.array([plate.vertices.min(axis=0), plate.vertices.max(axis=0)])
+        plate_extents = plate_bounds[1] - plate_bounds[0]
+        half_span = float(np.max(plate_extents)) * 0.5
+
+        holes = self._hole_layout(half_span, cfg)
+        if not holes:
+            logger.warning("Pattern holes: no holes generated for pattern=%s", cfg.hole_pattern)
+            return plate
+
+        holes = holes[:cfg.max_holes]
+        holes_arr = np.array(holes, dtype=np.float64)
+
+        if plate.is_watertight:
+            result = self._boolean_carve_holes(
+                plate, holes_arr, u_ax, v_ax, centroid, up,
+            )
+            if result is not None:
+                logger.info("Flat plate: %d pattern holes via boolean (pattern=%s)",
+                            len(holes), cfg.hole_pattern)
+                return result
+
+        n_holes = max(4, int(
+            plate.area * cfg.mesh_hole_density / (cfg.mesh_hole_size ** 2)
+        ))
+        n_holes = min(n_holes, 50)
+        result, _ = self._add_mesh_holes(plate, n_holes, cfg.mesh_hole_size)
+        return result
 
     # ═══════════════════════ Interior Clipping ══════════════════════════
 
@@ -1808,9 +2060,10 @@ class InsertGenerator:
         """Cut through-holes in the plate for silicone penetration.
 
         Strategy:
-          1. Watertight plate → manifold3d boolean subtraction (precise).
-          2. Non-watertight (conformal) → subdivide mesh to increase face
-             density, then remove faces within hole radius.
+          1. If plate is watertight → boolean subtraction (precise, watertight result).
+          2. If not watertight → repair first, then retry boolean.
+          3. Fallback → face removal (may leave open boundaries; downstream
+             repair in generate_plate handles final watertightness).
         """
         points = self._sample_pts(plate, n * 3)
         selected = self._farthest_point_sampling(points, n)
@@ -1818,7 +2071,15 @@ class InsertGenerator:
         if plate.is_watertight:
             result = self._boolean_mesh_holes(plate, selected, size)
             if result is not None:
-                logger.info("Mesh holes: boolean cut %d holes", len(selected))
+                logger.info("Mesh holes: boolean cut %d holes (watertight path)", len(selected))
+                return result, selected
+
+        repaired = plate.copy()
+        _repair_mesh(repaired)
+        if repaired.is_watertight:
+            result = self._boolean_mesh_holes(repaired, selected, size)
+            if result is not None:
+                logger.info("Mesh holes: boolean cut %d holes (repaired path)", len(selected))
                 return result, selected
 
         work = self._subdivide_for_holes(plate, size)
@@ -1852,27 +2113,50 @@ class InsertGenerator:
     def _boolean_mesh_holes(
         self, plate: trimesh.Trimesh, centers: np.ndarray, size: float,
     ) -> trimesh.Trimesh | None:
+        """Batch boolean subtraction of cylindrical holes."""
         avg_normal = self._plate_avg_normal(plate)
-        result = plate
-        holes_cut = 0
+        cutters: list[trimesh.Trimesh] = []
         for pt in centers:
-            local_n = self._local_face_normal(result, pt, avg_normal)
+            local_n = self._local_face_normal(plate, pt, avg_normal)
             hole = trimesh.creation.cylinder(
                 radius=size / 2, height=self.config.thickness * 4, sections=12,
             )
             rot = self._align_z_to(local_n)
             hole.apply_transform(rot)
             hole.apply_translation(pt)
-            new_result = self._manifold_subtract(result, hole)
+            cutters.append(hole)
+
+        if not cutters:
+            return None
+
+        combined_cutter = trimesh.util.concatenate(cutters)
+        result = self._manifold_subtract(plate, combined_cutter)
+        if result is not None and len(result.faces) > 4:
+            _repair_mesh(result, fill=False)
+            return result
+
+        # Sequential fallback
+        work = plate
+        holes_cut = 0
+        for cutter in cutters:
+            new_result = self._manifold_subtract(work, cutter)
             if new_result is not None:
-                result = new_result
+                work = new_result
                 holes_cut += 1
-        return result if holes_cut > 0 else None
+        if holes_cut > 0:
+            _repair_mesh(work, fill=False)
+            return work
+        return None
 
     def _face_removal_mesh_holes(
         self, plate: trimesh.Trimesh, centers: np.ndarray, size: float,
     ) -> trimesh.Trimesh:
-        """Remove faces whose centroid or any vertex is within the hole radius."""
+        """Remove faces for holes, then stitch boundary loops to maintain closure.
+
+        After removing faces inside each hole radius, we find the resulting
+        boundary edges and create tube-wall triangles that connect the two
+        sides of the plate thickness, keeping the mesh watertight.
+        """
         radius = size / 2
         face_centers = plate.triangles_center
         face_verts = plate.triangles
@@ -1894,8 +2178,22 @@ class InsertGenerator:
         result = plate.copy()
         result.update_faces(keep)
         result.remove_unreferenced_vertices()
-        logger.info("Mesh holes (face-removal): removed %d / %d faces", n_removed, len(plate.faces))
+
+        result = self._stitch_hole_boundaries(result)
+
+        logger.info("Mesh holes (face-removal): removed %d / %d faces, stitched boundaries",
+                     n_removed, len(plate.faces))
         return result
+
+    # ─── mesh closure helpers ────────────
+
+    @staticmethod
+    def _stitch_hole_boundaries(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+        return _stitch_boundaries(mesh)
+
+    @staticmethod
+    def _voxel_repair(mesh: trimesh.Trimesh, pitch: float = 0.0) -> trimesh.Trimesh | None:
+        return _voxel_repair_impl(mesh, pitch)
 
     # ─── boolean / geometry helpers for mesh holes ────────────
 
@@ -1943,65 +2241,13 @@ class InsertGenerator:
     def _manifold_subtract(
         mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh,
     ) -> trimesh.Trimesh | None:
-        try:
-            import manifold3d
-            m_a = manifold3d.Manifold(manifold3d.Mesh(
-                vert_properties=np.asarray(mesh_a.vertices, dtype=np.float32),
-                tri_verts=np.asarray(mesh_a.faces, dtype=np.uint32),
-            ))
-            m_b = manifold3d.Manifold(manifold3d.Mesh(
-                vert_properties=np.asarray(mesh_b.vertices, dtype=np.float32),
-                tri_verts=np.asarray(mesh_b.faces, dtype=np.uint32),
-            ))
-            diff = m_a - m_b
-            out = diff.to_mesh()
-            tm = trimesh.Trimesh(
-                vertices=np.asarray(out.vert_properties[:, :3]),
-                faces=np.asarray(out.tri_verts), process=True,
-            )
-            if len(tm.faces) > 4:
-                return tm
-        except Exception:
-            pass
-        try:
-            r = mesh_a.difference(mesh_b)
-            if r is not None and len(r.faces) > 4:
-                return r
-        except Exception:
-            pass
-        return None
+        return _bool_subtract(mesh_a, mesh_b)
 
     @staticmethod
     def _manifold_union(
         mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh,
     ) -> trimesh.Trimesh | None:
-        try:
-            import manifold3d
-            m_a = manifold3d.Manifold(manifold3d.Mesh(
-                vert_properties=np.asarray(mesh_a.vertices, dtype=np.float32),
-                tri_verts=np.asarray(mesh_a.faces, dtype=np.uint32),
-            ))
-            m_b = manifold3d.Manifold(manifold3d.Mesh(
-                vert_properties=np.asarray(mesh_b.vertices, dtype=np.float32),
-                tri_verts=np.asarray(mesh_b.faces, dtype=np.uint32),
-            ))
-            uni = m_a + m_b
-            out = uni.to_mesh()
-            tm = trimesh.Trimesh(
-                vertices=np.asarray(out.vert_properties[:, :3]),
-                faces=np.asarray(out.tri_verts), process=True,
-            )
-            if len(tm.faces) > 4:
-                return tm
-        except Exception:
-            pass
-        try:
-            r = mesh_a.union(mesh_b)
-            if r is not None and len(r.faces) > 4:
-                return r
-        except Exception:
-            pass
-        return None
+        return _bool_union(mesh_a, mesh_b, require_watertight=True)
 
     def _interlock_surface_frames(
         self, plate: trimesh.Trimesh, points: np.ndarray,
@@ -2241,7 +2487,7 @@ class InsertGenerator:
         normal = pos.normal
         main = int(np.argmax(np.abs(normal)))
         dims = [ext[i] * self.config.plate_scale for i in range(3)]
-        dims[main] = 0.1
+        dims[main] = max(self.config.thickness, 1.0)
         plate = trimesh.creation.box(extents=dims)
         plate.apply_translation(pos.origin)
         return plate
@@ -2263,7 +2509,9 @@ class InsertGenerator:
             sides.append([a, b + nv, a + nv])
         if sides:
             faces = np.vstack([faces, np.array(sides)])
-        return trimesh.Trimesh(vertices=verts, faces=faces, process=True)
+        result = trimesh.Trimesh(vertices=verts, faces=faces, process=True)
+        _repair_mesh(result)
+        return result
 
     def _sample_pts(self, tm: trimesh.Trimesh, n: int) -> np.ndarray:
         try:

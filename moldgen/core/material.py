@@ -16,6 +16,9 @@ class MaterialProperties:
     temperature: float = 25.0  # °C
     shore_hardness: str = "A30"
     color: str = "#e0e0e0"
+    # Cross-type shear thinning (optional): n=1, tau_star=0 → Newtonian
+    n_power_law: float = 1.0  # power-law index (<1 shear-thinning)
+    tau_star: float = 0.0  # critical shear stress (Pa); no correction when 0
 
     def to_dict(self) -> dict:
         return {
@@ -27,6 +30,8 @@ class MaterialProperties:
             "max_pressure": self.max_pressure,
             "temperature": self.temperature,
             "shore_hardness": self.shore_hardness,
+            "n_power_law": self.n_power_law,
+            "tau_star": self.tau_star,
         }
 
     @classmethod

@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronLeft, Upload, Settings, Loader2, Scissors, Maximize2, RotateCcw, Compass, SplitSquareVertical, Box, Droplets, Zap, RefreshCw, Pin, CheckCircle2, Download, Package, Grid3x3, FlipVertical, ArrowUpDown, RotateCw, ZoomIn, FileText, Layers, Activity, Slice, ChevronDown, BarChart3, Lightbulb, Ruler, Anchor, Cpu, Grid } from "lucide-react";
+import { ChevronLeft, Upload, Settings, Loader2, Scissors, Maximize2, RotateCcw, Compass, SplitSquareVertical, Box, Droplets, Zap, RefreshCw, Pin, CheckCircle2, Download, Package, Grid3x3, FlipVertical, ArrowUpDown, RotateCw, ZoomIn, FileText, Layers, Activity, Slice, ChevronDown, BarChart3, Lightbulb, Ruler, Anchor, Cpu, Grid, Gauge, TrendingDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useModelStore, type MeshInfo } from "../../stores/modelStore";
@@ -7,13 +7,14 @@ import { useMoldStore } from "../../stores/moldStore";
 import { useSimStore } from "../../stores/simStore";
 import { useInsertStore } from "../../stores/insertStore";
 import { useUploadModel, useSimplifyModel, useSubdivideModel, useTransformModel, useRepairModel, useModelQuality } from "../../hooks/useModelApi";
-import { useOrientationAnalysis, usePartingGeneration, useMoldGeneration, useCoolingChannelDesign, useUndercutHeatmap, useHolePreview } from "../../hooks/useMoldApi";
+import { useOrientationAnalysis, usePartingGeneration, useMoldGeneration, useCoolingChannelDesign, useUndercutHeatmap, useSkinMoldGeneration } from "../../hooks/useMoldApi";
 import { useGatingDesign, useRunSimulation, useRunOptimization, useFetchVisualization, useFetchCrossSection, useFetchSurfaceMap, useRunFEA, useFetchFEAVisualization } from "../../hooks/useSimApi";
 import { useAnalyzePositions, useGenerateInserts, useValidateAssembly } from "../../hooks/useInsertApi";
 import { useThicknessAnalysis, useCurvatureAnalysis, useSymmetryAnalysis, useOverhangAnalysis, useSmoothMesh, useRemeshMesh, useThickenMesh, useOffsetMesh } from "../../hooks/useAnalysisApi";
 import type { ThicknessData, CurvatureData, SymmetryData, OverhangData } from "../../hooks/useAnalysisApi";
 import { useExportModel, useExportMold, useExportInsert, useExportAll } from "../../hooks/useExportApi";
 import { cn } from "../../lib/utils";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { toastSuccess, toastError, toastInfo } from "../../stores/toastStore";
 import { useHistoryStore } from "../../stores/historyStore";
 import { flog } from "../../stores/logStore";
@@ -41,16 +42,19 @@ const STEP_LABEL_MAP: Record<string, string> = {
 
 export function LeftPanel() {
   const { leftPanelOpen, toggleLeftPanel, currentStep } = useAppStore();
+  const scale = useSettingsStore((s) => s.fontSize) / 13;
+  const panelWidth = Math.round(290 * scale);
 
   return (
     <AnimatePresence initial={false}>
       {leftPanelOpen && (
         <motion.div
           initial={{ width: 0, opacity: 0 }}
-          animate={{ width: 290, opacity: 1 }}
+          animate={{ width: panelWidth, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={{ type: "spring", stiffness: 300, damping: 30 }}
           className="h-full bg-bg-panel border-r border-border overflow-hidden flex flex-col"
+          style={{ zoom: scale !== 1 ? scale : undefined }}
         >
           {/* Panel header */}
           <div className="flex items-center justify-between px-3 h-8 border-b border-border shrink-0">
@@ -1042,6 +1046,7 @@ function OrientationPanel() {
   const setSelectedCandidate = useMoldStore((s) => s.setSelectedCandidate);
   const setOrientationResult = useMoldStore((s) => s.setOrientationResult);
   const orientation = useOrientationAnalysis();
+  const markStepCompleted = useAppStore((s) => s.markStepCompleted);
   const pushHistory = useHistoryStore((s) => s.push);
   const [nSamples, setNSamples] = useState(100);
   const [nFinal, setNFinal] = useState(5);
@@ -1098,6 +1103,7 @@ function OrientationPanel() {
                   `最佳方向: [${dir}] | 可见率: ${(r.best_score.visibility_ratio * 100).toFixed(1)}% | 倒扣: ${(r.best_score.undercut_ratio * 100).toFixed(1)}% | 候选: ${r.top_candidates.length} 个`, ms);
                 pushHistory({ type: "orientation", label: "方向分析", detail: `评分 ${(r.best_score.total_score * 100).toFixed(0)}%`, modelId });
                 toastSuccess("方向分析完成", `评分 ${(r.best_score.total_score * 100).toFixed(0)}%`);
+                markStepCompleted("orientation");
               },
               onError: (e) => { flog.error("Orient", `方向分析失败: ${(e as Error).message}`); toastError("分析失败", (e as Error).message); },
             });
@@ -1246,13 +1252,15 @@ function OrientationPanel() {
 
 function MoldPanel() {
   const modelId = useModelStore((s) => s.modelId);
-  const { orientationResult, partingResult, moldResult, isAnalyzing, isGeneratingParting, isGeneratingMold } = useMoldStore();
+  const { orientationResult, partingResult, moldResult, moldMode, skinMoldResult, isAnalyzing, isGeneratingParting, isGeneratingMold } = useMoldStore();
+  const setMoldMode = useMoldStore((s) => s.setMoldMode);
   const orientation = useOrientationAnalysis();
   const parting = usePartingGeneration();
   const moldGen = useMoldGeneration();
+  const skinMoldGen = useSkinMoldGeneration();
   const coolingDesign = useCoolingChannelDesign();
   const fetchHeatmap = useUndercutHeatmap();
-  const holePreview = useHolePreview();
+  const markStepCompleted = useAppStore((s) => s.markStepCompleted);
   const pushHistory = useHistoryStore((s) => s.push);
   const setStep = useAppStore((s) => s.setStep);
   const [wallThickness, setWallThickness] = useState(4.0);
@@ -1263,15 +1271,6 @@ function MoldPanel() {
   const [screwSize, setScrewSize] = useState("M4");
   const [nScrews, setNScrews] = useState(4);
   const [screwTabThickness, setScrewTabThickness] = useState(5.0);
-  const [addPourHole, setAddPourHole] = useState(true);
-  const [pourDiameter, setPourDiameter] = useState(15.0);
-  const [pourMode, setPourMode] = useState<"auto" | "manual">("auto");
-  const [pourManualPos, setPourManualPos] = useState<[number, number, number]>([0, 0, 0]);
-  const [addVentHoles, setAddVentHoles] = useState(true);
-  const [ventDiameter, setVentDiameter] = useState(3.0);
-  const [nVentHoles, setNVentHoles] = useState(4);
-  const [ventMode, setVentMode] = useState<"auto" | "manual">("auto");
-  const [ventManualPositions, setVentManualPositions] = useState<[number, number, number][]>([]);
   const [moldMaterial, setMoldMaterial] = useState("pla");
   const [shrinkagePct, setShrinkagePct] = useState(0.0);
   const [addCooling, setAddCooling] = useState(false);
@@ -1279,6 +1278,17 @@ function MoldPanel() {
   const [addEjectors, setAddEjectors] = useState(false);
   const [ejectorCount, setEjectorCount] = useState(4);
   const [surfaceTexture, setSurfaceTexture] = useState("none");
+  // Skin mold params
+  const [skinThickness, setSkinThickness] = useState(3.0);
+  const [variableThickness, setVariableThickness] = useState(false);
+  const [coreResolution, setCoreResolution] = useState(64);
+  const [coreClearance, setCoreClearance] = useState(0.3);
+  const [coreSmoothing, setCoreSmoothing] = useState(2);
+  const [coreShellThickness, setCoreShellThickness] = useState(0.0);
+  const [addSupportPegs, setAddSupportPegs] = useState(true);
+  const [regType, setRegType] = useState("pin");
+  const [regCount, setRegCount] = useState(4);
+  const [regDiameter, setRegDiameter] = useState(5.0);
 
   if (!modelId) {
     return (
@@ -1385,7 +1395,272 @@ function MoldPanel() {
       </Section>
 
       <Section title="3. 模具壳体生成">
-        <div className="space-y-2 mb-2">
+        {/* Mode selector: standard vs skin mold */}
+        <div className="flex items-center gap-1.5 mb-3">
+          <button
+            onClick={() => setMoldMode("standard")}
+            className={cn(
+              "flex-1 px-2 py-1 rounded text-[12px] font-medium transition-colors",
+              moldMode === "standard" ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
+            )}
+          >标准模具</button>
+          <button
+            onClick={() => setMoldMode("skin")}
+            className={cn(
+              "flex-1 px-2 py-1 rounded text-[12px] font-medium transition-colors",
+              moldMode === "skin" ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover",
+            )}
+          >蒙皮模具</button>
+        </div>
+
+        {moldMode === "skin" && (
+          <div className="space-y-2 mb-2">
+            <div className="text-[11px] text-accent/80 bg-accent/10 rounded px-2 py-1.5 leading-relaxed">
+              生成模芯 + 外模，灌注硅胶后得到蒙皮层。适用于医学教具的软质皮肤制作。
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">蒙皮厚度</span>
+              <div className="flex items-center gap-1">
+                <input type="range" min={1} max={15} step={0.5} value={skinThickness}
+                  onChange={(e) => setSkinThickness(parseFloat(e.target.value))}
+                  className="w-20 accent-accent" />
+                <span className="text-[12px] text-text-muted w-12 text-right">{skinThickness}mm</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">变厚度蒙皮</span>
+              <button
+                onClick={() => setVariableThickness(!variableThickness)}
+                className={cn("px-2 py-0.5 rounded text-[12px] transition-colors",
+                  variableThickness ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                {variableThickness ? "曲率自适应" : "均匀"}
+              </button>
+            </div>
+            {variableThickness && (
+              <div className="text-[11px] text-text-muted/70 pl-2 border-l-2 border-accent/30">
+                凸面区域(如关节)自动加厚，平面区域减薄
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">模芯分辨率</span>
+              <div className="flex items-center gap-1">
+                {[48, 64, 96, 128].map((r) => (
+                  <button key={r} onClick={() => setCoreResolution(r)}
+                    className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
+                      coreResolution === r ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">模芯间隙</span>
+              <div className="flex items-center gap-1">
+                <input type="range" min={0.1} max={1.0} step={0.05} value={coreClearance}
+                  onChange={(e) => setCoreClearance(parseFloat(e.target.value))}
+                  className="w-20 accent-accent" />
+                <span className="text-[12px] text-text-muted w-12 text-right">{coreClearance.toFixed(2)}mm</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">模芯平滑</span>
+              <div className="flex items-center gap-1">
+                {[0, 1, 2, 3, 5].map((s) => (
+                  <button key={s} onClick={() => setCoreSmoothing(s)}
+                    className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
+                      coreSmoothing === s ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">模芯壁厚</span>
+              <div className="flex items-center gap-1">
+                <input type="range" min={0} max={5} step={0.5} value={coreShellThickness}
+                  onChange={(e) => setCoreShellThickness(parseFloat(e.target.value))}
+                  className="w-20 accent-accent" />
+                <span className="text-[12px] text-text-muted w-12 text-right">{coreShellThickness === 0 ? "实心" : `${coreShellThickness}mm`}</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">定位销数量</span>
+              <div className="flex items-center gap-1">
+                {[2, 3, 4, 6].map((n) => (
+                  <button key={n} onClick={() => setRegCount(n)}
+                    className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
+                      regCount === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">定位销直径</span>
+              <div className="flex items-center gap-1">
+                <input type="range" min={3} max={8} step={0.5} value={regDiameter}
+                  onChange={(e) => setRegDiameter(parseFloat(e.target.value))}
+                  className="w-20 accent-accent" />
+                <span className="text-[12px] text-text-muted w-12 text-right">{regDiameter}mm</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">定位类型</span>
+              <div className="flex items-center gap-1">
+                {(["pin", "key"] as const).map((t) => (
+                  <button key={t} onClick={() => setRegType(t)}
+                    className={cn("px-2 py-0.5 rounded text-[11px] transition-colors",
+                      regType === t ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                    {t === "pin" ? "圆销" : "方键"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">支撑柱</span>
+              <button
+                onClick={() => setAddSupportPegs(!addSupportPegs)}
+                className={cn("px-2 py-0.5 rounded text-[12px] transition-colors",
+                  addSupportPegs ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                {addSupportPegs ? "已启用" : "关闭"}
+              </button>
+            </div>
+            {addSupportPegs && (
+              <div className="text-[11px] text-text-muted/70 pl-2 border-l-2 border-accent/30">
+                模芯底部支撑柱，灌注时保持悬浮定位
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-muted">外模壁厚</span>
+              <div className="flex items-center gap-1">
+                <input type="range" min={3} max={10} step={0.5} value={wallThickness}
+                  onChange={(e) => setWallThickness(parseFloat(e.target.value))}
+                  className="w-20 accent-accent" />
+                <span className="text-[12px] text-text-muted w-12 text-right">{wallThickness}mm</span>
+              </div>
+            </div>
+            <ActionButton
+              icon={<Box size={13} />}
+              label={isGeneratingMold ? "生成中..." : "生成蒙皮模具"}
+              loading={isGeneratingMold}
+              onClick={() => {
+                const t0 = performance.now();
+                flog.info("Mold", `开始蒙皮模具生成 (皮厚: ${skinThickness}mm, 模芯分辨率: ${coreResolution})`);
+                skinMoldGen.mutate({
+                  modelId,
+                  skinThickness,
+                  variableThickness,
+                  coreResolution,
+                  coreSmoothing,
+                  coreClearance,
+                  coreShellThickness,
+                  addSupportPegs,
+                  registrationType: regType,
+                  registrationCount: regCount,
+                  registrationDiameter: regDiameter,
+                  moldWallThickness: wallThickness,
+                  moldShellType: shellType,
+                  partingStyle,
+                  addAlignmentPins: true,
+                  shrinkageCompensation: shrinkagePct,
+                  direction: orientationResult?.best_direction,
+                }, {
+                  onSuccess: ({ skinMoldId }) => {
+                    const ms = Math.round(performance.now() - t0);
+                    flog.success("Mold", "蒙皮模具生成完成", `ID: ${skinMoldId}`, ms);
+                    pushHistory({ type: "mold", label: "生成蒙皮模具", detail: `蒙皮厚度 ${skinThickness}mm`, moldId: skinMoldId, modelId });
+                    toastSuccess("蒙皮模具已生成", "模芯 + 外模 + 定位特征");
+                    markStepCompleted("mold");
+                  },
+                  onError: (e) => { flog.error("Mold", `蒙皮模具生成失败: ${(e as Error).message}`); toastError("蒙皮模具生成失败", (e as Error).message); },
+                });
+              }}
+            />
+            {skinMoldResult && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                className="mt-2 p-2 rounded bg-bg-secondary text-[12px] space-y-1"
+              >
+                <div className="text-text-secondary font-medium mb-1">蒙皮模具结果</div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">模芯面数</span>
+                  <span className="font-mono">{skinMoldResult.core.face_count.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">模芯体积</span>
+                  <span className="font-mono">{skinMoldResult.core.volume.toFixed(1)} mm³</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">蒙皮体积</span>
+                  <span className="text-accent font-semibold">{skinMoldResult.skin_volume.toFixed(1)} mm³</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">模芯状态</span>
+                  <span>{skinMoldResult.core.is_hollow ? "空心" : "实心"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">定位特征</span>
+                  <span>{skinMoldResult.registration.length} 个</span>
+                </div>
+                {skinMoldResult.skin_thickness_stats?.mean != null && (() => {
+                  const st = skinMoldResult.skin_thickness_stats;
+                  return (
+                    <>
+                      <div className="text-text-secondary font-medium mt-2 mb-0.5">蒙皮厚度分析</div>
+                      <div className="flex justify-between">
+                        <span className="text-text-muted">平均厚度</span>
+                        <span className="font-mono">{st.mean.toFixed(2)} mm</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-text-muted">最薄/最厚</span>
+                        <span className="font-mono">
+                          {st.min.toFixed(2)} / {st.max.toFixed(2)} mm
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-text-muted">P5/P95</span>
+                        <span className="font-mono">
+                          {st.p5.toFixed(2)} / {st.p95.toFixed(2)} mm
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-text-muted">标准差</span>
+                        <span className={cn("font-mono", st.std > 1.0 ? "text-warning" : "text-success")}>
+                          {st.std.toFixed(2)} mm
+                        </span>
+                      </div>
+                      {st.uniformity_score != null && (
+                        <div className="flex justify-between">
+                          <span className="text-text-muted">均匀度评分</span>
+                          <span className={cn("font-mono font-semibold",
+                            st.uniformity_score >= 0.8 ? "text-success" :
+                            st.uniformity_score >= 0.5 ? "text-warning" : "text-error")}>
+                            {(st.uniformity_score * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                      )}
+                      {(st.n_thin_spots ?? 0) > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-text-muted">过薄区域</span>
+                          <span className="text-warning font-mono">{st.n_thin_spots} 处</span>
+                        </div>
+                      )}
+                      {(st.n_thick_spots ?? 0) > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-text-muted">过厚区域</span>
+                          <span className="text-text-muted font-mono">{st.n_thick_spots} 处</span>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </motion.div>
+            )}
+          </div>
+        )}
+
+        {moldMode === "standard" && (<><div className="space-y-2 mb-2">
           <div className="flex items-center justify-between">
             <span className="text-[12px] text-text-muted">壁厚</span>
             <div className="flex items-center gap-1">
@@ -1487,173 +1762,6 @@ function MoldPanel() {
                 </div>
               </div>
             </div>
-          )}
-
-          {/* Pour hole settings */}
-          <div className="flex items-center justify-between">
-            <span className="text-[12px] text-text-muted">浇注口</span>
-            <button onClick={() => setAddPourHole(!addPourHole)}
-              className={cn("px-2 py-0.5 rounded text-[12px] transition-colors",
-                addPourHole ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
-              {addPourHole ? "已启用" : "关闭"}
-            </button>
-          </div>
-          {addPourHole && (
-            <div className="space-y-1.5 pl-2 border-l-2 border-accent/30">
-              <div className="flex items-center justify-between">
-                <span className="text-[12px] text-text-muted">直径</span>
-                <div className="flex items-center gap-1">
-                  <input type="range" min={5} max={25} step={1} value={pourDiameter}
-                    onChange={(e) => setPourDiameter(Number(e.target.value))}
-                    className="w-16 h-1 accent-accent" />
-                  <span className="text-[11px] text-text-secondary tabular-nums w-10 text-right">{pourDiameter}mm</span>
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[12px] text-text-muted">布置方式</span>
-                <div className="flex items-center gap-1">
-                  {(["auto", "manual"] as const).map((m) => (
-                    <button key={m} onClick={() => setPourMode(m)}
-                      className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
-                        pourMode === m ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
-                      {m === "auto" ? "自动" : "手动"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {pourMode === "manual" && (
-                <div className="space-y-1">
-                  <span className="text-[11px] text-text-muted">浇注口位置 (mm)</span>
-                  <div className="flex gap-1">
-                    {(["X", "Y", "Z"] as const).map((axis, ai) => (
-                      <div key={axis} className="flex-1">
-                        <label className="text-[11px] text-text-muted">{axis}</label>
-                        <input type="number" step={1}
-                          value={pourManualPos[ai]}
-                          onChange={(e) => {
-                            const np = [...pourManualPos] as [number, number, number];
-                            np[ai] = parseFloat(e.target.value) || 0;
-                            setPourManualPos(np);
-                          }}
-                          className="w-full text-[12px] bg-bg-secondary border border-border rounded px-1 py-0.5 text-text-primary text-center"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Vent hole settings */}
-          <div className="flex items-center justify-between">
-            <span className="text-[12px] text-text-muted">排气口</span>
-            <button onClick={() => setAddVentHoles(!addVentHoles)}
-              className={cn("px-2 py-0.5 rounded text-[12px] transition-colors",
-                addVentHoles ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
-              {addVentHoles ? "已启用" : "关闭"}
-            </button>
-          </div>
-          {addVentHoles && (
-            <div className="space-y-1.5 pl-2 border-l-2 border-accent/30">
-              <div className="flex items-center justify-between">
-                <span className="text-[12px] text-text-muted">直径</span>
-                <div className="flex items-center gap-1">
-                  <input type="range" min={1} max={8} step={0.5} value={ventDiameter}
-                    onChange={(e) => setVentDiameter(Number(e.target.value))}
-                    className="w-16 h-1 accent-accent" />
-                  <span className="text-[11px] text-text-secondary tabular-nums w-10 text-right">{ventDiameter}mm</span>
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[12px] text-text-muted">排气数量</span>
-                <div className="flex items-center gap-1">
-                  {[2, 3, 4, 6].map((n) => (
-                    <button key={n} onClick={() => setNVentHoles(n)}
-                      className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
-                        nVentHoles === n ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[12px] text-text-muted">布置方式</span>
-                <div className="flex items-center gap-1">
-                  {(["auto", "manual"] as const).map((m) => (
-                    <button key={m} onClick={() => setVentMode(m)}
-                      className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
-                        ventMode === m ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
-                      {m === "auto" ? "自动" : "手动"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {ventMode === "manual" && (
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] text-text-muted">排气口位置列表</span>
-                    <button onClick={() => setVentManualPositions([...ventManualPositions, [0, 0, 0]])}
-                      className="text-[11px] text-accent hover:underline">+ 添加</button>
-                  </div>
-                  {ventManualPositions.map((vp, vi) => (
-                    <div key={vi} className="flex gap-1 items-end">
-                      {(["X", "Y", "Z"] as const).map((axis, ai) => (
-                        <div key={axis} className="flex-1">
-                          {vi === 0 && <label className="text-[11px] text-text-muted">{axis}</label>}
-                          <input type="number" step={1}
-                            value={vp[ai]}
-                            onChange={(e) => {
-                              const nps = [...ventManualPositions];
-                              const np = [...nps[vi]] as [number, number, number];
-                              np[ai] = parseFloat(e.target.value) || 0;
-                              nps[vi] = np;
-                              setVentManualPositions(nps);
-                            }}
-                            className="w-full text-[12px] bg-bg-secondary border border-border rounded px-1 py-0.5 text-text-primary text-center"
-                          />
-                        </div>
-                      ))}
-                      <button onClick={() => setVentManualPositions(ventManualPositions.filter((_, i) => i !== vi))}
-                        className="text-danger text-[11px] px-1 shrink-0">✕</button>
-                    </div>
-                  ))}
-                  {ventManualPositions.length === 0 && (
-                    <div className="text-[11px] text-text-muted/50 text-center py-1">点击「+ 添加」设置排气口坐标</div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Preview recommended hole positions */}
-          {(addPourHole || addVentHoles) && (
-            <ActionButton
-              icon={<Pin size={13} />}
-              label={holePreview.isPending ? "计算中..." : "预览推荐位置"}
-              loading={holePreview.isPending}
-              onClick={() => {
-                holePreview.mutate({
-                  modelId,
-                  direction: orientationResult?.best_direction,
-                  pourHoleDiameter: pourDiameter,
-                  ventHoleDiameter: ventDiameter,
-                  nVentHoles,
-                }, {
-                  onSuccess: ({ pourHole, ventHoles }) => {
-                    if (pourHole) {
-                      setPourManualPos(pourHole.position as [number, number, number]);
-                      toastInfo(`推荐浇注口位置: [${pourHole.position.map(v => v.toFixed(1)).join(", ")}]`);
-                    }
-                    if (ventHoles.length > 0) {
-                      setVentManualPositions(ventHoles.map(v => v.position as [number, number, number]));
-                      toastInfo(`推荐 ${ventHoles.length} 个排气口位置`);
-                    }
-                  },
-                  onError: (e) => toastError("位置预览失败", (e as Error).message),
-                });
-              }}
-            />
           )}
 
           {/* Mold material selection */}
@@ -1776,13 +1884,6 @@ function MoldPanel() {
               shellType,
               partingStyle,
               partingSurfaceType: surfaceType,
-              addPourHole: addPourHole,
-              pourHoleDiameter: pourDiameter,
-              pourHolePosition: pourMode === "manual" ? pourManualPos : null,
-              addVentHoles: addVentHoles,
-              ventHoleDiameter: ventDiameter,
-              nVentHoles,
-              ventHolePositions: ventMode === "manual" && ventManualPositions.length > 0 ? ventManualPositions : null,
               addScrewHoles: addScrewHoles,
               screwSize,
               nScrews,
@@ -1790,6 +1891,8 @@ function MoldPanel() {
               shrinkageCompensation: shrinkagePct,
               addEjectors,
               nEjectors: ejectorCount,
+              moldMaterial,
+              surfaceTexture,
               direction: orientationResult?.best_direction,
             }, {
               onSuccess: ({ moldId: newMoldId, result }) => {
@@ -1802,6 +1905,7 @@ function MoldPanel() {
                   moldId: newMoldId, modelId,
                 });
                 toastSuccess("模具已生成", `${result.n_shells} 片壳体`);
+                markStepCompleted("mold");
                 if (addCooling && newMoldId) {
                   coolingDesign.mutate({ moldId: newMoldId, channelDiameter: coolingDiameter }, {
                     onSuccess: () => toastSuccess("冷却水道已生成"),
@@ -1813,6 +1917,7 @@ function MoldPanel() {
             });
           }}
         />
+        </>)}
         {moldResult && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
@@ -2552,6 +2657,15 @@ function GatingPanel() {
   const [nVents, setNVents] = useState(3);
   const [runnerType, setRunnerType] = useState("cold");
   const [nGates, setNGates] = useState(1);
+  const [gateMode, setGateMode] = useState<"auto" | "manual">("auto");
+  const [ventMode, setVentMode] = useState<"auto" | "manual">("auto");
+  const placementMode = useSimStore((s) => s.placementMode);
+  const setPlacementMode = useSimStore((s) => s.setPlacementMode);
+  const manualGatePos = useSimStore((s) => s.manualGatePos);
+  const setManualGatePos = useSimStore((s) => s.setManualGatePos);
+  const manualVentPositions = useSimStore((s) => s.manualVentPositions);
+  const addManualVentPos = useSimStore((s) => s.addManualVentPos);
+  const removeManualVentPos = useSimStore((s) => s.removeManualVentPos);
 
   if (!modelId || !moldId) {
     return (
@@ -2617,10 +2731,115 @@ function GatingPanel() {
         </div>
       </Section>
 
+      <Section title="布置方式" icon={<Pin size={11} />}>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] text-text-muted">浇口布置</span>
+            <div className="flex items-center gap-1">
+              {(["auto", "manual"] as const).map((m) => (
+                <button key={m} onClick={() => setGateMode(m)}
+                  className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
+                    gateMode === m ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                  {m === "auto" ? "自动" : "手动"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {gateMode === "manual" && (
+            <div className="space-y-1.5 pl-2 border-l-2 border-accent/30">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-text-muted">浇口位置 (mm)</span>
+                <button
+                  onClick={() => setPlacementMode(placementMode === "gate" ? "none" : "gate")}
+                  className={cn("text-[11px] px-2 py-0.5 rounded transition-colors",
+                    placementMode === "gate" ? "bg-orange-500 text-white" : "bg-bg-secondary text-accent hover:bg-bg-hover")}
+                >
+                  {placementMode === "gate" ? "取消放置" : "🎯 点击放置"}
+                </button>
+              </div>
+              {manualGatePos ? (
+                <div className="flex gap-1">
+                  {(["X", "Y", "Z"] as const).map((axis, ai) => (
+                    <div key={axis} className="flex-1">
+                      <label className="text-[11px] text-text-muted">{axis}</label>
+                      <input type="number" step={1}
+                        value={Math.round(manualGatePos[ai] * 10) / 10}
+                        onChange={(e) => {
+                          const np = [...manualGatePos] as [number, number, number];
+                          np[ai] = parseFloat(e.target.value) || 0;
+                          setManualGatePos(np);
+                        }}
+                        className="w-full text-[12px] bg-bg-secondary border border-border rounded px-1 py-0.5 text-text-primary text-center"
+                      />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[11px] text-text-muted/50 text-center py-1">点击「🎯 点击放置」后在3D视口中选择位置</div>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] text-text-muted">排气口布置</span>
+            <div className="flex items-center gap-1">
+              {(["auto", "manual"] as const).map((m) => (
+                <button key={m} onClick={() => setVentMode(m)}
+                  className={cn("px-1.5 py-0.5 rounded text-[11px] transition-colors",
+                    ventMode === m ? "bg-accent text-white" : "bg-bg-secondary text-text-muted hover:bg-bg-hover")}>
+                  {m === "auto" ? "自动" : "手动"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {ventMode === "manual" && (
+            <div className="space-y-1.5 pl-2 border-l-2 border-accent/30">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-text-muted">排气口位置列表</span>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => setPlacementMode(placementMode === "vent" ? "none" : "vent")}
+                    className={cn("text-[11px] px-2 py-0.5 rounded transition-colors",
+                      placementMode === "vent" ? "bg-teal-500 text-white" : "bg-bg-secondary text-accent hover:bg-bg-hover")}
+                  >
+                    {placementMode === "vent" ? "停止放置" : "🎯 点击放置"}
+                  </button>
+                  <button onClick={() => addManualVentPos([0, 0, 0])}
+                    className="text-[11px] text-accent hover:underline">+ 手动</button>
+                </div>
+              </div>
+              {manualVentPositions.map((vp, vi) => (
+                <div key={vi} className="flex gap-1 items-end">
+                  {(["X", "Y", "Z"] as const).map((axis, ai) => (
+                    <div key={axis} className="flex-1">
+                      {vi === 0 && <label className="text-[11px] text-text-muted">{axis}</label>}
+                      <input type="number" step={1}
+                        value={Math.round(vp[ai] * 10) / 10}
+                        onChange={(e) => {
+                          const np = [...vp] as [number, number, number];
+                          np[ai] = parseFloat(e.target.value) || 0;
+                          useSimStore.getState().updateManualVentPos(vi, np);
+                        }}
+                        className="w-full text-[12px] bg-bg-secondary border border-border rounded px-1 py-0.5 text-text-primary text-center"
+                      />
+                    </div>
+                  ))}
+                  <button onClick={() => removeManualVentPos(vi)}
+                    className="text-danger text-[11px] px-1 shrink-0">✕</button>
+                </div>
+              ))}
+              {manualVentPositions.length === 0 && (
+                <div className="text-[11px] text-text-muted/50 text-center py-1">点击「🎯 点击放置」在3D视口中选择，或「+ 手动」输入坐标</div>
+              )}
+            </div>
+          )}
+        </div>
+      </Section>
+
       <Section title="设计" icon={<Droplets size={11} />}>
         <ActionButton
           icon={<Droplets size={13} />}
-          label={isDesigningGating ? "设计中..." : "自动设计浇注系统"}
+          label={isDesigningGating ? "设计中..." : "设计浇注系统"}
           loading={isDesigningGating}
           variant="primary"
           onClick={() => {
@@ -2630,6 +2849,11 @@ function GatingPanel() {
               modelId, moldId,
               gateDiameter: gateDiam,
               nVents,
+              nGates,
+              runnerType,
+              runnerWidth,
+              gatePosition: gateMode === "manual" ? manualGatePos : null,
+              ventPositions: ventMode === "manual" && manualVentPositions.length > 0 ? manualVentPositions : null,
             }, {
               onSuccess: () => {
                 const ms = Math.round(performance.now() - t0);
@@ -2824,52 +3048,92 @@ function SimPanel() {
         {simResult && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
             className="mt-2 space-y-2">
-            {/* Fill confidence bar */}
-            <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-text-muted font-semibold">充填置信度</span>
-                <span className={cn("font-bold",
+            <ResultCard className="border border-accent/20 bg-bg-secondary/95 shadow-sm">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[11px] font-semibold text-text-secondary tracking-tight">充填置信度</span>
+                <span className={cn("text-[11px] font-bold",
                   simResult.fill_fraction >= 0.99 && simResult.defects.length === 0 ? "text-success"
                     : simResult.fill_fraction >= 0.95 ? "text-accent" : "text-warning")}>
                   {simResult.fill_fraction >= 0.99 && simResult.defects.length === 0 ? "高"
                     : simResult.fill_fraction >= 0.95 ? "中" : "低"}
                 </span>
               </div>
-              <div className="h-2 rounded-full bg-bg-hover overflow-hidden flex">
-                <div className="h-full bg-success transition-all" style={{ width: `${simResult.fill_fraction * 100}%` }} />
+              <div className="h-2 rounded-full bg-bg-hover overflow-hidden flex ring-1 ring-border/30">
+                <div className="h-full bg-gradient-to-r from-accent/60 to-success transition-all" style={{ width: `${simResult.fill_fraction * 100}%` }} />
               </div>
-              <div className="flex justify-between text-[11px] text-text-muted">
+              <div className="flex justify-between text-[10px] text-text-muted mt-1">
                 <span>0%</span><span>充填率 {(simResult.fill_fraction * 100).toFixed(1)}%</span><span>100%</span>
               </div>
-            </div>
+            </ResultCard>
 
-            {/* Key metrics */}
-            <div className="p-2 rounded bg-bg-secondary text-[12px] space-y-1">
-              <div className="flex justify-between">
-                <span className="text-text-muted">充填时间</span>
-                <span>{simResult.fill_time_seconds.toFixed(1)} s</span>
+            <ResultCard className="border border-border/55 space-y-1.5">
+              <div className="text-[11px] font-semibold text-text-secondary mb-0.5 flex items-center gap-1">
+                <Gauge size={12} className="text-accent opacity-90" />
+                关键结果
               </div>
-              <div className="flex justify-between">
-                <span className="text-text-muted">最大压力</span>
-                <span>{simResult.max_pressure.toFixed(0)} Pa ({(simResult.max_pressure / 1e6).toFixed(3)} MPa)</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-muted">预估周期</span>
-                <span className="font-mono">{(simResult.fill_time_seconds * 3.5).toFixed(1)} s</span>
-              </div>
+              <ResultRow label="充填时间" value={`${simResult.fill_time_seconds.toFixed(1)} s`} />
+              <ResultRow label="最大压力" value={`${simResult.max_pressure.toFixed(0)} Pa (${(simResult.max_pressure / 1e6).toFixed(3)} MPa)`} />
+              <ResultRow label="预估周期" value={<span className="font-mono">{(simResult.fill_time_seconds * 3.5).toFixed(1)} s</span>} />
+              {simResult.reynolds_number != null && Number.isFinite(simResult.reynolds_number) && simResult.reynolds_number > 0 && (
+                <ResultRow
+                  label="雷诺数 Re"
+                  value={<span className="font-mono text-[11px]">{simResult.reynolds_number.toExponential(3)}</span>}
+                />
+              )}
               {simResult.analysis && (
                 <>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">壁厚范围</span>
-                    <span>{simResult.analysis.min_thickness.toFixed(1)} – {simResult.analysis.max_thickness.toFixed(1)} mm</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-text-muted">温度范围</span>
-                    <span>{simResult.analysis.temperature_range[0].toFixed(1)} – {simResult.analysis.temperature_range[1].toFixed(1)} °C</span>
-                  </div>
+                  <div className="h-px bg-border/40 my-1" />
+                  <ResultRow label="壁厚范围" value={`${simResult.analysis.min_thickness.toFixed(1)} – ${simResult.analysis.max_thickness.toFixed(1)} mm`} />
+                  <ResultRow label="温度范围" value={`${simResult.analysis.temperature_range[0].toFixed(1)} – ${simResult.analysis.temperature_range[1].toFixed(1)} °C`} />
                 </>
               )}
-            </div>
+            </ResultCard>
+
+            {simResult.convergence_history && simResult.convergence_history.length > 0 && (
+              <ResultCard className="border border-border/55">
+                {(() => {
+                  const hist = simResult.convergence_history!;
+                  const last = hist[hist.length - 1];
+                  const first = hist[0];
+                  const ratio = first.residual !== 0 ? last.residual / Math.abs(first.residual) : 0;
+                  const converged = Math.abs(last.residual) < 1e-4 || (hist.length >= 2 && ratio < 0.02);
+                  const improving = hist.length < 2 || last.residual <= first.residual * 1.02;
+                  return (
+                    <>
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="text-[11px] font-semibold text-text-secondary flex items-center gap-1">
+                          <TrendingDown size={12} className={converged ? "text-success" : improving ? "text-accent" : "text-warning"} />
+                          求解收敛
+                        </div>
+                        <span className={cn(
+                          "text-[10px] font-bold px-1.5 py-0.5 rounded-md",
+                          converged ? "bg-success/15 text-success"
+                            : improving ? "bg-accent/15 text-accent"
+                              : "bg-warning/15 text-warning",
+                        )}>
+                          {converged ? "已收敛" : improving ? "下降中" : "待评估"}
+                        </span>
+                      </div>
+                      <ResultRow
+                        label="迭代步"
+                        value={<span className="font-mono">{last.iteration}</span>}
+                      />
+                      <ResultRow
+                        label="残差 |r|"
+                        value={<span className="font-mono text-[11px]">{Math.abs(last.residual).toExponential(3)}</span>}
+                        color={converged ? "text-success" : undefined}
+                      />
+                      {hist.length >= 2 && (
+                        <div className="text-[10px] text-text-muted mt-1 leading-relaxed">
+                          相对初值 {(ratio * 100).toFixed(1)}%
+                          {!improving && " · 残差未单调下降，建议提高仿真等级或检查网格"}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </ResultCard>
+            )}
 
             {/* Defect summary by type */}
             {simResult.defects.length > 0 && (

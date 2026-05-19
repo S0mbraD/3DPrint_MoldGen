@@ -1,6 +1,6 @@
 import { useGLTF } from "@react-three/drei";
 import { useEffect, useRef } from "react";
-import type { Mesh } from "three";
+import type { Material, Mesh } from "three";
 import * as THREE from "three";
 import { useModelStore } from "../../stores/modelStore";
 import { useViewportStore, type DisplayMode } from "../../stores/viewportStore";
@@ -62,14 +62,22 @@ function LoadedModel({ url }: { url: string }) {
     : baseOpacity;
 
   useEffect(() => {
+    const oldMaterials: Material[] = [];
     scene.traverse((child) => {
       if ((child as Mesh).isMesh) {
         const mesh = child as Mesh;
+        if (mesh.material) {
+          const prev = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          oldMaterials.push(...prev);
+        }
         mesh.material = createMaterial(displayMode, opacity);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
       }
     });
+    return () => {
+      oldMaterials.forEach((m) => m.dispose());
+    };
   }, [scene, displayMode, opacity]);
 
   return <primitive ref={groupRef} object={scene} visible={visible} />;

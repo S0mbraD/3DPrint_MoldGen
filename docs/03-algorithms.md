@@ -496,9 +496,16 @@ v7: 浇注设计阶段 (GatingSystem.apply_to_mold) 二次切割 + AABB 预检
   4. 失败时记录 WARNING 日志 (不再静默跳过)
   5. 修复结果网格 (_repair_mesh)
 
-浇注设计阶段 (GatingSystem.apply_to_mold):
-  1. 浇注系统独立计算浇口/排气位置 (可能与模具阶段不同)
-  2. 为每个浇口/排气位置创建贯穿圆柱
+浇注设计阶段 (GatingSystem.apply_to_mold) — v8 修复:
+  旧行为 (v7): 圆柱高度 = max(gate_h-global_min_h+15, global_span+10, 30)
+    → 强制贯穿整个模具，导致浇口穿透两半壳体
+  新行为 (v8): 圆柱高度 = 当前壳体厚度 + 8mm (仅限所属壳体)
+    - 对每个壳体: height = shell_max_h - shell_min_h + 8
+    - 圆柱中心 = 浇口位置沿方向偏移至壳体中心
+    - 排气口: 保持原有范围限制逻辑
+    → 浇口孔仅穿透所在壳体，不会贯穿对侧
+  1. 浇注系统独立计算浇口/排气位置
+  2. 为每个浇口创建限定于所属壳体范围的圆柱
   3. 布尔差集切入已有壳体, 原地更新 MoldResult.shells
   4. 后续导出/GLB 接口自动返回含通孔的壳体
 ```
@@ -617,19 +624,27 @@ tongue_groove 榫槽: 矩形凸凹配合 — 精确对位，易脱模
 | **ribbed** (加强筋) | 平板 + 交叉加强筋结构 | 需要高刚度支撑的大型模型 |
 | **lattice** (格栅) | BCC/Octet 点阵结构，拓扑优化 | 轻量化，最优刚度/重量比 |
 
-#### 仿形板算法 (conformal) — v2 高性能重写
+#### 仿形板算法 (conformal) — v3 轮廓裁剪 + 纯表面法线偏移
 ```
-旧算法 (v1): section→extrude_polygon→per-vertex KDTree loop → 极慢, 可能挂起
-新算法 (v2): 网格采样→向量化投影→三角化 → O(grid_res²), 无 Python 循环
+v1: section→extrude_polygon→per-vertex KDTree loop → 极慢, 可能挂起
+v2: 网格采样→向量化投影→三角化 → O(grid_res²), 无 Python 循环
+v3 修复: 四角突出问题 — 增加椭圆投影裁剪 + 去除平面回退路径
 
 流程:
   1. 在分型平面上建立局部坐标系 (u_ax, v_ax, up)
   2. 生成 grid_res×grid_res 的均匀网格点 (numpy meshgrid)
-     grid_res = min(40, max(10, span/2))  — 自适应分辨率
-  3. 向量化 cKDTree.query(all_points, workers=-1) 找最近模型表面点
-  4. 有效性掩码: 距离 < max_dist 且在模型轮廓内
-  5. 内壳顶点 = surface_point + surface_normal × offset (向量化)
-  6. 外壳顶点 = inner + up × thickness (向量化)
+     grid_res = min(60, max(15, span/2))  — 自适应分辨率
+  3. nearest.on_surface 找最近模型表面点和面法线
+  4. 有效性掩码: 距离 < max_dist
+  5. **v3 新增**: 模型投影轮廓裁剪
+     - 计算所有有效表面点在 (u, v) 平面上的投影半径
+     - 取 95th 百分位 + 2mm 作为最大投影半径
+     - 剔除网格点投影半径超出此范围的点
+     → 消除正方形网格导致的四角突出
+  6. **v3 修改**: 统一使用表面法线偏移 (移除平面回退)
+     - inner = surf_pts - surface_normal × offset
+     - outer = inner + surface_normal × thickness
+     → 消除远端点使用 up 方向偏移产生的非共形突出
   7. 网格四边形→三角形 (numpy 索引运算, 无循环)
   8. 边界检测→侧面缝合
 
@@ -906,7 +921,7 @@ Score(v) = 0.40 · Height(v) + 0.25 · Centrality(v) + 0.20 · Access(v) + 0.15 
 - 销: 直径 4mm, 高度 8mm, 均匀分布在分型面外围
 - 孔: 直径 4.2mm (+0.2mm 公差), 高度 9mm
 
-## 9. 灌注流动仿真算法（v5: 多场分析 + 表面映射 + 可视化）
+## 9. 灌注流动仿真算法（v6: Fluent 风格 CFD 升级）
 
 ### 9.1 Level 1 — 启发式分析（毫秒级，CPU）
 
@@ -917,23 +932,66 @@ Score(v) = 0.40 · Height(v) + 0.25 · Centrality(v) + 0.20 · Access(v) + 0.15 
 - 流动不平衡：面积加权距离标准差
 - 输出：充填率估计、缺陷列表、简要分析报告
 
-### 9.2 Level 2 — 简化达西流（秒级，多场计算）
+### 9.2 Level 2 — 达西流 CFD 仿真（秒级，多场计算）
 
-v4 版本在原有达西流基础上新增了多个物理场的计算：
+v6 版本参考 ANSYS Fluent 的 CFD 分析理念，在原有达西流基础上进行了全面升级：
 
-**求解流程：**
+**求解流程（v6 升级）：**
 1. **体素化**：trimesh.voxelized → 布尔型腔掩码
 2. **壁厚场**：scipy.ndimage.distance_transform_edt × pitch
-3. **渗透率**：K = h²/12（平行板模型）
-4. **压力场求解**：向量化稀疏矩阵组装 + scipy.sparse.linalg.spsolve
-5. **速度场**：|∇P| × 渗透率系数
-6. **剪切率场（v4 新增）**：γ̇ ≈ 6V/h（狭缝流近似）
-7. **Dijkstra 充填前沿**：基于速度场的最短路径充填时间
-8. **温度场（v4 新增）**：T = T_mold + (T_inlet − T_mold) × exp(−t/τ)，τ = h²/(4α)，含放热固化效应
-9. **固化进度场（v4 新增）**：α(t) = 1 − exp(−k·t)，Arrhenius 温度修正
-10. **缺陷检测**：短射、气穴（连通分量分析）、熔接线（梯度突变）、滞流区
+3. **渗透率**：K = h²/12（Hele-Shaw 平行板模型）
+4. **压力场求解**：GMRES 迭代求解器 + 收敛残差追踪（v6），失败回退 spsolve
+5. **达西速度矢量场（v6 新增）**：v = -K/μ · ∇p（三分量矢量场，非仅标量）
+6. **速度幅值场**：|v| = √(vx² + vy² + vz²)
+7. **剪切率场**：γ̇ ≈ 6V/h（狭缝流近似）+ Cross 型非牛顿修正（v6 新增）
+8. **Dijkstra 充填前沿**：基于速度场的最短路径充填时间
+9. **充填前沿速度场（v6 新增）**：pitch/|Δt| 邻域梯度法
+10. **温度场**：T = T_mold + (T_inlet − T_mold) × exp(−t/τ)，含放热固化效应
+11. **固化进度场**：α(t) = 1 − exp(−k·t)，Arrhenius 温度修正
+12. **缺陷检测**：短射、气穴（连通分量分析）、熔接线（梯度突变）、滞流区
 
 ### 9.3 多物理场详细说明
+
+**达西速度矢量场（v6 新增）**
+```
+v = -(K/μ) · ∇p
+```
+直接从压力梯度和渗透率计算三分量速度矢量 (vx, vy, vz)。结果存储为 (3, Nx, Ny, Nz) 数组，用于：
+- 前端 3D 速度箭头（glyph）可视化
+- 真实流线追踪
+- 局部流动方向分析
+
+**GMRES 迭代求解与收敛监控（v6 新增）**
+
+压力场求解从 spsolve 直接求解升级为 GMRES 迭代求解器：
+```
+GMRES(A, b, rtol=1e-6, restart=50, maxiter=2000)
+```
+- 支持 `callback_type="x"` 记录每步残差：r_k = ‖Ax_k − b‖ / ‖b‖
+- 收敛历史存储于 `convergence_history: list[{iteration, residual}]`
+- 前端可展示残差收敛曲线
+- 兼容旧版 SciPy（无 callback_type 时自动回退）
+- GMRES 不收敛时安全回退到 spsolve 直接求解
+
+**Non-Newtonian Cross 型黏度修正（v6 新增）**
+
+对于剪切变稀材料（n < 1），在基础狭缝流剪切率之上应用 Cross 模型修正：
+```
+η_app = η₀ / (1 + (η₀ · γ̇ / τ*)^(1-n))
+γ̇_corrected = γ̇ · (η₀ / η_app)
+```
+- `n_power_law`：幂律指数（<1 剪切变稀，=1 牛顿流体）
+- `tau_star`：临界剪切应力（Pa），=0 时无修正
+- 完全向后兼容：默认 n=1, τ*=0 → 等效牛顿流体
+
+**充填前沿局部速度（v6 新增）**
+```
+v_front(x) = pitch / |Δt|
+```
+基于邻域体素充填时间差计算局部前沿推进速度，取 6 邻域最大值。用于识别：
+- 流动加速/减速区域
+- 前沿合流区（潜在熔接线）
+- 滞流死角
 
 **剪切率估算（Slit Flow Approximation）**
 ```
@@ -955,7 +1013,7 @@ k(T) = k_ref · exp(E_a/R · (1/T_ref − 1/T))
 E_a/R ≈ 5000 K
 ```
 
-### 9.4 综合分析报告（v4 新增）
+### 9.4 综合分析报告（v6 升级）
 
 仿真完成后自动生成 `AnalysisReport`，包含以下指标：
 
@@ -975,22 +1033,69 @@ E_a/R ≈ 5000 K
 | 效率 | gate_efficiency | 充填率 / 最大压力 |
 | 缺陷 | n_stagnation_zones | 连通分量标记的滞流区数 |
 | 缺陷 | n_high_shear_zones | 高剪切区域数 |
+| **流态** | **reynolds_number**（v6 新增） | **Re = ρVL/μ，特征雷诺数** |
+| **压降** | **pressure_drop**（v6 新增） | **充填区域最大压降（Pa）** |
 | 建议 | recommendations | 基于指标的中文优化建议列表 |
 
-### 9.5 3D 可视化系统（v4 新增）
+### 9.5 3D 可视化系统（v7 升级 — 动态 CFD 可视化）
 
 **后端 API：**
-- `GET /simulation/visualization/{sim_id}`：提取体素点云，包含所有场的归一化值
-- `GET /simulation/analysis/{sim_id}`：返回完整分析报告
+- `GET /simulation/visualization/{sim_id}`：体素点云 + 速度矢量 + **RK2 流线路径** + **粒子动画路径**（v7 新增）
+- `GET /simulation/analysis/{sim_id}`：完整分析报告 + Re + 压降 + 收敛历史
 - `GET /simulation/cross-section/{sim_id}?axis=z&position=0.5&field=fill_time`：2D 截面热力图
+- `GET /simulation/surface-map/{sim_id}?model_id=xxx&field=fill_time`：表面映射数据
 
-**前端 WebGL 渲染：**
-- 自定义 GLSL ShaderMaterial 实现多场热力图切换
-- 蓝→青→绿→黄→红 五段色带映射
-- 基于 fill_time 的充填动画（Dijkstra 时间阈值控制可见性）
-- 动画播放器：播放/暂停/进度条/速率/循环
-- 缺陷标记球体（颜色按类型区分，大小按严重度缩放）
-- Canvas 2D 截面热力图渲染
+**后端流线预计算（v7 新增）：**
+
+RK2（中点法）流线追踪：
+```
+对每条种子流线:
+  v1 = trilinear(velocity_field, pos)
+  mid = pos + 0.5 * step * v1/|v1|
+  v2 = trilinear(velocity_field, mid)
+  pos = pos + step * v2/|v2|
+```
+- 种子策略：浇口附近密集 + 充填时间分位分层随机抽样（5%~90%）
+- 三线性插值：速度/标量场连续插值
+- 终止条件：速度低于阈值(v_max×1e-4)、离开型腔、达到最大步数(120)
+- 输出：最多 60 条折线（≥5点，≤80点）
+
+粒子动画路径预计算：
+- 沿流线段分配 200 条粒子
+- 每条粒子包含路径段、归一化充填时间、平均速度
+- 路径长度 15~30 点，分布按流线长度加权
+
+**前端 WebGL 渲染（v7 全面升级）：**
+- 自定义 GLSL ShaderMaterial 实现多场热力图（改进高斯 alpha、中心高光、边缘压暗）
+- **5 种 CFD 色谱**：Jet / Coolwarm / Viridis / Turbo / Rainbow
+- **速度矢量箭头**：InstancedMesh 3D 箭头（最多 800 个）
+- **CFD 色谱条图例**：场名/单位/范围/进度
+- **动态流动粒子系统（v7 新增）**：
+  - InstancedMesh 球体粒子沿预计算路径循环流动
+  - 最多 300 粒子，每粒子 4 段拖尾
+  - 颜色按当前热力场 + 色谱实时映射
+  - 受充填进度控制（仅显示已充填区域粒子）
+  - 速度可调 0.5x ~ 3.0x
+- **充填前沿辉光效果（v7 新增）**：
+  - 自定义 GLSL 着色器：高斯径向辉光 + sin 脉冲动画
+  - 仅在充填边界处（|fill_time - animProgress| < 0.04）渲染
+  - 脉冲频率 4Hz，幅度 ±30%
+  - 颜色：色谱色 + 白色辉光混合
+- **动态流线条纹（v7 新增）**：
+  - TubeGeometry + 自定义 ShaderMaterial
+  - `fract(param * 8.0 - uTime * 2.0)` 产生沿管移动的条纹
+  - 条纹方向指示流动方向
+  - 优先使用后端 RK2 流线（精确物理路径）
+- **v8 修复 — 场切换与归一化**：
+  - 后端 `extract_visualization_data` 预归一化所有标量到 [0,1]
+  - 着色器 `normField()` 改用 `uValueMin=0, uValueMax=1` 做恒等映射
+  - `heatmapPhysicalRange()` 独立函数提供物理值范围给 ColorLegend
+  - 修复了切换 fill_time/pressure/velocity 等场时颜色不变的问题
+- 充填动画（fill_time 阈值 + 高斯渐变过渡）
+- **动画速率控制**：0.5x ~ 3.0x
+- 缺陷标记球体
+- Canvas 2D 截面热力图
+- **收敛曲线展示**
 
 **支持的可视化场：**
 | 场 | 说明 | 色带含义 |
@@ -1003,7 +1108,27 @@ E_a/R ≈ 5000 K
 | cure_progress | 固化进度 | 蓝=未固化，红=已固化 |
 | thickness | 壁厚分布 | 蓝=薄壁，红=厚壁 |
 
-### 9.6 性能目标
+**色谱方案（v6 新增）：**
+| 名称 | 适用场景 | 风格 |
+|------|---------|------|
+| Jet | 通用热力图（Fluent 默认） | 蓝→青→绿→黄→红 |
+| Coolwarm | 温度/应力对比 | 蓝→白→红 |
+| Viridis | 科学出版物标准 | 紫→蓝→绿→黄 |
+| Turbo | 改进型 Jet（感知均匀） | 深蓝→青→绿→橙→红 |
+| Rainbow | 经典彩虹（高对比度） | 红→橙→黄→绿→青→蓝→紫 |
+
+### 9.6 材料模型（v6 新增）
+
+`MaterialProperties` 新增可选的非牛顿流变参数：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| n_power_law | 1.0 | 幂律指数（<1 剪切变稀） |
+| tau_star | 0.0 | 临界剪切应力（Pa），0 = 牛顿流体 |
+
+所有现有材料预设不受影响（默认牛顿流体行为）。
+
+### 9.7 性能目标
 
 | 级别 | 网格规模 | CPU 时间 | GPU 时间 (RTX 4060 Ti) |
 |------|---------|---------|----------------------|
@@ -1012,14 +1137,190 @@ E_a/R ≈ 5000 K
 | L2 达西流 | 64³ 体素 | ~15s | <5s |
 | L2 达西流 | 128³ 体素 | ~4min | <30s |
 
-### 9.7 参考文献
+### 9.8 参考文献
 
 - Darcy flow: H. Hele-Shaw, "Investigation of the Nature of Surface Resistance", Trans. IME, 1898
 - Slit flow shear rate: Bird, Stewart & Lightfoot, "Transport Phenomena", 2nd Ed.
 - Kamal-Sourour cure kinetics: Kamal & Sourour, "Kinetics and thermal characterization of thermoset cure", 1973
 - Dijkstra fill front: Dijkstra, "A note on two problems in connexion with graphs", 1959
+- Cross viscosity model: M.M. Cross, "Rheology of non-Newtonian fluids", J. Colloid Science, 1965
+- GMRES: Saad & Schultz, "GMRES: A Generalized Minimal Residual Algorithm", SIAM J. Sci. Stat. Comput., 1986
+- Fluent CFD visualization: ANSYS Fluent User's Guide, Post-Processing and Visualization
 
-## 10. 自动优化算法
+## 10. 蒙皮模具系统（Skin Mold System）v2
+
+### 10.1 系统概述
+
+蒙皮模具系统面向医学教具等需要软硬结合的场景。典型应用如手臂模型：
+- **蒙皮 (Skin)**：软质硅胶外层，模拟皮肤触感
+- **模芯 (Core)**：硬质 3D 打印内芯，提供结构支撑
+- **蒙皮模具 (Skin Mold)**：外壳模具，与模芯之间的间隙灌注硅胶
+
+```
+制作流程:
+  原始模型 (完整解剖模型)
+    ├─ 1. SDF 内偏移 + 形态学闭合 + 高斯平滑 → 模芯
+    ├─ 2. 可选空心化 (boolean 差集，非拼接) → 轻量化模芯
+    ├─ 3. 支撑柱 → 模芯底部，灌注时保持悬浮定位
+    ├─ 4. 碰撞感知定位特征 → 模芯与外模精确配合
+    ├─ 5. MoldBuilder → 外模 (包裹原始表面)
+    ├─ 6. 厚度分析 → 全顶点厚度图 + 统计 + 均匀度评分
+    └─ 7. 灌注 → 模芯放入外模，注入硅胶 → 蒙皮层
+```
+
+### 10.2 模芯生成算法 v2（SDF + Morphological + Gaussian）
+
+v2 相比 v1 的关键改进:
+- **形态学闭合 (binary_closing)**：修复网格小孔洞/裂缝，避免 EDT 在孔洞处错误截断
+- **高斯平滑 EDT 场**：消除体素阶梯伪影，生成更光滑的等值面
+- **曲率自适应变厚度**：凸面区域（如关节）自动加厚，平面区域减薄
+- **自动网格简化**：marching cubes 输出后 quadric decimation 至目标面数
+- **体素填充率检查**：防止非水密模型导致的空体素化
+
+```
+输入: 原始网格 M, 蒙皮厚度 T, 分辨率 R
+
+1. 体素化模型内部
+   - 网格: 自适应尺寸, pad=4
+   - pitch = max_extent / R
+   - 填充率 < 1% → 报错（模型可能非水密）
+
+2. 形态学二值闭合 (iterations=2)
+   - scipy.ndimage.binary_closing
+   - 填充细小裂缝和针孔，保持整体形状
+
+3. 欧几里得距离变换 (EDT) + 高斯平滑
+   - EDT → sampling=(pitch,pitch,pitch)
+   - gaussian_filter(edt, sigma=0.8) → 消除阶梯
+   - 外部体素归零
+
+4. 变厚度偏移场（可选）
+   - discrete_mean_curvature_measure → 顶点曲率
+   - 曲率归一化 [0,1] → 映射到 [min_skin, max_skin]
+   - 散射到体素网格 → 高斯平滑连续化
+   - iso-level = edt_smooth - offset_field (过零面)
+
+5. 等值面提取 + 简化
+   - marching_cubes → 原始网格
+   - Laplacian 平滑 (iterations=core_smoothing)
+   - quadric_decimation → max_faces 以内
+   - repair_trimesh
+```
+
+参数:
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| skin_thickness | 3.0mm | 蒙皮均匀厚度（均匀模式） |
+| variable_thickness | false | 启用曲率自适应变厚度 |
+| min_skin_thickness | 2.0mm | 变厚度下限 |
+| max_skin_thickness | 5.0mm | 变厚度上限 |
+| curvature_influence | 0.5 | 曲率影响权重 (0=均匀, 1=全曲率) |
+| core_clearance | 0.3mm | 模芯与蒙皮间额外间隙 |
+| core_resolution | 64 | 体素网格分辨率 |
+| core_smoothing | 2 | Laplacian 平滑迭代次数 |
+| core_morphological_closing | 2 | 形态学闭合迭代数 |
+| core_max_faces | 120,000 | 模芯最大面数 |
+| core_shell_thickness | 0 (实心) | >0 时空心化模芯 |
+| core_drain_holes | false | 空心模芯加排液孔 |
+| core_drain_count | 2 | 排液孔数量 |
+
+### 10.3 空心化算法 v2（Boolean 差集法）
+
+v1 使用简单的 concatenate(outer, inner.invert()) 拼接，不保证水密。
+v2 改为 boolean_subtract(outer_core, inner_core) → 始终产生水密壳体。
+
+```
+1. 体素化模芯 + EDT + 高斯平滑
+2. marching_cubes(edt, level=shell_thickness) → 内核网格
+3. boolean_subtract(core, inner_core) → 水密空壳
+4. 可选: 方向感知排液孔
+   - 沿负方向侧底部布置 drain_count 个圆柱
+   - boolean_subtract 切除
+```
+
+### 10.4 支撑柱系统（Support Pegs）
+
+灌注时模芯需要悬浮在外模内部，支撑柱从模芯底部延伸穿过模具底壳：
+
+```
+1. 计算模芯投影半径 → peg_r = 55% × max_r
+2. 等角布置 peg_count 个柱体
+3. boolean_union → 连接到模芯底部
+4. boolean_subtract → 在底模壳体上切除对应通孔
+
+参数: peg_count=3, peg_diameter=4mm, peg_height=6mm
+```
+
+### 10.5 碰撞感知定位特征 v2
+
+v1 使用固定半径等角布置，可能与模型几何重叠。
+v2 基于模型轮廓的角度分辨率分析，自动选择间隙最大的角度：
+
+```
+1. 投影所有模型顶点到分型面 → 按角度分 bin
+2. 每个 bin 记录最大投影半径
+3. 对每个候选角度计算局部间隙 → 选择间隙最大的角度
+4. 最小角度分离约束 → 防止定位销过于密集
+5. pin_r = local_max_r + wall*0.45 + diameter (确保在模具壁内)
+6. 支持圆销 (pin) 和方键 (key) 两种类型
+```
+
+参数:
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| registration_type | "pin" | 定位类型 (pin/key) |
+| registration_count | 4 | 定位特征数量 |
+| registration_diameter | 5.0mm | 定位特征直径/宽度 |
+| registration_height | 8.0mm | 定位特征高度 |
+| registration_tolerance | 0.2mm | 配合间隙 |
+
+### 10.6 蒙皮厚度分析 v2
+
+v1 仅采样 5000 个顶点返回统计值。
+v2 对全部模型顶点计算厚度，返回:
+
+- **统计指标**: min/max/mean/std/median/p5/p95
+- **质量指标**:
+  - `n_thin_spots`: 厚度 < min_skin_thickness 的顶点数
+  - `n_thick_spots`: 厚度 > max_skin_thickness 的顶点数
+  - `uniformity_score`: 1 - std/mean (0~1, 越高越均匀)
+- **可视化数据**: per-vertex 归一化厚度图 (0=最薄, 1=最厚)
+  - API: `GET /skin/{id}/thickness-map` 返回数组
+  - 可直接用于 Three.js vertex color mapping
+
+### 10.7 网格质量保障
+
+v1 使用 convex_hull 修复非水密网格 → 破坏解剖凹面形状。
+v2 改进:
+
+```
+1. repair_trimesh (标准修复)
+2. 若仍非水密:
+   - 体素化 → binary_fill_holes → marching_cubes
+   - 体积偏差 < 30% → 使用修复网格
+   - 否则保留原始网格（不强制凸包）
+3. 体素化填充率 < 1% → 提前失败，报告"模型可能非水密"
+```
+
+### 10.8 API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/molds/{model_id}/mold/generate-skin` | 生成蒙皮模具 (v2) |
+| GET | `/api/v1/molds/skin/{skin_id}` | 获取蒙皮模具结果 |
+| GET | `/api/v1/molds/skin/{skin_id}/core.glb` | 下载模芯 GLB |
+| GET | `/api/v1/molds/skin/{skin_id}/thickness-map` | 获取厚度可视化数据 |
+
+### 10.9 参考
+
+- Materialise 3-matic: Anatomical model offset/shell operations
+- SolidWorks Mold Tools: Core/Cavity split workflow
+- Moldflow: Thin-wall injection cavity analysis
+- nTopology: Implicit SDF offset + curvature field operations
+- scipy.ndimage: Morphological closing, EDT, Gaussian filter
+- scikit-image: Marching cubes iso-surface extraction
+
+## 11. 自动优化算法
 
 ### 10.1 优化循环
 

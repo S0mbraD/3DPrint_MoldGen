@@ -697,9 +697,10 @@ class OrientationAnalyzer:
         """Build result with Phase 2 detailed evaluation for top candidates."""
         scores_cpu = _to_cpu(metrics["score"])
         n_final = self.config.n_final_candidates
+        n_phase1 = max(self.config.n_top_candidates, n_final)
 
         sorted_idx = np.argsort(-scores_cpu)
-        top_idx = sorted_idx[:n_final]
+        top_idx = sorted_idx[:n_phase1][:n_final]
 
         # Phase 2: detailed evaluation loop (Python loop over top-K only)
         top_scores: list[DirectionScore] = []

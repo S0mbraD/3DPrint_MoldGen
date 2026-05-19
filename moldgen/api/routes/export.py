@@ -132,9 +132,27 @@ async def export_insert(req: ExportInsertRequest):
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for i, plate in enumerate(result.plates):
             plate_tm = plate.mesh.to_trimesh()
+            plate_tm.process(validate=True)
+            try:
+                import trimesh
+                trimesh.repair.fix_normals(plate_tm, multibody=True)
+                trimesh.repair.fill_holes(plate_tm)
+            except Exception:
+                pass
             plate_buf = io.BytesIO()
             plate_tm.export(plate_buf, file_type=req.format)
             zf.writestr(f"insert_plate_{i}.{req.format}", plate_buf.getvalue())
+
+            if plate.pillar_mesh is not None:
+                pillar_tm = plate.pillar_mesh.to_trimesh()
+                pillar_tm.process(validate=True)
+                try:
+                    trimesh.repair.fix_normals(pillar_tm, multibody=True)
+                except Exception:
+                    pass
+                pillar_buf = io.BytesIO()
+                pillar_tm.export(pillar_buf, file_type=req.format)
+                zf.writestr(f"insert_plate_{i}_pillars.{req.format}", pillar_buf.getvalue())
 
     buf.seek(0)
     filename = f"inserts_{req.insert_id}.zip"

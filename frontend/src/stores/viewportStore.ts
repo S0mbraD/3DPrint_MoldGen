@@ -29,7 +29,20 @@ export const DISPLAY_MODE_LABELS: Record<DisplayMode, string> = {
   normal: "法线",
 };
 
-interface ViewportState {
+export type MeasureTool = "none" | "distance" | "angle" | "area";
+
+interface MeasurePoint {
+  position: [number, number, number];
+  normal?: [number, number, number];
+}
+
+interface MeasureState {
+  measureTool: MeasureTool;
+  measurePoints: MeasurePoint[];
+  measureResult: string | null;
+}
+
+interface ViewportState extends MeasureState {
   modelVisible: boolean;
   modelOpacity: number;
   moldVisible: boolean;
@@ -54,6 +67,11 @@ interface ViewportState {
   setInsertOpacity: (v: number) => void;
   setDisplayMode: (m: DisplayMode) => void;
   setGridUnit: (u: GridUnit) => void;
+  clearShellOverrides: () => void;
+
+  setMeasureTool: (t: MeasureTool) => void;
+  addMeasurePoint: (p: MeasurePoint) => void;
+  clearMeasure: () => void;
 }
 
 export const useViewportStore = create<ViewportState>((set) => ({
@@ -90,4 +108,61 @@ export const useViewportStore = create<ViewportState>((set) => ({
   setInsertOpacity: (v) => set({ insertOpacity: v }),
   setDisplayMode: (m) => set({ displayMode: m }),
   setGridUnit: (u) => set({ gridUnit: u }),
+  clearShellOverrides: () => set({ shellOverrides: {} }),
+
+  measureTool: "none",
+  measurePoints: [],
+  measureResult: null,
+
+  setMeasureTool: (t) => set({ measureTool: t, measurePoints: [], measureResult: null }),
+  addMeasurePoint: (p) =>
+    set((s) => {
+      const pts = [...s.measurePoints, p];
+      let result: string | null = null;
+      if (s.measureTool === "distance" && pts.length >= 2) {
+        const a = pts[0].position;
+        const b = pts[1].position;
+        const d = Math.sqrt(
+          (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2,
+        );
+        result = `距离: ${d.toFixed(2)} mm`;
+      } else if (s.measureTool === "angle" && pts.length >= 3) {
+        const [p1, p2, p3] = pts;
+        const va = [
+          p1.position[0] - p2.position[0],
+          p1.position[1] - p2.position[1],
+          p1.position[2] - p2.position[2],
+        ];
+        const vb = [
+          p3.position[0] - p2.position[0],
+          p3.position[1] - p2.position[1],
+          p3.position[2] - p2.position[2],
+        ];
+        const dot = va[0] * vb[0] + va[1] * vb[1] + va[2] * vb[2];
+        const magA = Math.sqrt(va[0] ** 2 + va[1] ** 2 + va[2] ** 2);
+        const magB = Math.sqrt(vb[0] ** 2 + vb[1] ** 2 + vb[2] ** 2);
+        const angle = magA > 0 && magB > 0
+          ? Math.acos(Math.min(1, Math.max(-1, dot / (magA * magB)))) * (180 / Math.PI)
+          : 0;
+        result = `角度: ${angle.toFixed(1)}°`;
+      } else if (s.measureTool === "area" && pts.length >= 3) {
+        let area = 0;
+        for (let i = 1; i < pts.length - 1; i++) {
+          const a = pts[0].position;
+          const b = pts[i].position;
+          const c = pts[i + 1].position;
+          const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+          const ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+          const cross = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+          ];
+          area += 0.5 * Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+        }
+        result = `面积: ${area.toFixed(2)} mm²`;
+      }
+      return { measurePoints: pts, measureResult: result };
+    }),
+  clearMeasure: () => set({ measureTool: "none", measurePoints: [], measureResult: null }),
 }));

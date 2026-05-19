@@ -71,7 +71,7 @@ export function useModelInfo(modelId: string | null) {
     queryKey: ["model-info", modelId],
     queryFn: async () => {
       const res = await fetch(`/api/v1/models/${modelId}`);
-      if (!res.ok) throw new Error("Failed to fetch model info");
+      if (!res.ok) throw new Error("获取模型信息失败");
       return res.json();
     },
     enabled: !!modelId,
@@ -83,7 +83,7 @@ export function useModelQuality(modelId: string | null) {
     queryKey: ["model-quality", modelId],
     queryFn: async () => {
       const res = await fetch(`/api/v1/models/${modelId}/quality`);
-      if (!res.ok) throw new Error("Failed to fetch quality report");
+      if (!res.ok) throw new Error("获取质量报告失败");
       return res.json();
     },
     enabled: !!modelId,
@@ -95,7 +95,7 @@ export function useRepairModel() {
   return useMutation({
     mutationFn: async (modelId: string) => {
       const res = await fetch(`/api/v1/models/${modelId}/repair`, { method: "POST" });
-      if (!res.ok) throw new Error("Repair failed");
+      if (!res.ok) throw new Error("修复失败");
       return res.json();
     },
     onSuccess: (_data, modelId) => {
@@ -140,7 +140,7 @@ export function useSubdivideModel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ iterations, max_edge: maxEdge }),
       });
-      if (!res.ok) throw new Error("Subdivide failed");
+      if (!res.ok) throw new Error("细分失败");
       return res.json();
     },
     onSuccess: (_data, { modelId }) => {
@@ -159,46 +159,12 @@ export function useTransformModel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
       });
-      if (!res.ok) throw new Error("Transform failed");
+      if (!res.ok) throw new Error("变换失败");
       return res.json();
     },
     onSuccess: (_data, { modelId }) => {
       queryClient.invalidateQueries({ queryKey: ["model-info", modelId] });
       queryClient.invalidateQueries({ queryKey: ["model-glb", modelId] });
-    },
-  });
-}
-
-export function useThicknessAnalysis() {
-  return useMutation({
-    mutationFn: async ({ modelId, nSamples }: { modelId: string; nSamples?: number }) => {
-      const res = await fetch(`/api/v1/models/${modelId}/thickness`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ n_samples: nSamples ?? 3000 }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Thickness analysis failed");
-      }
-      return res.json();
-    },
-  });
-}
-
-export function useCurvatureAnalysis() {
-  return useMutation({
-    mutationFn: async ({ modelId, nSamples }: { modelId: string; nSamples?: number }) => {
-      const res = await fetch(`/api/v1/models/${modelId}/curvature`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ n_samples: nSamples ?? 3000 }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Curvature analysis failed");
-      }
-      return res.json();
     },
   });
 }

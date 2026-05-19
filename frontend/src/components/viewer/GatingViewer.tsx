@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { useSimStore, type MeshGeometry } from "../../stores/simStore";
 
@@ -15,6 +15,10 @@ function GatingMesh({ geo, color }: { geo: MeshGeometry; color: string }) {
     g.computeVertexNormals();
     return g;
   }, [geo]);
+
+  useEffect(() => {
+    return () => { geometry.dispose(); };
+  }, [geometry]);
 
   return (
     <mesh geometry={geometry}>

@@ -77,6 +77,8 @@ interface InsertState {
   ribBrushRegions: HoleBrushRegion[];
   addRibBrushRegion: (r: HoleBrushRegion) => void;
   clearRibBrushRegions: () => void;
+
+  clearInserts: () => void;
 }
 
 export const useInsertStore = create<InsertState>((set) => ({
@@ -115,4 +117,17 @@ export const useInsertStore = create<InsertState>((set) => ({
   addRibBrushRegion: (r) =>
     set((s) => ({ ribBrushRegions: [...s.ribBrushRegions, r] })),
   clearRibBrushRegions: () => set({ ribBrushRegions: [] }),
+  clearInserts: () =>
+    set({
+      positions: [],
+      insertId: null,
+      plates: [],
+      assemblyValid: false,
+      validationMessages: [],
+      isAnalyzing: false,
+      isGenerating: false,
+      holeBrushActive: false,
+      holeBrushRegions: [],
+      ribBrushRegions: [],
+    }),
 }));

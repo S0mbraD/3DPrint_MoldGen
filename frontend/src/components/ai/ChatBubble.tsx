@@ -11,7 +11,7 @@ import {
   Sparkles,
   Wand2,
 } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useAIStore } from "../../stores/aiStore";
 import { useModelStore } from "../../stores/modelStore";
 import { useAgentExecute } from "../../hooks/useAgentApi";
@@ -78,6 +78,10 @@ function formatMessageTime(ts: number) {
   }
 }
 
+const BUBBLE_SIZE = 56;
+const SNAP_THRESHOLD = 40;
+const EDGE_PEEK = 16;
+
 export function ChatBubble() {
   const {
     chatOpen,
@@ -95,9 +99,108 @@ export function ChatBubble() {
   const messagesEnd = useRef<HTMLDivElement>(null);
   const agentExecute = useAgentExecute();
 
+  const [pos, setPos] = useState({ x: -1, y: -1 });
+  const [docked, setDocked] = useState<"none" | "right" | "left" | "bottom">("none");
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef<HTMLDivElement>(null);
+  const dragStartPos = useRef({ x: 0, y: 0 });
+  const wasDragged = useRef(false);
+
+  useEffect(() => {
+    if (pos.x < 0) {
+      setPos({
+        x: window.innerWidth - BUBBLE_SIZE - 24,
+        y: window.innerHeight - BUBBLE_SIZE - 24,
+      });
+    }
+  }, [pos.x]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setPos((p) => ({
+        x: Math.min(p.x, window.innerWidth - BUBBLE_SIZE),
+        y: Math.min(p.y, window.innerHeight - BUBBLE_SIZE),
+      }));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+    wasDragged.current = false;
+    dragStartPos.current = { x: e.clientX, y: e.clientY };
+
+    const el = dragRef.current;
+    if (el) el.setPointerCapture(e.pointerId);
+  }, []);
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!isDragging) return;
+
+      const dx = e.clientX - dragStartPos.current.x;
+      const dy = e.clientY - dragStartPos.current.y;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) wasDragged.current = true;
+
+      const rawX = e.clientX - BUBBLE_SIZE / 2;
+      const rawY = e.clientY - BUBBLE_SIZE / 2;
+      const clampedX = Math.max(0, Math.min(rawX, window.innerWidth - BUBBLE_SIZE));
+      const clampedY = Math.max(0, Math.min(rawY, window.innerHeight - BUBBLE_SIZE));
+
+      setPos({ x: clampedX, y: clampedY });
+      setDocked("none");
+    },
+    [isDragging],
+  );
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      if (!isDragging) return;
+      setIsDragging(false);
+
+      const el = dragRef.current;
+      if (el) el.releasePointerCapture(e.pointerId);
+
+      const x = pos.x;
+      const y = pos.y;
+      const ww = window.innerWidth;
+      const wh = window.innerHeight;
+
+      if (x < SNAP_THRESHOLD) {
+        setPos((p) => ({ ...p, x: -(BUBBLE_SIZE - EDGE_PEEK) }));
+        setDocked("left");
+      } else if (x > ww - BUBBLE_SIZE - SNAP_THRESHOLD) {
+        setPos((p) => ({ ...p, x: ww - EDGE_PEEK }));
+        setDocked("right");
+      } else if (y > wh - BUBBLE_SIZE - SNAP_THRESHOLD) {
+        setPos((p) => ({ ...p, y: wh - EDGE_PEEK }));
+        setDocked("bottom");
+      }
+    },
+    [isDragging, pos],
+  );
+
+  const handleBubbleClick = useCallback(() => {
+    if (wasDragged.current) return;
+
+    if (docked !== "none") {
+      const ww = window.innerWidth;
+      const wh = window.innerHeight;
+      if (docked === "right") setPos((p) => ({ ...p, x: ww - BUBBLE_SIZE - 24 }));
+      if (docked === "left") setPos((p) => ({ ...p, x: 24 }));
+      if (docked === "bottom") setPos((p) => ({ ...p, y: wh - BUBBLE_SIZE - 24 }));
+      setDocked("none");
+      return;
+    }
+
+    toggleChat();
+  }, [docked, toggleChat]);
 
   const handleSend = () => {
     const text = input.trim();
@@ -115,38 +218,72 @@ export function ChatBubble() {
     setInput(text);
   };
 
+  const bubbleStyle: React.CSSProperties = {
+    position: "fixed",
+    left: pos.x,
+    top: pos.y,
+    zIndex: 50,
+    width: BUBBLE_SIZE,
+    height: BUBBLE_SIZE,
+    touchAction: "none",
+    cursor: isDragging ? "grabbing" : "grab",
+    transition: isDragging ? "none" : "left 0.3s ease, top 0.3s ease",
+  };
+
+  const isHidden = docked !== "none";
+
   return (
     <>
-      <motion.button
-        onClick={toggleChat}
-        className={cn(
-          "fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full",
-          "bg-accent shadow-lg shadow-accent/25 flex items-center justify-center",
-          "hover:bg-accent-hover transition-colors",
-        )}
-        whileHover={{ scale: 1.1 }}
-        whileTap={{ scale: 0.9 }}
-        animate={
-          isExecuting
-            ? {
-                rotate: [0, 360],
-                transition: { duration: 2, repeat: Infinity, ease: "linear" },
-              }
-            : {
-                scale: [1, 1.04, 1],
-                transition: { duration: 2, repeat: Infinity },
-              }
-        }
+      {/* Draggable bubble */}
+      <div
+        ref={dragRef}
+        style={bubbleStyle}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
       >
-        {chatOpen ? (
-          <X size={22} color="white" />
-        ) : (
-          <MessageCircle size={22} color="white" />
-        )}
-      </motion.button>
+        <motion.div
+          onClick={handleBubbleClick}
+          className={cn(
+            "w-full h-full rounded-full",
+            "bg-accent shadow-lg shadow-accent/25 flex items-center justify-center",
+            "hover:bg-accent-hover transition-colors select-none",
+          )}
+          animate={
+            isExecuting
+              ? {
+                  rotate: [0, 360],
+                  transition: { duration: 2, repeat: Infinity, ease: "linear" },
+                }
+              : isHidden
+                ? {}
+                : {
+                    scale: [1, 1.04, 1],
+                    transition: { duration: 2, repeat: Infinity },
+                  }
+          }
+          style={{
+            opacity: isHidden ? 0.7 : 1,
+            borderRadius: isHidden
+              ? docked === "right"
+                ? "50% 0 0 50%"
+                : docked === "left"
+                  ? "0 50% 50% 0"
+                  : "50% 50% 0 0"
+              : "50%",
+          }}
+        >
+          {chatOpen && !isHidden ? (
+            <X size={22} color="white" />
+          ) : (
+            <MessageCircle size={22} color="white" />
+          )}
+        </motion.div>
+      </div>
 
+      {/* Chat panel */}
       <AnimatePresence>
-        {chatOpen && (
+        {chatOpen && !isHidden && (
           <motion.div
             initial={{ x: 420, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}

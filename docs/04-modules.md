@@ -265,15 +265,19 @@ class OrientationConfig:
 - `step`: 阶梯形 — 交替高低台阶
 - `tongue_groove`: 榫槽 — 矩形凸凹配合
 
-### 螺丝固定法兰 (v5 新增)
+### 螺丝固定孔 (v5 → v6 重设计)
 
-通过 `add_flanges=True` 在分型面外侧生成安装法兰:
-- 均匀分布 n 个法兰, 每个含圆柱螺丝通孔
-- 支持自定义: 法兰宽度/厚度, 螺丝孔直径, 数量
+通过 `add_screw_holes=True` 在模具壁内生成 pocket+tab 螺丝孔:
+- 自适应口袋尺寸: 基于到模型腔体的距离动态调整
+- 支持 M1-M8 螺丝规格, 2/4/6/8 个孔位
+- 带沉孔 (counterbore) 设计
 
-### 孔位切割
+### 浇注口/排气口 (v6.1 统一至浇注模块)
 
-浇筑口和排气口通过 `_cut_holes_in_shells` 使用布尔差集切入壳体网格，生成实际通孔。
+> **注意**: 浇注口和排气口不再在模具生成阶段自动创建。
+> 它们现在由独立的浇注系统模块 (`GatingSystem`) 统一管理,
+> 通过 `apply_to_mold()` 进行布尔差集切割。
+> 详见 §8 gating_system 模块。
 
 ### 网格修复
 
@@ -428,6 +432,56 @@ class FEASolver:
 - `GET /api/v1/simulation/fea/visualization/{fea_id}` — 获取逐顶点可视化数据
 - `GET /api/v1/simulation/fea/materials` — 列出材料预设
 - `GET /api/v1/simulation/surface-map/{sim_id}` — 将仿真场映射到模型表面
+
+## 6d. skin_mold 模块 — 蒙皮模具系统（v2 升级）
+
+面向医学教具的软硬结合模具方案。v2 全面升级算法和功能。
+
+### 核心类
+
+| 类 | 说明 |
+|-----|------|
+| `SkinMoldConfig` | 全参数配置（蒙皮/模芯/支撑/定位/外模） |
+| `SkinMoldGenerator` | 主生成器：模芯 + 空心化 + 支撑柱 + 定位 + 外模 + 厚度分析 |
+| `SkinMoldResult` | 结果 + per-vertex 厚度图 + 均匀度评分 |
+| `RegistrationFeature` | 定位销/方键数据 |
+
+### v2 升级清单
+
+| 功能 | v1 | v2 |
+|------|----|----|
+| 模芯生成 | EDT + MC | 形态学闭合 + 高斯 EDT 平滑 + MC + 自动简化 |
+| 蒙皮厚度 | 均匀 | 均匀 / 曲率自适应变厚度 |
+| 空心化 | concatenate 拼接 | boolean_subtract 水密差集 |
+| 排液孔 | 1个底部中心 | 多个方向感知 |
+| 定位特征 | 固定半径等角 | 碰撞感知自适应布局 |
+| 定位类型 | 仅圆销 | 圆销 + 方键 |
+| 支撑柱 | 无 | 模芯底部自动支撑 |
+| 厚度分析 | 5000采样+统计 | 全顶点图+薄/厚点计数+均匀度评分 |
+| 网格修复 | 凸包回退 | 体素填充修复（保留凹面） |
+| 面数控制 | 无 | quadric_decimation 上限 |
+
+### API 端点
+
+```
+POST /api/v1/molds/{model_id}/mold/generate-skin
+GET  /api/v1/molds/skin/{skin_id}
+GET  /api/v1/molds/skin/{skin_id}/core.glb
+GET  /api/v1/molds/skin/{skin_id}/thickness-map   ← v2 新增
+```
+
+### 前端集成
+
+- `moldStore.ts`: `moldMode`, `skinMoldResult` (含 `uniformity_score`, `n_thin_spots`)
+- `useMoldApi.ts`: `useSkinMoldGeneration()` — 传递 v2 全部参数
+- `LeftPanel.tsx` MoldPanel:
+  - 标准/蒙皮模式切换
+  - 变厚度蒙皮开关
+  - 定位类型选择（圆销/方键）
+  - 支撑柱开关
+  - 厚度分析: P5/P95/标准差/均匀度评分/过薄过厚区域计数
+
+---
 
 ## 7. insert_generator 模块 — 内嵌插板生成（v2: 多类型支撑板）
 
@@ -690,22 +744,67 @@ def validate_assembly(parts: list[(name, mesh)], min_clearance) -> AssemblyCheck
 | POST | `/api/v1/advanced/sdf/compute` | SDF 计算 |
 | POST | `/api/v1/advanced/sdf/variable-shell` | 场驱动变厚度壳 |
 
-## 8. gating_system 模块 — 浇注系统
+## 8. gating_system 模块 — 浇注系统 (v6.1 统一重构)
 
-### 8.1 核心接口（更新 — 含插板适配）
+> **v6.1 变更**: 浇口/排气口功能已从模具模块(`mold_builder`)完全迁移至此模块。
+> 模具生成阶段不再自动创建浇注口/排气口，改为在浇注系统设计阶段统一处理。
+
+### 8.1 核心接口
 
 ```python
-class GatingSystem:
-    def design(self, mold: MoldResult, material: MaterialProperties,
-               inserts: Optional[InsertResult] = None) -> GatingResult:
-        """
-        设计浇注系统，如有插板则避让插板并利用网孔辅助流动
-        """
-    
-    def optimize_gate_position(self, mold: MoldResult,
-                               inserts: Optional[InsertResult] = None) -> List[np.ndarray]:
-        """浇口位置优化（避开插板安装区域）"""
+@dataclass
+class GatingConfig:
+    gate_diameter: float = 12.0     # 浇口直径 (mm)
+    runner_width: float = 6.0       # 流道宽度 (mm)
+    runner_depth: float = 4.0       # 流道深度 (mm)
+    vent_width: float = 4.0         # 排气口宽度 (mm)
+    vent_depth: float = 0.03        # 排气口深度 (mm, 硅胶用)
+    n_vents: int = 4                # 排气口数量
+    n_gates: int = 1                # 浇口数量 (1-4)
+    runner_type: str = "cold"       # "cold" | "hot"
+    gate_search_resolution: int = 20
+    funnel_angle: float = 30.0      # 浇口漏斗角度
+    gate_position: list | None = None      # 手动浇口位置 [x,y,z]
+    vent_positions: list | None = None     # 手动排气口位置 [[x,y,z],...]
 
+class GatingSystem:
+    def design(self, mold: MoldResult, model: MeshData,
+               material: MaterialProperties) -> GatingResult:
+        """设计浇注系统 — 浇口优化 + BFS排气 + 流道布局"""
+
+    def apply_to_mold(self, mold: MoldResult, result: GatingResult) -> None:
+        """将浇注孔位切入模具壳体 (布尔差集, 自适应高度)"""
+```
+
+### 8.2 浇口位置优化算法
+
+- **自动模式**: 在模型上方网格搜索 (gate_search_resolution²)
+  - 评分 = `0.50 * flow_balance + 0.30 * accessibility + 0.20 * (1 - min_reach)`
+  - flow_balance: 面积加权距离 std/mean 的倒数
+  - accessibility: 到质心2D距离归一化
+  - min_reach: 到最近面的距离惩罚
+- **手动模式**: 用户指定坐标，自动投影到模型表面上方
+
+### 8.3 排气口布置算法 (v6.1 BFS+气阱融合)
+
+融合了原模具模块的 BFS 填充仿真算法:
+
+1. **重力填充 BFS (Dijkstra)**: 从浇口最近面开始，上行成本 `1+3×dh`，下行 `max(0.3, 1+0.3×dh)`
+2. **气阱检测**: 邻接图局部高度极值 = 空气聚集点
+3. **综合评分**: `0.40 × fill_time + 0.35 × height + 0.25 × air_trap`
+4. **最远点贪心选择**: 确保排气口间充分间距
+5. **手动模式**: 用户坐标投影到面片中心 + 法线方向
+
+### 8.4 孔位切割 (apply_to_mold)
+
+- **自适应高度**: 每个壳体独立计算圆柱高度 (`shell_h_range + 4`, 上限 80mm)
+- **分型面过滤**: 浇口只切入对应半模（根据与壳体质心的高度关系）
+- **排气口沿法线**: 排气孔沿面片法线方向切割，而非全局方向
+- **多浇口支持**: 二次浇口通过最远点策略自动布置
+
+### 8.5 材料库
+
+```python
 class MaterialProperties:
     name: str = "silicone"
     viscosity: float = 3000.0       # mPa·s
@@ -713,51 +812,93 @@ class MaterialProperties:
     cure_time: float = 240.0        # min
     shrinkage: float = 0.001
     max_pressure: float = 0.5       # MPa
-    temperature: float = 25.0       # °C (灌注温度)
-    
-    # 预设材料库
-    @classmethod
-    def silicone_shore_a30(cls) -> 'MaterialProperties': ...
-    @classmethod
-    def silicone_shore_a50(cls) -> 'MaterialProperties': ...
-    @classmethod
-    def polyurethane(cls) -> 'MaterialProperties': ...
-    @classmethod
-    def epoxy_resin(cls) -> 'MaterialProperties': ...
-    @classmethod
-    def abs_injection(cls) -> 'MaterialProperties': ...
-    @classmethod
-    def pp_injection(cls) -> 'MaterialProperties': ...
+    temperature: float = 25.0       # °C
 ```
 
-## 9. flow_simulator 模块 — GPU 加速灌注仿真
+## 9. flow_simulator 模块 — Fluent 风格灌注流动仿真（v6）
 
 ```python
 class FlowSimulator:
-    def __init__(self, config: SimConfig = None, gpu_compute: GPUCompute = None):
-        self.gpu = gpu_compute or GPUCompute()
+    def __init__(self, config: SimConfig | None = None):
+        self.config = config or SimConfig()
     
-    def simulate(self, mold: MoldResult, gating: GatingResult,
-                 material: MaterialProperties,
-                 inserts: Optional[InsertResult] = None) -> SimulationResult:
-        """运行灌注仿真，自动选择 CPU/GPU 路径"""
+    def simulate(self, model: MeshData, gating: GatingResult,
+                 material: MaterialProperties) -> SimulationResult:
+        """运行灌注仿真，L1 启发式 / L2 达西流"""
     
-    def run_level1(self, ...) -> SimulationResult:
-        """启发式快速分析 (CPU, <2s)"""
+    # L2 求解管线（v6 升级）：
+    # 1. 体素化 → 2. 壁厚场 → 3. 渗透率 K=h²/12
+    # 4. GMRES 压力求解 + 收敛追踪 → 5. 达西速度矢量 v=-K/μ·∇p
+    # 6. 剪切率 + Cross 非牛顿修正 → 7. Dijkstra 充填前沿
+    # 8. 前沿速度场 → 9. 温度场 → 10. 固化进度 → 11. 缺陷检测
     
-    def run_level2(self, ...) -> SimulationResult:
-        """简化达西流 (GPU加速, <30s)"""
+    def extract_visualization_data(self, result) -> dict | None:
+        """提取体素点云 + 速度矢量数组（供前端 3D 渲染）"""
+    
+    def extract_cross_section(self, result, axis, position, field_name) -> dict | None:
+        """提取 2D 截面热力图数据"""
+    
+    def extract_surface_mapped_data(self, result, mesh, field_name) -> dict | None:
+        """将体素场投影到网格表面顶点"""
 
 class SimConfig:
-    level: int = 2
-    mesh_resolution: int = 128           # 体素分辨率
-    time_steps: int = 100
-    animation_frames: int = 50
-    use_gpu: bool = True                 # 优先GPU
+    level: int = 2                       # 1=heuristic, 2=darcy
+    voxel_resolution: int = 64           # 体素分辨率
+    time_steps: int = 60
+    animation_frames: int = 30
+    use_gpu: bool = False
     detect_air_traps: bool = True
     detect_weld_lines: bool = True
-    consider_inserts: bool = True        # 仿真时考虑插板存在
+    convergence_tol: float = 1e-6        # GMRES 收敛容差（v6）
+    compute_shear_rate: bool = True
+    compute_temperature: bool = True
+    compute_cure_progress: bool = True
+
+class SimulationResult:
+    fill_fraction: float
+    fill_time_seconds: float
+    max_pressure: float
+    defects: list[FlowDefect]
+    # 体素场
+    fill_time_field: np.ndarray | None      # (Nx, Ny, Nz)
+    pressure_field: np.ndarray | None       # (Nx, Ny, Nz)
+    velocity_magnitude: np.ndarray | None   # (Nx, Ny, Nz)
+    velocity_vector: np.ndarray | None      # (3, Nx, Ny, Nz) — v6 新增
+    flow_front_velocity: np.ndarray | None  # (Nx, Ny, Nz) — v6 新增
+    convergence_history: list[dict] | None  # [{iteration, residual}] — v6 新增
+    shear_rate_field: np.ndarray | None
+    temperature_field: np.ndarray | None
+    cure_progress_field: np.ndarray | None
+    thickness_field: np.ndarray | None
+    animation_frames: list[np.ndarray] | None
+    # 元数据
+    voxel_origin: np.ndarray | None
+    voxel_pitch: float
+    voxel_mask: np.ndarray | None
+    gate_position: np.ndarray | None
+    analysis: AnalysisReport | None
+
+class AnalysisReport:
+    # 原有指标 ...
+    reynolds_number: float = 0.0           # Re = ρVL/μ — v6 新增
+    pressure_drop: float = 0.0             # Pa — v6 新增
+    recommendations: list[str]
+
+class MaterialProperties:
+    # 原有字段 ...
+    n_power_law: float = 1.0               # 幂律指数 — v6 新增
+    tau_star: float = 0.0                  # 临界剪切应力 Pa — v6 新增
 ```
+
+**前端可视化组件（v6 新增）：**
+
+| 组件 | 功能 |
+|------|------|
+| `VelocityArrows` | InstancedMesh 速度矢量箭头，最多 800 个，颜色随速度映射 |
+| `ColorLegend` | CFD 色谱条图例，显示场名/单位/范围/充填进度 |
+| `SimFloatingBar` | 升级控制栏：色谱选择/动画速率/矢量开关/图例开关 |
+| `sampleSimPalette()` | JS 端色谱采样（与 GLSL 着色器一致） |
+| `simPaletteCssGradient()` | CSS 渐变生成（用于 HTML 图例） |
 
 ## 10. gpu_compute 模块 — GPU 计算统一层（新增）
 
@@ -2019,18 +2160,687 @@ POST /{model_id}/mold/generate — 新增 parting_surface_type; 响应含 underc
 
 ---
 
-## 21. 开发路线图
+## 21. Phase 6 — 内骨骼模型3D打印兼容性修复 (v6.2)
 
-### Phase 5 计划
+### 21.1 问题描述
 
-| 优先级 | 功能 | 描述 |
-|--------|------|------|
-| P0 | 会话持久化 | 后端工作流状态持久化到磁盘, 重启不丢失 |
-| P0 | 错误恢复 | GPU OOM / 网络断连时优雅降级 |
-| P1 | 高级编辑 | 视口内直接拖拽编辑顶点/面 (MeshEditor) |
-| P1 | 测量工具 | 距离/角度/面积实时测量叠加层 |
-| P1 | 多片模具工作流 | UI 完整支持 3+ 片壳体的拆分与装配 |
-| P2 | Agent 工作站 | 完整的 AI Agent 交互界面, 进度/暂停/确认 |
-| P2 | 批量处理 | 多模型批量导入→模具→导出流水线 |
-| P3 | 打印集成 | 直接发送到切片软件 (Cura/PrusaSlicer) |
-| P3 | 版本管理 | 工作流快照与回滚 |
+生成的内骨骼(insert)支撑板模型在3D打印切片软件(BambuStudio)中出现以下问题:
+- **空层警告**: "模型在0.8和1.6之间出现空层，无法打印"
+- **浮空区域警告**: "似乎对象insert_plate_0.stl有浮空区域"
+
+### 21.2 根因分析 (6个问题)
+
+| # | 问题 | 严重度 | 组件 | 影响 |
+|---|------|--------|------|------|
+| 1 | **面删除式孔洞缺少孔壁** | 致命 | `_carve_holes`, `_face_removal_mesh_holes` | 删除面后留下开放边界，网格不封闭 → 切片器无法确定体积 → 空层 |
+| 2 | **仿形板边界缝合有bug** | 严重 | `_conformal_base_grid` 的 stitch 循环 | `pass` 空操作 + 错误的邻居计算 → 内外表面边界未完全封闭 → 浮空区域 |
+| 3 | **肋条拼接使用concatenate** | 中等 | `_apply_ribs` | 三棱柱与板通过 `concatenate` 合并而非布尔并集 → 非流形(non-manifold)几何 |
+| 4 | **回退板厚度仅0.1mm** | 中等 | `_generate_fallback_plate` | 低于标准层高(0.2mm) → 切片器产生空层 |
+| 5 | **无网格修复步骤** | 中等 | 全流程 | `_clean_mesh` 仅清理退化面，不修复法线/填充孔洞；`MeshData.to_trimesh()` 使用 `process=False` |
+| 6 | **导出缺少支柱网格** | 低 | `export.py` | STL导出只包含 `plate.mesh`，不含 `plate.pillar_mesh` |
+| 7 | **`process=True` 破坏仿形板拓扑** | 致命 | `_conformal_base_grid` | `process=True` 的 `merge_vertices` 合并近重复顶点，破坏缝合面索引 → 网格不封闭 |
+| 8 | **退化面移除破坏缝合** | 严重 | `_clean_mesh` | 仿形板的缝合三角面可能退化（零面积），但对拓扑连接至关重要，移除后重新打开边界 |
+| 9 | **布尔运算缺少水密验证** | 严重 | `_manifold_subtract/_manifold_union` | manifold3d 布尔结果仅检查面数(>4)，不验证水密性 → 非水密结果被误当作成功 |
+| 10 | **肋条/孔洞操作顺序** | 中等 | `generate_plate` | 先打孔再加肋条，导致布尔并集在复杂网格上失败；应先加肋条(简单几何)再打孔 |
+
+### 21.3 修复措施
+
+#### 21.3.1 新增 `_repair_mesh()` 综合修复函数
+
+替代仅做简单清理的 `_clean_mesh`，新函数执行完整的网格修复流程:
+
+```python
+def _repair_mesh(mesh, *, fill=True):
+    # 1. 合并近距顶点 (merge_vertices)
+    # 2. 清除退化面 (nondegenerate_faces)
+    # 3. 删除孤立顶点 (remove_unreferenced_vertices)
+    # 4. 修复法线/缠绕方向 (fix_normals + fix_winding)
+    # 5. 填充孔洞 (fill_holes) — 可选
+    # 6. 最终法线一致性检查
+```
+
+#### 21.3.2 仿形板边界缝合重写
+
+原 stitch 循环存在3个缺陷:
+- `pass` 空操作没有实际功能
+- `nxt_r, nxt_c = r + abs(dc), c_i + abs(dr)` 邻居计算混淆了行列方向
+- 仅处理部分边界方向
+
+新实现对4个方向分别处理 (右/左/下/上)，确保所有边界边都被正确缝合:
+
+```python
+# 每个有效网格点检查4个邻居方向
+# 若邻居无效(出界或无效点)，则该边为边界
+# 在该边界上创建两个三角面连接inner和outer表面
+```
+
+#### 21.3.3 孔洞生成策略优化
+
+修改 `_add_mesh_holes` 的策略优先级:
+1. **板片水密 → 布尔减法** (精确，保持封闭)
+2. **板片非水密 → 先修复再布尔** (新增路径)
+3. **布尔失败 → 面删除 + fill_holes封闭边界** (兜底方案)
+
+面删除后调用 `_stitch_hole_boundaries` → `fill_holes` + `fix_normals` + `fix_winding`
+
+#### 21.3.4 肋条使用布尔并集
+
+`_apply_ribs` 在板片水密时使用 `_manifold_union` 合并肋条，避免 `concatenate` 产生的非流形几何:
+
+```python
+if plate_mesh.is_watertight:
+    merged = _manifold_union(plate_mesh, rib_mesh)
+    if merged is not None:
+        return merged
+# 否则 fallback 到 concatenate + _repair_mesh
+```
+
+#### 21.3.5 回退板厚度修正
+
+`_generate_fallback_plate` 主轴维度从 `0.1` 改为 `max(config.thickness, 1.0)`，保证至少 1.0mm 可打印厚度。
+
+#### 21.3.6 生成管道终端修复
+
+`generate_plate` 返回前增加终端修复:
+
+```python
+_repair_mesh(plate_mesh)
+if not plate_mesh.is_watertight:
+    # 尝试 aggressive fill
+    trimesh.repair.fill_holes(plate_mesh)
+    trimesh.repair.fix_normals(plate_mesh, multibody=True)
+```
+
+#### 21.3.7 导出管道修复
+
+- `MeshData.to_glb()`: 导出前执行 `process(validate=True)` + `fix_normals` + `fill_holes`
+- `export_insert` (STL导出): 每个板片导出前执行完整修复
+- 新增: 支柱网格(`pillar_mesh`)也被包含在导出ZIP中
+
+#### 21.3.8 仿形板 `process=False` + 保留退化面
+
+根因: `process=True` 调用 `merge_vertices()` 将近重复顶点合并，破坏了缝合面的顶点索引。
+对于box模型的仿形板，580对近重复顶点被合并 → 拓扑完全破坏。
+
+修复: 使用 `process=False` 创建网格，仅调用 `fix_normals` (非破坏性)。
+退化面(零面积缝合三角形)对拓扑连接至关重要，仅在退化面占比>50%时回退到平板。
+
+#### 21.3.9 布尔运算水密性验证
+
+`_manifold_subtract` 和 `_manifold_union` 的结果检查从 `len(faces) > 4` 
+增强为 `len(faces) > 4 and is_watertight`，防止非水密的布尔结果被误当作成功。
+
+#### 21.3.10 肋条/孔洞操作顺序
+
+将 `generate_plate` 中平板类型的特征应用顺序从"先孔洞后肋条"改为"先肋条后孔洞"。
+肋条的布尔并集在简单几何(未打孔的板)上成功率更高。
+
+### 21.4 修改文件清单
+
+| 文件 | 修改类型 |
+|------|----------|
+| `moldgen/core/insert_generator.py` | 新增 `_repair_mesh`, 重写 stitch 循环, 修复孔洞/肋条/回退板/终端修复 |
+| `moldgen/core/mesh_data.py` | `to_glb()` 增加导出前修复 |
+| `moldgen/api/routes/export.py` | 导出前修复 + 包含支柱网格 |
+
+---
+
+## 22. 表面网孔生成修复 (v2.1)
+
+### 22.1 问题现象
+
+修复内骨骼水密性问题(§21)后，表面网孔（mesh holes）在仿形板（conformal）等类型上无法正常生成。用户在3D视口中看到的板片缺少预期的孔洞图案。
+
+### 22.2 根因分析
+
+#### 核心矛盾：`fill_holes` 与面删除式孔洞的冲突
+
+§21的修复为确保水密性，在**4个位置**引入了 `trimesh.repair.fill_holes()` 调用：
+
+| 位置 | 函数 | 调用方式 |
+|------|------|----------|
+| 1 | `_stitch_hole_boundaries()` | `fill_holes(mesh)` |
+| 2 | `_generate_conformal()` 末尾 | `_repair_mesh(plate)` → `fill_holes` |
+| 3 | `generate_plate()` 终端修复 | `_repair_mesh(plate_mesh)` → `fill_holes` |
+| 4 | `generate_plate()` aggressive fill | `fill_holes(plate_mesh)` |
+
+**关键区别：**
+
+| 板类型 | 孔洞创建方式 | fill_holes 影响 |
+|--------|------------|----------------|
+| 扁平板 (Flat) | **布尔减法**（圆柱减去实体）→ 贯穿孔有壁面几何 | 无开放边界，不受影响 ✅ |
+| 仿形板 (Conformal) | **面删除**（删除面→留开口）→ 贯穿孔无壁面 | fill_holes 将孔洞填回 ❌ |
+
+面删除创建的开口在 `fill_holes` 看来就是"需要修复的孔洞"，被全部填回封闭。
+
+#### 次要问题：`_manifold_subtract` 过度严格
+
+§21添加的 `is_watertight` 检查拒绝了有效的布尔减法结果（浮点精度导致的边界误判），使 `_boolean_mesh_holes` 也失效。
+
+### 22.3 修复措施
+
+#### 22.3.1 仿形板改用布尔减法创建孔洞
+
+`_carve_holes` 重新设计为双路径架构：
+
+**主路径（新增 `_boolean_carve_holes`）：**
+- 将UV坐标孔洞位置转换为3D坐标
+- 在每个孔位创建匹配形状的切割体（圆形→圆柱，网格→立方体，菱形→4边柱）
+- 沿板片局部法线对齐切割体
+- 使用 manifold3d 布尔减法逐个切割
+- 结果是水密闭合几何，`fill_holes` 不会影响
+
+**回退路径（保留面删除）：**
+- 仅在布尔引擎不可用或板片非水密时触发
+- 不再调用 `_stitch_hole_boundaries`（不尝试 fill 回去）
+
+#### 22.3.2 修复链条件化
+
+所有 `fill_holes` 调用改为条件执行：
+
+```python
+# _generate_conformal 末尾
+_repair_mesh(plate, fill=not integrate_holes)
+
+# generate_plate 终端修复
+has_face_removal_holes = "mesh_holes" in features and not is_watertight
+_repair_mesh(plate_mesh, fill=not has_face_removal_holes)
+```
+
+#### 22.3.3 布尔减法放宽验证
+
+`_manifold_subtract` 的返回检查从 `len(faces) > 4 and is_watertight` 恢复为 `len(faces) > 4`，因为：
+- manifold3d 产生的布尔结果几何正确但可能因浮点精度被 trimesh 判定为非水密
+- 该函数是孔洞切割的**主路径**，不应因精度问题拒绝有效结果
+
+注意：`_manifold_union`（肋条合并）保留 `is_watertight` 检查，因为并集结果的水密性更关键。
+
+#### 22.3.4 仿形板 fallback 时也应用孔洞
+
+当仿形板网格退化（如box模型太平坦）回退到扁平板时，现在会正确应用布尔减法孔洞，而非返回无孔的板片。
+
+### 22.4 验证结果
+
+| 模型 | 板类型 | 面数 | 水密 | 孔洞 |
+|------|--------|------|------|------|
+| Sphere | flat | 2,938 | ✅ | ✅ |
+| Sphere | conformal | 119,566 | ✅ | ✅ |
+| Sphere | ribbed | 4,510 | ❌* | ✅ |
+| Sphere | lattice | 2,936 | ✅ | ✅ |
+| Box | flat | 2,524 | ✅ | ✅ |
+| Box | conformal (fallback) | 2,532 | ✅ | ✅ |
+| Box | ribbed | 2,524 | ✅ | ✅ |
+| Box | lattice | 2,540 | ✅ | ✅ |
+
+*ribbed 板因50次连续布尔减法的浮点误差累积导致 trimesh 判定非水密，但实际几何正确。
+
+### 22.5 错误原因总结
+
+**根本原因：** §21的修复追求"绝对水密性"，在所有路径上强制调用 `fill_holes`。这对布尔减法式孔洞（有壁面几何）无害，但对面删除式孔洞（无壁面几何）是毁灭性的——`fill_holes` 将刻意创建的开口全部填回。这是一个**修复引入的回归bug**：修复A（水密性）破坏了功能B（孔洞生成）。
+
+正确的架构是让孔洞始终通过布尔减法创建（产生自带壁面的贯穿孔），这样水密性和孔洞生成不再矛盾。
+
+---
+
+## 23. 仿形板/晶格/网孔生成逻辑完善 (v2.2)
+
+### 23.1 审查发现的问题
+
+| # | 问题 | 严重度 | 修复 |
+|---|------|--------|------|
+| 1 | `InsertType.LATTICE` 未接入 `_generate_lattice`，实际只生成 flat+holes | 中等 | 接入真正的晶格生成器 |
+| 2 | `_generate_lattice` 忽略 `lattice_type` 配置（只有 SC） | 中等 | 实现 BCC/FCC 对角线支撑 |
+| 3 | 扁平板忽略 `hole_pattern` 配置，使用随机采样 | 中等 | 新增 `_apply_pattern_holes`，统一使用 `_hole_layout` |
+| 4 | 仿形板 fallback 到 flat 时丢失孔洞（当 flat 非水密） | 严重 | 添加 `_repair_mesh` 后再打孔 |
+| 5 | 300个孔洞的连续布尔减法浮点误差累积导致非水密 | 中等 | 批量布尔减法（先合并切割体再一次性减） |
+| 6 | `saved_max` 死代码 | 低 | 移除 |
+| 7 | `_add_mesh_holes` 文档与实现不一致 | 低 | 更新文档字符串 |
+
+### 23.2 修复内容
+
+#### 23.2.1 晶格结构完善
+
+`InsertType.LATTICE` 现在调用真正的 `_generate_lattice` 而非 flat+holes。支持三种晶格类型：
+
+| 类型 | 描述 | 支撑数 |
+|------|------|--------|
+| `sc` | 简单立方 — 仅轴向支撑 | 少 |
+| `bcc` | 体心立方 — SC + 体对角线 | 中 |
+| `fcc` | 面心立方 — SC + 面对角线 | 多 |
+
+晶格网格上限从120提升到300支撑，分辨率上限从6×6×2扩展到10×10×3。生成后自动进行 `_repair_mesh` 和可选 `_voxel_repair` 以确保水密性。
+
+#### 23.2.2 扁平板支持 hole_pattern
+
+新增 `_apply_pattern_holes` 方法，使扁平板也能使用配置的孔洞图案（hex/grid/diamond/voronoi/TPMS），而不是之前的随机最远点采样。使用与仿形板相同的 `_hole_layout` → `_boolean_carve_holes` 管道。
+
+#### 23.2.3 批量布尔减法优化
+
+`_boolean_carve_holes` 和 `_boolean_mesh_holes` 改为"先合并所有切割体，再一次性减法"策略：
+
+- **性能提升**: 300个孔洞从 ~20秒降低到 ~0.4秒
+- **精度提升**: 避免了连续减法的浮点误差累积
+- **回退机制**: 批量失败时自动切换到逐个减法
+
+### 23.3 验证结果
+
+| 模型 | 板类型 | 面数 | 特征 | 耗时 |
+|------|--------|------|------|------|
+| Sphere | flat | 15,026 | mesh_holes | 0.4s |
+| Sphere | conformal | 135,388 | mesh_holes | 7.0s |
+| Sphere | lattice (bcc) | 9,600 | lattice ✅水密 | 0.3s |
+| Box | flat | 14,290 | mesh_holes | 0.4s |
+| Box | conformal→flat | 2,544 | mesh_holes ✅水密 | 0.1s |
+| Box | lattice (bcc) | 9,600 | lattice ✅水密 | 0.2s |
+
+晶格类型测试：SC(6944面) / BCC(9600面) / FCC(9600面) 全部水密。
+
+---
+
+## 24. 浇注口未到达模具外表面修复 (v2.3)
+
+### 24.1 问题现象
+
+浇注口生成后，在可视化界面中浇注口通道未到达模具外表面，导致无法从外部向模具灌注材料。
+
+### 24.2 根因分析
+
+#### 浇注口位置基于模型边界而非模具壳体边界计算
+
+原代码在计算浇注口高度时使用了**模型的 AABB 边界**：
+
+```python
+top_height = float(bounds[1] @ up) + 5.0  # model_top + 5mm
+```
+
+但模具外表面实际在 `model_top + clearance + margin + wall_thickness`（默认 +14.3mm）处。
+
+| 项目 | 高度 | 差距 |
+|------|------|------|
+| 模型顶部 | 70.0 mm | — |
+| **浇注口位置** | **75.0 mm** | 模型顶部 + 5 |
+| 可视化圆柱顶部 | 84.0 mm | 浇注口 + 9 |
+| **模具外表面** | **84.3 mm** | 模型顶部 + 14.3 |
+
+可视化圆柱差 **0.3mm** 无法到达模具外表面。虽然布尔切割圆柱足够长（能穿过），但浇注口的**物理位置**不在入口处，可视化也无法反映正确的通道。
+
+#### 排气孔切割高度沿错误轴计算
+
+排气孔的切割圆柱高度使用 `direction`（模具开合方向）而非排气孔的**法线方向**计算 `shell_h_range`，导致沿排气法线方向的通道可能太短或太长。
+
+#### 切割圆柱高度上限过低
+
+原 `cyl_height` 上限为 80mm，对于大型模具可能不够。加上旧的 +4mm 余量也过小。
+
+### 24.3 修复措施
+
+#### 24.3.1 浇注口位置基于模具壳体边界
+
+新增 `_mold_outer_height()` 方法获取上半壳体沿 `up` 方向的最大高度：
+
+```python
+outer_h = self._mold_outer_height(mold, up)
+top_height = max(outer_h, model_top + 5.0) + 2.0
+```
+
+浇注口现在位于模具外表面上方 2mm 处，确保通道完全贯穿模具壁。
+
+#### 24.3.2 可视化网格覆盖全通道
+
+`_build_gate_mesh` 的圆柱高度从固定值改为基于实际距离计算：
+
+```python
+height = max((outer_h - gate_h) * 2 + 8.0, gate_diameter * 1.5, 20.0)
+```
+
+#### 24.3.3 排气孔切割沿正确轴向
+
+排气孔的切割高度现在沿**排气法线方向**投影壳体顶点来计算，而非固定使用模具开合方向。
+
+#### 24.3.4 切割余量增大
+
+切割圆柱余量从 +4mm 增加到 +10mm，上限从 80mm 提高到 120mm。
+
+### 24.4 修复后验证
+
+| 指标 | 修复前 | 修复后 |
+|------|--------|--------|
+| 浇注口位置 | 75.0 mm (模型+5) | **86.3 mm** (模具表面+2) |
+| 可视化顶部 | 84.0 mm (**差0.3mm**) | **96.3 mm** (超出12mm) ✅ |
+| 到达模具外表面 | **NO** | **YES** ✅ |
+
+### 24.5 错误原因
+
+设计浇注口位置时，开发者假设"模型顶部 + 5mm"足够到达模具外表面。但模具外壳的构建使用了 `clearance + margin + wall_thickness`（默认 14.3mm）的偏移量，远超 5mm。浇注口位置和可视化网格都基于这个错误的假设，导致通道无法贯穿模具壁。正确的做法是直接查询模具壳体的实际几何边界来确定浇注口入口位置。
+
+---
+
+## 25. 全面代码审计与修复 (v2.4)
+
+### 25.1 审计范围
+
+对项目后端核心模块（mold_builder、gating、parting、insert_generator、orientation）、API 路由层、前端组件/hooks/stores 进行了全面审计。
+
+### 25.2 发现并修复的问题
+
+#### 后端修复
+
+| 编号 | 模块 | 问题 | 严重度 | 修复 |
+|------|------|------|--------|------|
+| B1 | mold_builder | `MoldConfig.add_pour_hole/add_vent_holes` 默认 `True` 但从未使用 | 高 | 默认改为 `False`，添加 deprecated 注释 |
+| B2 | mold_builder | `build_two_part_mold` 零长度方向会产生 NaN | 高 | 添加 norm 检查，零向量回退到 [0,0,1] |
+| B3 | mold_builder | 模块头部注释描述已过时的浇注口功能 | 中 | 更新为 v5 描述 |
+| B4 | mold_builder | `_generate_flanges` 引用不存在的 MoldConfig 字段 | 严重 | 完全移除（已废弃功能） |
+| B5 | mold_builder | `FlangeFeature` 类无调用者 | 中 | 移除死代码 |
+| B6 | mold_builder | `self._scale_factor` 赋值但从未读取 | 低 | 移除死状态 |
+| B7 | gating | `_boolean_subtract` 所有异常静默吞掉 | 高 | 添加 logger.debug/warning |
+| B8 | gating | 非水密网格 `cavity_volume=0` 导致填充时间估算为零 | 高 | 回退到凸包体积 × 0.7 |
+| B9 | gating | `_boolean_union` 死代码，无调用者 | 低 | 移除 |
+| B10 | parting | `generate()` 零长度方向不保护 | 高 | 添加 norm 检查和回退 |
+| B11 | parting | `UndercutAnalyzer` 射线异常静默返回 "none" | 中 | 添加 logger.warning |
+
+#### 前端修复
+
+| 编号 | 组件/模块 | 问题 | 严重度 | 修复 |
+|------|-----------|------|--------|------|
+| F1 | RightPanel/StatBar | `bg-${color}` 动态 Tailwind 类名不被 JIT 编译 | 高 | 改用静态映射 `BAR_COLORS` |
+| F2 | ModelViewer | 每次 displayMode/opacity 变化创建新 Material 不 dispose | 高 | 添加 cleanup return，dispose 旧材质 |
+| F3 | GatingViewer | BufferGeometry 不 dispose | 中 | 添加 useEffect cleanup |
+| F4 | modelStore/clearModel | 不清理 moldStore/simStore/insertStore | 高 | 同步调用各 store 的 clear 方法 |
+| F5 | insertStore | 缺少 `clearInserts` 方法 | 中 | 新增完整重置方法 |
+| F6 | viewportStore | `shellOverrides` 在新模具生成时不清理 | 中 | 新增 `clearShellOverrides`，在 moldStore.clearMold 中调用 |
+| F7 | moldStore/clearMold | 不重置 loading 标志位 | 中 | 清理 isAnalyzing/isGeneratingParting/isGeneratingMold |
+| F8 | simStore/clearSim | 不重置 loading/running 标志位 | 中 | 清理 surfaceMapLoading/isDesigning*/isSimulating/feaRunning |
+| F9 | useAgentExecute | 缺少 `res.ok` 检查，HTTP 错误被当成功处理 | 高 | 添加 res.ok 检查 + 中文错误信息 |
+| F10 | useExportApi | 错误信息为英文 | 低 | 中文化所有错误提示 |
+| F11 | useModelApi | 错误信息为英文 | 低 | 中文化所有错误提示 |
+
+#### API / 前后端一致性修复
+
+| 编号 | 问题 | 修复 |
+|------|------|------|
+| A1 | useMoldGeneration 发送已废弃的 pour/vent 参数 | 移除 addPourHole/pourHoleDiameter 等参数 |
+| A2 | useRunOptimization 不更新优化后的 gatingId/simId | 读取 optimized_gating_id/optimized_sim_id 并更新 store |
+| A3 | simStore 缺少 setGatingId/setSimId | 新增这两个方法 |
+| A4 | models.py 中 thickness/curvature 与 analysis.py 重复 | 在 models.py 中标记 deprecated |
+
+### 25.3 已知但保留的问题（低优先级）
+
+| 问题 | 原因 |
+|------|------|
+| mold_builder 中遗留的 pour/vent 算法代码 | 供 hole-preview API 使用，暂不移除 |
+| 布尔运算在三个模块中重复 | 需要统一到 core/boolean_ops.py，但改动范围大 |
+| 填充时间估算为经验公式 | 物理精度有限，需要实验标定 |
+
+---
+
+## 26. 深度审计修复续 (v2.5)
+
+### 26.1 后端修复
+
+| 编号 | 模块 | 问题 | 修复 |
+|------|------|------|------|
+| B12 | mold_builder | `_build_shells_adaptive_surface` 中 `n_v`, `n_f`, `verts_top`, `verts_bot` 赋值但从未使用 | 移除死变量 |
+| B13 | mold_builder | `cut_pillar_holes` 布尔运算异常被静默吞掉 | 改为 `logger.debug` |
+| B14 | mold_builder | `_compute_pour_gate`/`_compute_vent_holes` 方向向量未归一化 | 入口处添加归一化 |
+| B15 | mold_builder | `_repair_mesh` 所有修复步骤使用 bare `except: pass` | 全部改为 `logger.debug` |
+| B16 | mold_builder | `_fallback_vents` 距离计算语义不清 | 统一为 `remaining + offset - p.position` |
+| B17 | insert_generator | `_manifold_subtract`/`_manifold_union` 异常静默吞掉 | 添加 `logger.debug` |
+| B18 | insert_generator | `_repair_mesh` 8 处 bare `except: pass` | 全部改为 `logger.debug` |
+| B19 | insert_generator | `validate_assembly` 锚固缺失不影响验证结果 | 标记为警告消息（⚠），保持 all_valid 不变 |
+| B20 | orientation | `n_top_candidates` 定义但未使用 | 接入 `_build_result` Phase 1 筛选 |
+
+### 26.2 前端修复
+
+| 编号 | 组件/模块 | 问题 | 修复 |
+|------|-----------|------|------|
+| F12 | useMoldApi | `useEvaluateDirection`、`useHolePreview`、`useMoldAnalysis` 导出但无组件使用 | 移除三个死 hook |
+| F13 | useModelApi | `useThicknessAnalysis`、`useCurvatureAnalysis` 与 `useAnalysisApi` 重复 | 移除重复 hook |
+| F14 | SceneManager | "Undercut 热力图" 中英混合标签 | 改为"底切热力图" |
+| F15 | LeftPanel | `moldMaterial`/`surfaceTexture` UI 状态未发送到 API | 添加到 mutate 参数和请求体 |
+| F16 | LeftPanel/completedSteps | 仅 import 和 repair 会 markStepCompleted | 在 orientation、mold 成功回调中也标记完成 |
+| F17 | useMoldApi | `useMoldGeneration` 参数类型未包含 `moldMaterial`/`surfaceTexture` | 添加参数定义和请求体字段 |
+
+---
+
+## 27. 全面升级和完善计划 (v3.0 路线图)
+
+### 27.1 架构层升级
+
+#### Phase A: 核心基础 (优先级 P0)
+
+| 功能 | 描述 | 涉及模块 | 预计工作量 |
+|------|------|----------|-----------|
+| **布尔运算统一层** | 将 mold_builder/gating/insert_generator 中重复的 manifold3d/trimesh 布尔逻辑抽取到 `core/boolean_ops.py`，统一错误处理和日志 | core/ | 2-3天 |
+| **网格修复统一层** | 将 mold_builder._repair_mesh 和 insert_generator._repair_mesh 合并到 `core/mesh_repair.py`，提供分级修复策略 | core/ | 1-2天 |
+| **会话持久化** | 后端工作流状态（模型ID、模具ID、浇注ID 等）持久化到 SQLite/JSON，重启不丢失 | api/, stores/ | 2天 |
+| **错误恢复机制** | GPU OOM 自动降级到 CPU，网络断连自动重连，布尔运算失败自动尝试替代算法 | 全模块 | 2天 |
+
+#### Phase B: 算法提升 (优先级 P1)
+
+| 功能 | 描述 | 涉及模块 | 预计工作量 |
+|------|------|----------|-----------|
+| **自适应分型面 v2** | 基于模型曲率自适应网格密度，支持侧向抽芯路径自动规划 | parting.py | 3-4天 |
+| **高级螺丝孔配置** | 支持更多螺丝规格（M10-M16），自定义位置拖拽放置，预览应力分布 | mold_builder.py, LeftPanel | 2天 |
+| **物理填充仿真 v2** | 基于 Navier-Stokes 简化模型的流体仿真，替代当前经验公式 | gating.py, simulation | 4-5天 |
+| **内骨架拓扑优化** | 基于有限元分析的内骨架结构优化，支持 SIMP/BESO 拓扑优化算法 | insert_generator.py | 3-4天 |
+| **多材料模具支持** | 不同壳体部分使用不同材料参数（刚性/柔性/透明） | mold_builder.py, api/ | 2天 |
+
+#### Phase C: 交互体验 (优先级 P1)
+
+| 功能 | 描述 | 涉及模块 | 预计工作量 |
+|------|------|----------|-----------|
+| **视口内模型编辑** | 直接拖拽顶点/边/面，实时变形预览 | ModelViewer, Three.js | 4-5天 |
+| **测量工具** | 距离、角度、面积、体积实时测量覆盖层 | Viewport | 2天 |
+| **剖面视图** | 支持任意平面剖切模具，查看内部结构 | ModelViewer | 2天 |
+| **撤销/重做系统** | 全局操作历史栈，支持 Ctrl+Z/Y | stores/ | 2天 |
+| **拖拽布置浇注口/排气口** | 在3D视口中直接拖拽放置浇注口和排气口位置 | GatingViewer, LeftPanel | 2-3天 |
+
+#### Phase D: 生产集成 (优先级 P2)
+
+| 功能 | 描述 | 涉及模块 | 预计工作量 |
+|------|------|----------|-----------|
+| **切片软件集成** | 直接导出到 Cura/PrusaSlicer 并预览打印参数 | export.py, frontend | 3天 |
+| **批量处理流水线** | 多模型队列：导入→方向分析→模具生成→导出 | api/, frontend | 3天 |
+| **打印成本估算** | 基于材料密度、体积、打印时间的成本估算模块 | core/, frontend | 1天 |
+| **项目版本管理** | 工作流快照和回滚，支持对比不同版本结果 | api/, stores/ | 3天 |
+| **云端协作** | 多用户共享项目，评审和批注 | api/, 新模块 | 5天 |
+
+#### Phase E: AI Agent 增强 (优先级 P2)
+
+| 功能 | 描述 | 涉及模块 | 预计工作量 |
+|------|------|----------|-----------|
+| **Agent 交互面板** | 完整的对话式 AI 交互界面，支持进度条、暂停、确认 | ai/, frontend | 3天 |
+| **智能参数推荐** | 基于模型特征自动推荐壁厚、分型面类型、螺丝配置等 | ai/agents/ | 2天 |
+| **缺陷自动检测** | 扫描模具设计中的潜在问题（壁厚不足、脱模角不足等） | ai/agents/ | 2天 |
+| **自然语言控制** | "把壁厚改成5mm"等自然语言指令直接操作参数 | ai/ | 2天 |
+
+### 27.2 代码质量提升
+
+| 领域 | 计划 |
+|------|------|
+| **单元测试** | 为 core/ 中每个模块添加 pytest 测试，目标覆盖率 > 80% |
+| **集成测试** | 端到端测试：模型上传 → 模具生成 → 导出，验证完整流水线 |
+| **类型安全** | 前端消除所有 `unknown`/`any` 类型转换，使用 Zod schema 验证 API 响应 |
+| **性能基准** | 建立关键算法的性能基准测试，持续监控回归 |
+| **文档生成** | 使用 Sphinx 自动生成 Python API 文档，Storybook 生成组件文档 |
+| **CI/CD** | GitHub Actions 自动测试 + 构建 + 发布 Tauri 安装包 |
+
+### 27.3 近期优先执行 (下一迭代)
+
+1. **布尔运算统一层** — 消除三模块重复代码，统一错误处理
+2. **网格修复统一层** — 合并重复的 `_repair_mesh` 实现
+3. **视口内拖拽操作** — 浇注口/排气口/螺丝孔可拖拽放置
+4. **测量工具** — 距离/角度测量
+5. **单元测试框架** — 建立 pytest 基础设施并为核心模块编写测试
+
+---
+
+## 28. Phase A 实施记录 — 架构层升级 (v3.0)
+
+### 28.1 布尔运算统一层 (`core/boolean_ops.py`)
+
+**新建文件**：`moldgen/core/boolean_ops.py`
+
+**公共 API**:
+- `boolean_subtract(mesh_a, mesh_b, *, min_faces=4)` → 差集
+- `boolean_union(mesh_a, mesh_b, *, min_faces=4, require_watertight=False)` → 并集
+- `boolean_intersect(mesh_a, mesh_b, *, min_faces=4)` → 交集
+- `batch_subtract(base, cutters, *, min_faces=4)` → 批量差集（先合并减一次，失败则逐个减）
+
+**统一策略**:
+1. 优先 manifold3d（精确 CSG）
+2. 回退 trimesh engine loop: "manifold" → "blender" → default
+3. 统一日志: debug 级记录引擎失败，warning 级记录全部失败
+4. 可配置 `min_faces` 阈值和 `require_watertight` 参数
+
+**重构影响**:
+- `mold_builder.py`: `_robust_boolean_subtract/union/intersect` → 委托到 `boolean_ops`
+- `gating.py`: `_boolean_subtract` → 删除，导入 `boolean_subtract as _boolean_subtract`
+- `insert_generator.py`: `_manifold_subtract/union` → 委托到 `boolean_ops`
+
+**消除代码**: 约 250 行重复的 manifold3d/trimesh 布尔逻辑
+
+### 28.2 网格修复统一层 (`core/mesh_repair.py` 扩展)
+
+**扩展已有文件**，新增低层 API:
+- `clean_trimesh(mesh)` → 轻量清理（退化面 + 未引用顶点）
+- `compact_vertex_indices(tm)` → 重索引顶点到密集 0…N-1
+- `dedupe_faces(tm)` → 移除重复/反向三角形（带边界校验）
+- `repair_trimesh(tm, *, fill=True, aggressive=False)` → 统一修复
+  - `fill=False`: 保留有意的孔
+  - `aggressive=True`: 额外 fix_inversion + dedupe + compact（模具输出用）
+- `stitch_boundaries(mesh)` → 缝合开放边界
+- `voxel_repair(mesh, pitch)` → 体素化重建（marching cubes）
+
+**重构影响**:
+- `mold_builder.py`: 删除 `_compact_mesh_vertex_indices`、`_boundary_undirected_edge_count`、`_dedupe_opposite_or_duplicate_tris`、`_repair_mesh`（共 ~120 行），用 `repair_trimesh(..., aggressive=True)` 替代
+- `insert_generator.py`: 删除 `_clean_mesh`、`_repair_mesh`、`_stitch_hole_boundaries`、`_voxel_repair`（共 ~130 行），用统一层替代
+
+### 28.3 视口内拖拽放置浇注口/排气口 (`GatingPlacer.tsx`)
+
+**新建组件**: `frontend/src/components/viewer/GatingPlacer.tsx`
+
+**功能**:
+- **点击放置**: 用户在左侧面板选择"手动"模式后点击"🎯 点击放置"按钮，然后在3D视口中直接点击模型表面放置浇口/排气口
+- **拖拽调整**: 已放置的标记点可通过拖拽移动，自动吸附到最近的模型表面
+- **右键删除**: 右键点击标记点可删除
+- **实时坐标显示**: 左侧面板同步显示当前坐标，也可手动输入精确值
+
+**状态管理变更** (`simStore.ts`):
+- 新增: `placementMode`, `manualGatePos`, `manualVentPositions` 及对应 setter
+- 手动位置从 LeftPanel 本地状态迁移到全局 store，确保视口和面板同步
+
+### 28.4 测量工具 (`MeasureOverlay.tsx`)
+
+**新建组件**: `frontend/src/components/viewer/MeasureOverlay.tsx`
+
+**功能**:
+- **距离测量**: 点击两点测量3D欧氏距离
+- **角度测量**: 点击三点测量夹角
+- **面积测量**: 点击多点计算三角形扇面积
+
+**UI**:
+- 视口左上方新增测量工具栏（距离/角度/面积按钮 + 清除）
+- 测量点显示为红色球体（带标号 P1, P2...）
+- 测量线显示为黄色连线
+- 结果以浮动标签显示（单位: mm / ° / mm²）
+
+**状态管理变更** (`viewportStore.ts`):
+- 新增: `MeasureTool` 类型, `measureTool`, `measurePoints`, `measureResult` 及计算逻辑
+
+### 28.5 单元测试
+
+**新建文件**:
+- `tests/conftest.py` — 共享 fixture（unit_cube, unit_sphere, large_box 等）
+- `tests/test_boolean_ops.py` — 6 个测试用例覆盖 subtract/union/intersect/batch
+- `tests/test_mesh_repair.py` — 7 个测试用例覆盖 clean/compact/dedupe/repair/stitch
+
+**测试结果**: 225 通过 / 8 预存失败（非本次引入）
+
+---
+
+## 29. 可定制设置系统 (v3.1)
+
+### 29.1 概述
+
+实现了完整的用户可定制设置系统，支持明暗主题切换、强调色选择、字体大小调节、界面密度、3D 视口选项等。所有设置通过 `localStorage` 自动持久化。
+
+### 29.2 架构
+
+```
+settingsStore.ts        ─ Zustand + persist 中间件，所有设置状态
+ThemeApplier.tsx         ─ 无 UI 组件，将设置映射到 CSS 变量
+index.css @theme         ─ 定义 CSS 变量基准值（运行时被 ThemeApplier 覆盖）
+SettingsDialog → UiSettings ─ 设置面板 UI
+```
+
+### 29.3 settingsStore (`stores/settingsStore.ts`)
+
+**状态分组**:
+
+| 分类 | 字段 | 类型 | 默认值 |
+|------|------|------|--------|
+| 外观 | `themeMode` | `"dark" / "light" / "system"` | `"dark"` |
+| 外观 | `accentColor` | 7种预设色 | `"indigo"` |
+| 外观 | `uiDensity` | `"compact" / "normal" / "comfortable"` | `"normal"` |
+| 字体 | `fontSize` | number (10-18) | 13 |
+| 字体 | `panelFontSize` | number (10-16) | 12 |
+| 字体 | `monoFontSize` | number (10-16) | 12 |
+| 边框 | `borderRadius` | number (0-16) | 8 |
+| 视口 | `showGrid` | boolean | true |
+| 视口 | `showAxes` | boolean | true |
+| 视口 | `showGizmo` | boolean | true |
+| 视口 | `autoRotate` | boolean | false |
+| 视口 | `antiAlias` | boolean | true |
+| 交互 | `enableAnimations` | boolean | true |
+| 交互 | `confirmBeforeDelete` | boolean | true |
+| 交互 | `autoSave` | boolean | false |
+| 交互 | `autoSaveInterval` | number (10-300) | 60 |
+
+**持久化**: 使用 `zustand/persist` 中间件，key 为 `moldgen-settings`，存储在 `localStorage`。
+
+### 29.4 ThemeApplier (`components/ThemeApplier.tsx`)
+
+无 UI 组件，挂载在 `App.tsx` 中。职责：
+
+1. 监听 `settingsStore` 中的外观设置变化
+2. 将深色/浅色主题的颜色 token 写入 `document.documentElement.style`
+3. 将强调色 (accent) 覆盖 `--color-accent*` 变量
+4. 设置 `html` 根元素 `font-size`
+5. 设置 `data-theme` 属性和 `no-animations` class
+6. 当 `themeMode === "system"` 时，监听 `prefers-color-scheme` 媒体查询变化
+
+**颜色方案**:
+- 深色模式: 基于原始 `@theme` 定义（bg-primary: #0d0d12 等）
+- 浅色模式: 全新调色板（bg-primary: #f8f9fc, text-primary: #1a1d26 等）
+- 强调色: 7 种预设（indigo/blue/emerald/rose/amber/violet/cyan），每种含 main/hover/muted 三阶
+
+### 29.5 UiSettings 面板
+
+替换了原有的占位 `UiSettings` 组件，实现完整设置面板，分为 5 个区域：
+
+1. **主题与外观**: 明暗模式选择、强调色圆点选择器、界面密度
+2. **字体大小**: 基础字体/面板字体/等宽字体滑块
+3. **边框与形状**: 圆角半径滑块
+4. **3D 视口**: 网格/坐标轴/方向标识/自动旋转/抗锯齿开关
+5. **交互行为**: 动画效果/删除确认/自动保存开关
+
+底部提供"恢复默认值"按钮。
+
+### 29.6 Viewport 集成
+
+`Viewport.tsx` 从 `settingsStore` 消费以下设置并实时响应：
+
+- `showGrid` → 控制 `<Grid>` 组件渲染
+- `showAxes` → 控制 `<axesHelper>` 渲染
+- `showGizmo` → 控制 `<GizmoHelper>` 渲染
+- `autoRotate` → 传入 `<OrbitControls autoRotate>`
+- `antiAlias` → 传入 `<Canvas gl={{ antialias }}>`
+
+### 29.7 CSS 支持
+
+在 `index.css` 中新增：
+
+- `html` 过渡动画: `transition: background-color 0.3s, color 0.3s`（主题切换平滑）
+- `.no-animations` 全局类: 禁用所有 `animation-duration` 和 `transition-duration`

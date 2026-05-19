@@ -4,6 +4,7 @@ import { useModelStore } from "../../stores/modelStore";
 import { useMoldStore } from "../../stores/moldStore";
 import { useInsertStore } from "../../stores/insertStore";
 import { useSimStore } from "../../stores/simStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { cn } from "../../lib/utils";
 import {
   Upload, Scissors, Compass, Box, Layers, Droplets, Zap, Download,
@@ -83,10 +84,12 @@ export function WorkflowPipeline() {
   const { currentStep, setStep } = useAppStore();
   const statuses = useStepStatus();
   const completedCount = Object.values(statuses).filter(s => s.status === "done").length;
+  const scale = useSettingsStore((s) => s.fontSize) / 13;
 
   return (
-    <div className="w-full h-9 flex items-center px-2 bg-bg-secondary border-b border-border overflow-x-auto shrink-0 relative">
-      {/* Progress background bar */}
+    <div className="w-full h-9 flex items-center px-2 bg-bg-secondary border-b border-border overflow-x-auto shrink-0 relative"
+      style={{ zoom: scale !== 1 ? scale : undefined }}
+    >      {/* Progress background bar */}
       <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-border-subtle/30">
         <motion.div
           className="h-full bg-gradient-to-r from-accent/60 to-accent/30"

@@ -384,7 +384,7 @@ export function SceneManager() {
     nodes.push({
       id: "undercut-heatmap",
       type: "analysis",
-      label: "Undercut 热力图",
+      label: "底切热力图",
       icon: <Blend size={10} />,
       color: "info",
       visible: undercutHeatmapVisible,

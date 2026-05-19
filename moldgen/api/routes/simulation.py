@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from moldgen.core.fea import FEAConfig, FEAResult, FEASolver
 from moldgen.core.flow_sim import FlowSimulator, SimConfig, SimulationResult
 from moldgen.core.gating import GatingConfig, GatingResult, GatingSystem
 from moldgen.core.material import MATERIAL_PRESETS
+from moldgen.core.mesh_data import MeshData
 from moldgen.core.optimizer import AutoOptimizer, OptimizationConfig
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,7 @@ router = APIRouter()
 _gating_results: dict[str, GatingResult] = {}
 _sim_results: dict[str, SimulationResult] = {}
 _fea_results: dict[str, FEAResult] = {}
+_original_mold_shells: dict[str, list[tuple[int, MeshData, float, float]]] = {}
 
 
 # ── Materials ─────────────────────────────────────────────────────────
@@ -45,6 +48,11 @@ class GatingRequest(BaseModel):
     runner_type: str = "cold"
     n_gates: int = 1
     runner_width: float = 4.0
+    vent_width: float = 4.0
+    funnel_angle: float = 30.0
+    # Manual placement: null = auto, list = user-specified positions
+    gate_position: list[float] | None = None
+    vent_positions: list[list[float]] | None = None
 
 
 @router.post("/gating/design")
@@ -61,6 +69,38 @@ async def design_gating(req: GatingRequest):
     if mat is None:
         raise HTTPException(400, f"Unknown material: {req.material}. Use /simulation/materials to list.")
 
+    # Restore mold shells to pre-gating state so repeated designs don't
+    # accumulate holes from previous runs.
+    mold_id = req.mold_id
+    if mold_id in _original_mold_shells:
+        for sh, (sid, mesh_orig, vol, area) in zip(
+            mold.shells, _original_mold_shells[mold_id]
+        ):
+            sh.mesh = MeshData(
+                vertices=mesh_orig.vertices.copy(),
+                faces=mesh_orig.faces.copy(),
+                face_normals=mesh_orig.face_normals.copy(),
+                vertex_normals=mesh_orig.vertex_normals.copy(),
+            )
+            sh.volume = vol
+            sh.surface_area = area
+        logger.info("Restored %d mold shells to original state", len(mold.shells))
+    else:
+        _original_mold_shells[mold_id] = [
+            (
+                sh.shell_id,
+                MeshData(
+                    vertices=sh.mesh.vertices.copy(),
+                    faces=sh.mesh.faces.copy(),
+                    face_normals=sh.mesh.face_normals.copy(),
+                    vertex_normals=sh.mesh.vertex_normals.copy(),
+                ),
+                sh.volume,
+                sh.surface_area,
+            )
+            for sh in mold.shells
+        ]
+
     logger.info(
         "Gating design: model=%s mold=%s gate_diam=%.1fmm vents=%d n_gates=%d runner=%s/%.1fmm",
         req.model_id, req.mold_id, req.gate_diameter, req.n_vents,
@@ -72,6 +112,10 @@ async def design_gating(req: GatingRequest):
         n_gates=req.n_gates,
         runner_type=req.runner_type,
         runner_width=req.runner_width,
+        vent_width=req.vent_width,
+        funnel_angle=req.funnel_angle,
+        gate_position=req.gate_position,
+        vent_positions=req.vent_positions,
     )
     gating = GatingSystem(config)
 

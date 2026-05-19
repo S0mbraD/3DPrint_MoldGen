@@ -121,7 +121,50 @@ export interface MoldResultInfo {
   clamp_brackets?: ClampBracketInfo[];
 }
 
+// ── Skin Mold (蒙皮模具) ──
+
+export interface RegistrationFeatureInfo {
+  position: number[];
+  direction: number[];
+  diameter: number;
+  height: number;
+  type: string;
+}
+
+export interface SkinThicknessStats {
+  min: number;
+  max: number;
+  mean: number;
+  std: number;
+  median: number;
+  p5: number;
+  p95: number;
+  n_thin_spots?: number;
+  n_thick_spots?: number;
+  uniformity_score?: number;
+}
+
+export interface SkinCoreInfo {
+  face_count: number;
+  vertex_count: number;
+  volume: number;
+  is_hollow: boolean;
+}
+
+export interface SkinMoldResultInfo {
+  core: SkinCoreInfo;
+  mold: MoldResultInfo;
+  registration: RegistrationFeatureInfo[];
+  skin_volume: number;
+  original_volume: number;
+  skin_thickness_stats: SkinThicknessStats;
+  has_thickness_map?: boolean;
+}
+
+export type MoldMode = "standard" | "skin";
+
 interface MoldState {
+  moldMode: MoldMode;
   orientationResult: OrientationResult | null;
   partingResult: PartingResult | null;
   moldId: string | null;
@@ -131,10 +174,15 @@ interface MoldState {
   undercutHeatmap: UndercutHeatmapData | null;
   undercutHeatmapVisible: boolean;
 
+  // Skin mold state
+  skinMoldId: string | null;
+  skinMoldResult: SkinMoldResultInfo | null;
+
   isAnalyzing: boolean;
   isGeneratingParting: boolean;
   isGeneratingMold: boolean;
 
+  setMoldMode: (m: MoldMode) => void;
   setOrientationResult: (r: OrientationResult) => void;
   setPartingResult: (r: PartingResult) => void;
   setMoldResult: (id: string, r: MoldResultInfo) => void;
@@ -145,10 +193,12 @@ interface MoldState {
   setAnalyzing: (v: boolean) => void;
   setGeneratingParting: (v: boolean) => void;
   setGeneratingMold: (v: boolean) => void;
+  setSkinMoldResult: (id: string, r: SkinMoldResultInfo) => void;
   clearMold: () => void;
 }
 
 export const useMoldStore = create<MoldState>((set) => ({
+  moldMode: "standard" as MoldMode,
   orientationResult: null,
   partingResult: null,
   moldId: null,
@@ -157,10 +207,13 @@ export const useMoldStore = create<MoldState>((set) => ({
   selectedCandidateIdx: null,
   undercutHeatmap: null,
   undercutHeatmapVisible: false,
+  skinMoldId: null,
+  skinMoldResult: null,
   isAnalyzing: false,
   isGeneratingParting: false,
   isGeneratingMold: false,
 
+  setMoldMode: (m) => set({ moldMode: m }),
   setOrientationResult: (r) =>
     set({ orientationResult: r, isAnalyzing: false, selectedCandidateIdx: null }),
   setPartingResult: (r) => set({ partingResult: r, isGeneratingParting: false }),
@@ -173,8 +226,11 @@ export const useMoldStore = create<MoldState>((set) => ({
   setAnalyzing: (v) => set({ isAnalyzing: v }),
   setGeneratingParting: (v) => set({ isGeneratingParting: v }),
   setGeneratingMold: (v) => set({ isGeneratingMold: v }),
-  clearMold: () =>
+  setSkinMoldResult: (id, r) =>
+    set({ skinMoldId: id, skinMoldResult: r, isGeneratingMold: false }),
+  clearMold: () => {
     set({
+      moldMode: "standard" as MoldMode,
       orientationResult: null,
       partingResult: null,
       moldId: null,
@@ -183,5 +239,14 @@ export const useMoldStore = create<MoldState>((set) => ({
       selectedCandidateIdx: null,
       undercutHeatmap: null,
       undercutHeatmapVisible: false,
-    }),
+      skinMoldId: null,
+      skinMoldResult: null,
+      isAnalyzing: false,
+      isGeneratingParting: false,
+      isGeneratingMold: false,
+    });
+    import("./viewportStore").then(({ useViewportStore }) =>
+      useViewportStore.getState().clearShellOverrides(),
+    );
+  },
 }));

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import trimesh
 from scipy import ndimage, sparse
-from scipy.sparse.linalg import spsolve
+from scipy.sparse.linalg import gmres, spsolve
 
 from moldgen.core.gating import GatingResult
 from moldgen.core.material import MaterialProperties
@@ -80,6 +80,8 @@ class AnalysisReport:
     gate_efficiency: float = 0.0
     n_stagnation_zones: int = 0
     n_high_shear_zones: int = 0
+    reynolds_number: float = 0.0
+    pressure_drop: float = 0.0  # Pa, max − min in filled region
     recommendations: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -105,6 +107,8 @@ class AnalysisReport:
             "gate_efficiency": round(sf(self.gate_efficiency), 4),
             "n_stagnation_zones": self.n_stagnation_zones,
             "n_high_shear_zones": self.n_high_shear_zones,
+            "reynolds_number": round(sf(self.reynolds_number), 4),
+            "pressure_drop": round(sf(self.pressure_drop), 2),
             "recommendations": self.recommendations,
         }
 
@@ -124,6 +128,12 @@ class SimulationResult:
     cure_progress_field: np.ndarray | None = None
     thickness_field: np.ndarray | None = None
     animation_frames: list[np.ndarray] | None = None
+    # Darcy velocity (3, Nx, Ny, Nz), mm/s; None when not computed
+    velocity_vector: np.ndarray | None = None
+    # Local flow-front speed from fill-time gradients, mm/s
+    flow_front_velocity: np.ndarray | None = None
+    # Pressure solver residual history (GMRES callbacks + final)
+    convergence_history: list[dict] | None = None
     # Voxel metadata for coordinate mapping
     voxel_origin: np.ndarray | None = None
     voxel_pitch: float = 0.0
@@ -142,6 +152,9 @@ class SimulationResult:
             "has_fill_time_field": self.fill_time_field is not None,
             "has_pressure_field": self.pressure_field is not None,
             "has_velocity_field": self.velocity_magnitude is not None,
+            "has_velocity_vector": self.velocity_vector is not None,
+            "has_flow_front_velocity": self.flow_front_velocity is not None,
+            "has_convergence_history": self.convergence_history is not None,
             "has_shear_rate_field": self.shear_rate_field is not None,
             "has_temperature_field": self.temperature_field is not None,
             "has_cure_progress_field": self.cure_progress_field is not None,
@@ -300,13 +313,23 @@ class FlowSimulator:
         # Step 4: Gate voxel
         gate_voxel = self._world_to_voxel(gating.gate.position, origin, pitch, voxels.shape)
 
-        # Step 5: Pressure field
-        pressure = self._solve_pressure_vectorized(voxels, K, gate_voxel, material)
+        # Step 5: Pressure field (+ solver convergence history)
+        pressure, convergence_history = self._solve_pressure_vectorized(
+            voxels, K, gate_voxel, material
+        )
 
-        # Step 6: Velocity magnitude
+        # Step 6: Darcy velocity vector v = -K/μ ∇p 与 |v|
         pressure = np.nan_to_num(pressure, nan=0.0, posinf=0.0, neginf=0.0)
         grad = np.array(np.gradient(pressure, pitch))
-        vel_mag = np.sqrt(np.sum(grad ** 2, axis=0)) * np.where(voxels, 1.0, 0.0)
+        K_safe = np.where(voxels, K, 0.0)
+        viscosity = material.viscosity / 1000.0
+        vel_vector = np.where(
+            voxels[np.newaxis, ...],
+            -K_safe[np.newaxis, ...] / max(viscosity, 1e-10) * grad,
+            0.0,
+        )
+        vel_vector = np.nan_to_num(vel_vector, nan=0.0, posinf=0.0, neginf=0.0)
+        vel_mag = np.sqrt(np.sum(vel_vector ** 2, axis=0))
         vel_mag = np.nan_to_num(vel_mag, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Step 7: Shear rate estimation
@@ -317,6 +340,11 @@ class FlowSimulator:
         # Step 8: Fill front (Dijkstra-based)
         fill_time_field, frames = self._simulate_fill_dijkstra(
             voxels, vel_mag, gate_voxel, pitch, material
+        )
+
+        # 充填前沿局部速度：相邻体素充填时间差（mm/s）
+        flow_front_velocity = self._compute_flow_front_velocity(
+            fill_time_field, voxels, pitch
         )
 
         # Step 9: Temperature estimation
@@ -371,6 +399,9 @@ class FlowSimulator:
             fill_time_field=fill_time_field,
             pressure_field=pressure,
             velocity_magnitude=vel_mag,
+            velocity_vector=vel_vector,
+            flow_front_velocity=flow_front_velocity,
+            convergence_history=convergence_history,
             shear_rate_field=shear_rate,
             temperature_field=temperature,
             cure_progress_field=cure_progress,
@@ -395,6 +426,15 @@ class FlowSimulator:
         """Estimate wall shear rate: gamma_dot ≈ 6V / h (slit flow approximation)."""
         h = np.where(voxels & (thickness > 0), thickness, 1.0)
         shear = np.where(voxels, 6.0 * vel_mag / h, 0.0)
+        # Cross 型表观黏度修正（可选，τ*=0 或 n=1 时退化为牛顿流体）
+        if material.n_power_law < 1.0 and material.tau_star > 0:
+            eta_0 = material.viscosity / 1000.0
+            gamma = np.maximum(np.where(voxels, shear, 0.0), 0.0)
+            expo = 1.0 - material.n_power_law
+            eta_app = eta_0 / (
+                1.0 + (eta_0 * gamma / max(material.tau_star, 1e-20)) ** expo
+            )
+            shear = np.where(voxels, gamma * (eta_0 / np.maximum(eta_app, 1e-10)), 0.0)
         return shear
 
     # ── Temperature field estimation ─────────────────────────────────
@@ -598,6 +638,25 @@ class FlowSimulator:
         report.gate_efficiency = fill_fraction / max(max_p / 1e6, 1e-8) if max_p > 0 else 0.0
         report.gate_efficiency = min(report.gate_efficiency, 1.0)
 
+        # 充填区域内压降 (Pa)
+        p_filled_region = pressure[filled]
+        if len(p_filled_region) > 0 and np.all(np.isfinite(p_filled_region)):
+            report.pressure_drop = float(np.max(p_filled_region) - np.min(p_filled_region))
+
+        # 雷诺数 Re = ρ V L / μ（SI：kg/m³, m/s, m, Pa·s）
+        if len(v_filled) > 0 and report.avg_thickness > 0:
+            rho_g_cm3 = float(getattr(material, "density", 0.0) or 0.0)
+            if rho_g_cm3 <= 0:
+                rho_kg_m3 = 1000.0
+            else:
+                rho_kg_m3 = rho_g_cm3 * 1000.0
+            v_avg_mm_s = float(np.mean(v_filled))
+            v_m_s = v_avg_mm_s / 1000.0
+            l_char_m = (report.avg_thickness * 2.0) / 1000.0
+            mu_pa_s = max(material.viscosity / 1000.0, 1e-10)
+            if v_m_s > 0 and l_char_m > 0:
+                report.reynolds_number = rho_kg_m3 * v_m_s * l_char_m / mu_pa_s
+
         # Stagnation zones
         if len(v_filled) > 0 and np.any(v_filled > 0):
             v_p5 = float(np.percentile(v_filled[v_filled > 0], 5))
@@ -736,7 +795,31 @@ class FlowSimulator:
         if result.gate_position is not None:
             gate_pos = [round(float(v), 3) for v in result.gate_position]
 
+        velocity_vectors: list[dict] = []
+        if result.velocity_vector is not None and len(coords) > 0:
+            step = max(1, int(np.cbrt(len(coords) / 800)))
+            for idx in range(0, len(coords), step):
+                i, j, k = int(coords[idx, 0]), int(coords[idx, 1]), int(coords[idx, 2])
+                vx = float(result.velocity_vector[0, i, j, k])
+                vy = float(result.velocity_vector[1, i, j, k])
+                vz = float(result.velocity_vector[2, i, j, k])
+                if vx * vx + vy * vy + vz * vz > 1e-12:
+                    velocity_vectors.append({
+                        "pos": positions[idx],
+                        "dir": [round(vx, 6), round(vy, 6), round(vz, 6)],
+                    })
+
         sf = _safe_float
+        # 流线：由达西速度场 RK2 积分得到的折线（世界坐标）
+        streamline_paths: list[list[list[float]]] = []
+        if result.velocity_vector is not None:
+            streamline_paths = self._compute_streamline_paths(result)
+
+        # 粒子动画：沿流线子段的充填时间与平均速度
+        particle_paths: list[dict] = []
+        if result.velocity_vector is not None:
+            particle_paths = self._compute_particle_paths(result)
+
         return {
             "n_points": len(positions),
             "positions": positions,
@@ -756,6 +839,9 @@ class FlowSimulator:
             "voxel_pitch": round(sf(pitch), 3),
             "defect_positions": defect_positions,
             "gate_position": gate_pos,
+            "velocity_vectors": velocity_vectors,
+            "streamline_paths": streamline_paths,
+            "particle_paths": particle_paths,
         }
 
     def extract_cross_section(
@@ -770,6 +856,7 @@ class FlowSimulator:
             "fill_time": result.fill_time_field,
             "pressure": result.pressure_field,
             "velocity": result.velocity_magnitude,
+            "flow_front_velocity": result.flow_front_velocity,
             "shear_rate": result.shear_rate_field,
             "temperature": result.temperature_field,
             "cure_progress": result.cure_progress_field,
@@ -836,6 +923,7 @@ class FlowSimulator:
             "fill_time": result.fill_time_field,
             "pressure": result.pressure_field,
             "velocity": result.velocity_magnitude,
+            "flow_front_velocity": result.flow_front_velocity,
             "shear_rate": result.shear_rate_field,
             "temperature": result.temperature_field,
             "cure_progress": result.cure_progress_field,
@@ -950,13 +1038,16 @@ class FlowSimulator:
         self, voxels: np.ndarray, K: np.ndarray,
         gate_voxel: tuple[int, int, int],
         material: MaterialProperties,
-    ) -> np.ndarray:
-        """Solve Laplace equation for pressure with vectorized matrix assembly."""
+    ) -> tuple[np.ndarray, list[dict]]:
+        """Solve Laplace equation for pressure with vectorized matrix assembly.
+
+        优先 GMRES 迭代并记录残差历史；失败则回退 spsolve，并记录最终相对残差。
+        """
         shape = voxels.shape
         n_voxels = int(np.sum(voxels))
 
         if n_voxels == 0:
-            return np.zeros(shape)
+            return np.zeros(shape), []
 
         voxel_to_idx = np.full(shape, -1, dtype=np.int32)
         cavity_coords = np.argwhere(voxels)
@@ -1027,18 +1118,376 @@ class FlowSimulator:
 
         A = sparse.csr_matrix((all_vals, (all_rows, all_cols)), shape=(n_voxels, n_voxels))
 
+        convergence_history: list[dict] = []
+        rhs_norm = float(np.linalg.norm(rhs))
+        rhs_norm_safe = max(rhs_norm, 1e-30)
+
+        def _append_residual(vec: np.ndarray) -> float:
+            res = float(np.linalg.norm(A @ vec - rhs) / rhs_norm_safe)
+            convergence_history.append(
+                {"iteration": len(convergence_history) + 1, "residual": res},
+            )
+            return res
+
+        p_vec: np.ndarray
         try:
-            p_vec = spsolve(A, rhs)
+            restart = min(50, max(10, n_voxels // 100 + 1))
+            maxiter = min(2000, max(100, n_voxels * 3))
+
+            def _gmres_callback(xk: np.ndarray) -> None:
+                _append_residual(xk)
+
+            try:
+                p_vec, info = gmres(
+                    A,
+                    rhs,
+                    rtol=self.config.convergence_tol,
+                    atol=0.0,
+                    restart=restart,
+                    maxiter=maxiter,
+                    callback=_gmres_callback,
+                    callback_type="x",
+                )
+            except TypeError:
+                # SciPy < 1.14: no callback_type / different callback semantics
+                p_vec, info = gmres(
+                    A,
+                    rhs,
+                    rtol=self.config.convergence_tol,
+                    atol=0.0,
+                    restart=restart,
+                    maxiter=maxiter,
+                )
+            if info != 0:
+                logger.warning("GMRES did not converge (info=%s); falling back to spsolve", info)
+                p_vec = spsolve(A, rhs)
+                convergence_history.clear()
             if np.any(~np.isfinite(p_vec)):
-                logger.warning("Sparse solve returned NaN/inf, falling back to zeros")
-                p_vec = np.nan_to_num(p_vec, nan=0.0, posinf=0.0, neginf=0.0)
+                logger.warning("Iterative solve returned NaN/inf, falling back to spsolve")
+                p_vec = spsolve(A, rhs)
+                convergence_history.clear()
         except Exception:
-            logger.warning("Sparse solve failed, using zeros")
-            p_vec = np.zeros(n_voxels)
+            logger.warning("GMRES failed, using direct sparse solve", exc_info=True)
+            try:
+                p_vec = spsolve(A, rhs)
+            except Exception:
+                logger.warning("Sparse solve failed, using zeros")
+                p_vec = np.zeros(n_voxels)
+            convergence_history.clear()
+
+        p_vec = np.nan_to_num(p_vec, nan=0.0, posinf=0.0, neginf=0.0)
+        final_rel = float(np.linalg.norm(A @ p_vec - rhs) / rhs_norm_safe)
+        if convergence_history:
+            last = convergence_history[-1]["residual"]
+            if abs(last - final_rel) > 1e-10:
+                convergence_history.append(
+                    {"iteration": len(convergence_history) + 1, "residual": final_rel},
+                )
+            else:
+                convergence_history[-1]["residual"] = final_rel
+        else:
+            convergence_history.append({"iteration": 1, "residual": final_rel})
 
         pressure = np.zeros(shape)
         pressure[cavity_coords[:, 0], cavity_coords[:, 1], cavity_coords[:, 2]] = p_vec
-        return pressure
+        return pressure, convergence_history
+
+    def _compute_flow_front_velocity(
+        self, fill_time: np.ndarray, voxels: np.ndarray, pitch: float,
+    ) -> np.ndarray:
+        """由相邻已充填体素的充填时间差估计前沿局部速度 pitch/|Δt|（mm/s）。"""
+        shape = fill_time.shape
+        out = np.zeros(shape, dtype=np.float64)
+        filled = voxels & (fill_time < np.inf) & np.isfinite(fill_time)
+        for dx, dy, dz in (
+            (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1),
+        ):
+            sl = [slice(None), slice(None), slice(None)]
+            sl_nb = [slice(None), slice(None), slice(None)]
+            if dx:
+                if dx > 0:
+                    sl[0] = slice(1, None)
+                    sl_nb[0] = slice(0, -1)
+                else:
+                    sl[0] = slice(0, -1)
+                    sl_nb[0] = slice(1, None)
+            if dy:
+                if dy > 0:
+                    sl[1] = slice(1, None)
+                    sl_nb[1] = slice(0, -1)
+                else:
+                    sl[1] = slice(0, -1)
+                    sl_nb[1] = slice(1, None)
+            if dz:
+                if dz > 0:
+                    sl[2] = slice(1, None)
+                    sl_nb[2] = slice(0, -1)
+                else:
+                    sl[2] = slice(0, -1)
+                    sl_nb[2] = slice(1, None)
+            t0 = fill_time[tuple(sl)]
+            t1 = fill_time[tuple(sl_nb)]
+            m0 = filled[tuple(sl)]
+            m1 = filled[tuple(sl_nb)]
+            dt = np.abs(t0 - t1)
+            local = np.where(m0 & m1 & (dt > 1e-12), pitch / dt, 0.0)
+            sub = out[tuple(sl)]
+            out[tuple(sl)] = np.maximum(sub, local)
+        return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _trilinear_vector_field(
+        self,
+        field: np.ndarray,
+        pos: np.ndarray,
+        origin: np.ndarray,
+        pitch: float,
+    ) -> np.ndarray:
+        """在世界坐标点对 (3,Nx,Ny,Nz) 向量场做三线性插值；索引钳制在网格范围内。"""
+        f = (np.asarray(pos, dtype=np.float64).ravel() - origin) / pitch
+        nx, ny, nz = field.shape[1], field.shape[2], field.shape[3]
+        ix = float(np.clip(f[0], 0.0, max(nx - 1, 0)))
+        iy = float(np.clip(f[1], 0.0, max(ny - 1, 0)))
+        iz = float(np.clip(f[2], 0.0, max(nz - 1, 0)))
+        i0, j0, k0 = int(np.floor(ix)), int(np.floor(iy)), int(np.floor(iz))
+        i1, j1, k1 = min(i0 + 1, nx - 1), min(j0 + 1, ny - 1), min(k0 + 1, nz - 1)
+        tx, ty, tz = ix - i0, iy - j0, iz - k0
+        c000 = field[:, i0, j0, k0]
+        c100 = field[:, i1, j0, k0]
+        c010 = field[:, i0, j1, k0]
+        c110 = field[:, i1, j1, k0]
+        c001 = field[:, i0, j0, k1]
+        c101 = field[:, i1, j0, k1]
+        c011 = field[:, i0, j1, k1]
+        c111 = field[:, i1, j1, k1]
+        c00 = c000 * (1 - tx) + c100 * tx
+        c01 = c001 * (1 - tx) + c101 * tx
+        c10 = c010 * (1 - tx) + c110 * tx
+        c11 = c011 * (1 - tx) + c111 * tx
+        c0 = c00 * (1 - ty) + c10 * ty
+        c1 = c01 * (1 - ty) + c11 * ty
+        return (c1 * tz + c0 * (1 - tz)).astype(np.float64)
+
+    def _trilinear_scalar_field(
+        self,
+        field: np.ndarray,
+        pos: np.ndarray,
+        origin: np.ndarray,
+        pitch: float,
+    ) -> float:
+        """标量场三线性插值（如充填时间），边界钳制。"""
+        f = (np.asarray(pos, dtype=np.float64).ravel() - origin) / pitch
+        nx, ny, nz = field.shape[0], field.shape[1], field.shape[2]
+        ix = float(np.clip(f[0], 0.0, max(nx - 1, 0)))
+        iy = float(np.clip(f[1], 0.0, max(ny - 1, 0)))
+        iz = float(np.clip(f[2], 0.0, max(nz - 1, 0)))
+        i0, j0, k0 = int(np.floor(ix)), int(np.floor(iy)), int(np.floor(iz))
+        i1, j1, k1 = min(i0 + 1, nx - 1), min(j0 + 1, ny - 1), min(k0 + 1, nz - 1)
+        tx, ty, tz = ix - i0, iy - j0, iz - k0
+        c000 = float(field[i0, j0, k0])
+        c100 = float(field[i1, j0, k0])
+        c010 = float(field[i0, j1, k0])
+        c110 = float(field[i1, j1, k0])
+        c001 = float(field[i0, j0, k1])
+        c101 = float(field[i1, j0, k1])
+        c011 = float(field[i0, j1, k1])
+        c111 = float(field[i1, j1, k1])
+        c00 = c000 * (1 - tx) + c100 * tx
+        c01 = c001 * (1 - tx) + c101 * tx
+        c10 = c010 * (1 - tx) + c110 * tx
+        c11 = c011 * (1 - tx) + c111 * tx
+        c0 = c00 * (1 - ty) + c10 * ty
+        c1 = c01 * (1 - ty) + c11 * ty
+        return float(c1 * tz + c0 * (1 - tz))
+
+    def _world_in_cavity(
+        self, pos: np.ndarray, origin: np.ndarray, pitch: float, voxel_mask: np.ndarray,
+    ) -> bool:
+        """判断世界坐标点是否在型腔掩膜内（最近体素）。"""
+        idx = np.floor((np.asarray(pos, dtype=np.float64).ravel() - origin) / pitch).astype(int)
+        sh = np.array(voxel_mask.shape)
+        idx = np.clip(idx, 0, sh - 1)
+        return bool(voxel_mask[tuple(idx)])
+
+    def _compute_streamline_paths(
+        self, result: SimulationResult, n_lines: int = 60, max_steps: int = 120,
+    ) -> list[list[list[float]]]:
+        """Trace streamlines through velocity vector field using RK2 integration.
+
+        Returns list of polylines, each polyline is a list of [x,y,z] world coords.
+        Seeds from gate position outward, following Darcy velocity vectors.
+        """
+        # 沿达西速度场用 RK2（中点法）追踪流线；种子来自浇口与充填时间分位分层随机抽样。
+        velocity_vector = result.velocity_vector
+        voxel_mask = result.voxel_mask
+        if velocity_vector is None or voxel_mask is None:
+            return []
+
+        pitch = float(result.voxel_pitch)
+        origin = np.asarray(result.voxel_origin, dtype=np.float64)
+        fill_time_field = result.fill_time_field
+        gate_position = result.gate_position
+
+        filled_mask = (
+            voxel_mask & (fill_time_field < np.inf) if fill_time_field is not None else voxel_mask
+        )
+        cavity_idx = np.argwhere(filled_mask)
+        if len(cavity_idx) == 0:
+            return []
+
+        # 速度阈值：相对于型腔内最大模长，避免在滞止区无效积分
+        vmag_grid = np.sqrt(np.sum(velocity_vector ** 2, axis=0))
+        v_in = vmag_grid[filled_mask]
+        v_max = float(np.max(v_in)) if len(v_in) > 0 else 0.0
+        v_threshold = max(1e-9, v_max * 1e-4)
+
+        rng = np.random.default_rng(42)
+        percentiles = np.arange(5, 95, 5) / 100.0
+        n_pct = len(percentiles)
+        seeds_per = max(1, n_lines // n_pct) if n_pct > 0 else n_lines
+
+        seed_world: list[np.ndarray] = []
+
+        # 浇口附近多条种子：世界坐标 + 微小抖动
+        n_gate = min(max(4, n_lines // 8), n_lines)
+        if gate_position is not None:
+            gp = np.asarray(gate_position, dtype=np.float64)
+            for _ in range(n_gate):
+                jitter = rng.normal(0.0, pitch * 0.15, 3)
+                seed_world.append(gp + jitter)
+        elif fill_time_field is not None:
+            # 无浇口坐标时取充填时间最小处近似浇口
+            ft_gate = np.where(filled_mask, fill_time_field, np.inf)
+            gi = np.asarray(np.unravel_index(np.argmin(ft_gate), ft_gate.shape), dtype=np.float64)
+            seed_world.append(origin + gi * pitch)
+
+        # 按充填时间分位：对每个目标分位取与该分位值最近的若干体素中心作随机种子
+        if fill_time_field is not None:
+            ft_at = fill_time_field[cavity_idx[:, 0], cavity_idx[:, 1], cavity_idx[:, 2]]
+            for p in percentiles:
+                target = float(np.percentile(ft_at, p * 100.0))
+                dist = np.abs(ft_at - target)
+                k = min(max(seeds_per * 8, seeds_per + 4), len(dist))
+                nearest = np.argpartition(dist, k - 1)[:k]
+                take = min(seeds_per, len(nearest))
+                pick = rng.choice(nearest, size=take, replace=False)
+                for idx in pick:
+                    ij = cavity_idx[int(idx)]
+                    seed_world.append(origin + ij.astype(np.float64) * pitch)
+
+        if not seed_world:
+            return []
+
+        step_size = pitch * 0.8
+        paths: list[list[list[float]]] = []
+
+        for seed in seed_world:
+            pos = np.asarray(seed, dtype=np.float64).copy()
+            if not self._world_in_cavity(pos, origin, pitch, voxel_mask):
+                continue
+            path_pts: list[list[float]] = [pos.tolist()]
+
+            for _step in range(max_steps):
+                # RK2 中点法：v1 取向量场，半步得中点速度 v2，再按 v2 单位方向整步推进
+                v1 = self._trilinear_vector_field(velocity_vector, pos, origin, pitch)
+                n1 = float(np.linalg.norm(v1))
+                if n1 < v_threshold:
+                    break
+                mid = pos + 0.5 * step_size * (v1 / n1)
+                v2 = self._trilinear_vector_field(velocity_vector, mid, origin, pitch)
+                n2 = float(np.linalg.norm(v2))
+                if n2 < v_threshold:
+                    break
+                pos = pos + step_size * (v2 / n2)
+                if not self._world_in_cavity(pos, origin, pitch, voxel_mask):
+                    break
+                path_pts.append(pos.tolist())
+
+            if len(path_pts) >= 5:
+                if len(path_pts) > 80:
+                    idxs = np.linspace(0, len(path_pts) - 1, 80, dtype=int)
+                    path_pts = [path_pts[i] for i in idxs]
+                paths.append(path_pts)
+            if len(paths) >= n_lines:
+                break
+
+        return paths[:n_lines]
+
+    def _compute_particle_paths(
+        self, result: SimulationResult, n_particles: int = 200,
+    ) -> list[dict]:
+        """Compute animated particle paths for dynamic flow visualization.
+
+        Returns list of {path: [[x,y,z], ...], times: [t0,t1,...], speed: float}
+        Each particle follows a streamline segment with associated fill times.
+        """
+        # 复用流线；沿流线子段分配粒子，附充填时间曲线与平均速度。
+        velocity_vector = result.velocity_vector
+        if velocity_vector is None:
+            return []
+
+        streamlines = self._compute_streamline_paths(result, n_lines=40)
+        if not streamlines:
+            return []
+
+        pitch = float(result.voxel_pitch)
+        origin = np.asarray(result.voxel_origin, dtype=np.float64)
+        fill_time_field = result.fill_time_field
+        max_ft = 1.0
+        if fill_time_field is not None:
+            ft_fin = fill_time_field[np.isfinite(fill_time_field) & (fill_time_field < np.inf)]
+            max_ft = float(np.max(ft_fin)) if len(ft_fin) > 0 else 1.0
+        max_ft = max(max_ft, 1e-12)
+
+        rng = np.random.default_rng(43)
+        particles: list[dict] = []
+
+        lens = np.array([max(len(s), 0) for s in streamlines], dtype=np.float64)
+        wsum = float(np.sum(lens))
+        if wsum <= 0:
+            return []
+        proportions = np.asarray(lens / wsum, dtype=np.float64)
+        counts_arr = rng.multinomial(n_particles, proportions)
+        counts = [int(x) for x in counts_arr]
+
+        for si, sl in enumerate(streamlines):
+            n_here = counts[si] if si < len(counts) else 0
+            L = len(sl)
+            if L < 5 or n_here <= 0:
+                continue
+            high = min(31, L + 1)
+            low = min(15, L)
+            for _ in range(n_here):
+                if low >= high:
+                    seg_len_i = L
+                else:
+                    seg_len_i = int(rng.integers(low, high))
+                max_start = max(0, L - seg_len_i)
+                start = int(rng.integers(0, max_start + 1)) if max_start > 0 else 0
+                sub = sl[start : start + seg_len_i]
+
+                times: list[float] = []
+                vmags: list[float] = []
+                for ipt, pt_w in enumerate(sub):
+                    pa = np.asarray(pt_w, dtype=np.float64)
+                    if fill_time_field is not None:
+                        ft = self._trilinear_scalar_field(pa, fill_time_field, origin, pitch)
+                        tnorm = (
+                            min(float(ft) / max_ft, 1.0) if math.isfinite(ft) and ft < np.inf else 1.0
+                        )
+                    else:
+                        tnorm = float(start + ipt) / max(L - 1, 1)
+                    times.append(round(tnorm, 4))
+                    vvec = self._trilinear_vector_field(velocity_vector, pa, origin, pitch)
+                    vmags.append(float(np.linalg.norm(vvec)))
+
+                speed = float(np.mean(vmags)) if vmags else 0.0
+                particles.append({
+                    "path": [[round(float(x), 6) for x in pt] for pt in sub],
+                    "times": times,
+                    "speed": round(_safe_float(speed), 6),
+                })
+
+        return particles[:n_particles]
 
     def _simulate_fill_dijkstra(
         self, voxels: np.ndarray, vel_mag: np.ndarray,

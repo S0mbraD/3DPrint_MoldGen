@@ -194,6 +194,7 @@ class UndercutAnalyzer:
                 origins, dirs, multiple_hits=True,
             )
         except Exception:
+            logger.warning("Ray intersection failed during undercut analysis, treating as no undercuts")
             return UndercutInfo(total_faces=n_faces, severity="none")
 
         if len(hits) == 0:
@@ -367,7 +368,12 @@ class PartingGenerator:
         self, mesh: MeshData, direction: np.ndarray,
     ) -> PartingResult:
         direction = np.asarray(direction, dtype=np.float64)
-        direction = direction / np.linalg.norm(direction)
+        norm = np.linalg.norm(direction)
+        if norm < 1e-12:
+            logger.warning("Zero-length direction, falling back to [0,0,1]")
+            direction = np.array([0.0, 0.0, 1.0])
+        else:
+            direction = direction / norm
 
         logger.info(
             "Generating parting for [%.2f, %.2f, %.2f]", *direction,

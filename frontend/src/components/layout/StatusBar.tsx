@@ -10,6 +10,7 @@ import { useInsertStore } from "../../stores/insertStore";
 import { useSimStore } from "../../stores/simStore";
 import { useAIStore } from "../../stores/aiStore";
 import { useHistoryStore } from "../../stores/historyStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { STEP_ORDER } from "../../stores/appStore";
 import { HistoryPanel } from "../ui/HistoryPanel";
 import { cn } from "../../lib/utils";
@@ -26,12 +27,15 @@ export function StatusBar() {
   const toggleAgentWorkstation = useAIStore((s) => s.toggleAgentWorkstation);
   const historyCount = useHistoryStore((s) => s.records.length);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const scale = useSettingsStore((s) => s.fontSize) / 13;
 
   const stepIdx = STEP_ORDER.indexOf(currentStep);
 
   return (
     <>
-      <div className="flex items-center justify-between h-[26px] px-3 bg-bg-secondary border-t border-border text-[12px] text-text-muted shrink-0 select-none">
+      <div className="flex items-center justify-between h-[26px] px-3 bg-bg-secondary border-t border-border text-[12px] text-text-muted shrink-0 select-none"
+        style={{ zoom: scale !== 1 ? scale : undefined }}
+      >
         {/* Left: system status */}
         <div className="flex items-center gap-3">
           {/* Connection */}

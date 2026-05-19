@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 import trimesh
 
+from moldgen.core.boolean_ops import boolean_subtract as _boolean_subtract
 from moldgen.core.material import MaterialProperties
 from moldgen.core.mesh_data import MeshData
 from moldgen.core.mold_builder import MoldResult
@@ -23,64 +24,6 @@ def _aabb_overlap(a: trimesh.Trimesh, b: trimesh.Trimesh) -> bool:
     )
 
 
-def _boolean_subtract(
-    mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh,
-) -> trimesh.Trimesh | None:
-    try:
-        import manifold3d
-        ma = manifold3d.Manifold(manifold3d.Mesh(
-            vert_properties=np.asarray(mesh_a.vertices, dtype=np.float32),
-            tri_verts=np.asarray(mesh_a.faces, dtype=np.uint32),
-        ))
-        mb = manifold3d.Manifold(manifold3d.Mesh(
-            vert_properties=np.asarray(mesh_b.vertices, dtype=np.float32),
-            tri_verts=np.asarray(mesh_b.faces, dtype=np.uint32),
-        ))
-        out = (ma - mb).to_mesh()
-        return trimesh.Trimesh(
-            vertices=np.asarray(out.vert_properties[:, :3]),
-            faces=np.asarray(out.tri_verts), process=True,
-        )
-    except Exception:
-        pass
-    try:
-        r = mesh_a.difference(mesh_b)
-        if r is not None and len(r.faces) > 4:
-            return r
-    except Exception:
-        pass
-    return None
-
-
-def _boolean_union(
-    mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh,
-) -> trimesh.Trimesh | None:
-    try:
-        import manifold3d
-        ma = manifold3d.Manifold(manifold3d.Mesh(
-            vert_properties=np.asarray(mesh_a.vertices, dtype=np.float32),
-            tri_verts=np.asarray(mesh_a.faces, dtype=np.uint32),
-        ))
-        mb = manifold3d.Manifold(manifold3d.Mesh(
-            vert_properties=np.asarray(mesh_b.vertices, dtype=np.float32),
-            tri_verts=np.asarray(mesh_b.faces, dtype=np.uint32),
-        ))
-        out = (ma + mb).to_mesh()
-        return trimesh.Trimesh(
-            vertices=np.asarray(out.vert_properties[:, :3]),
-            faces=np.asarray(out.tri_verts), process=True,
-        )
-    except Exception:
-        pass
-    try:
-        r = mesh_a.union(mesh_b)
-        if r is not None and len(r.faces) > 4:
-            return r
-    except Exception:
-        pass
-    return None
-
-
 @dataclass
 class GatingConfig:
     gate_diameter: float = 12.0  # mm
@@ -92,6 +35,10 @@ class GatingConfig:
     n_gates: int = 1
     runner_type: str = "cold"
     gate_search_resolution: int = 20
+    funnel_angle: float = 30.0  # pour funnel taper degrees
+    # Manual placement: None = auto, list = user-specified positions
+    gate_position: list[float] | None = None  # manual [x,y,z] for primary gate
+    vent_positions: list[list[float]] | None = None  # manual [[x,y,z],...] for vents
 
 
 @dataclass
@@ -196,8 +143,21 @@ class GatingResult:
         return result
 
 
+def _build_face_adjacency(tm: trimesh.Trimesh) -> dict[int, list[int]]:
+    """Build face adjacency from shared edges (for BFS fill sim)."""
+    adj: dict[int, list[int]] = {}
+    try:
+        for edge, faces in zip(tm.face_adjacency_edges, tm.face_adjacency):
+            a, b = int(faces[0]), int(faces[1])
+            adj.setdefault(a, []).append(b)
+            adj.setdefault(b, []).append(a)
+    except Exception:
+        pass
+    return adj
+
+
 class GatingSystem:
-    """浇注系统设计器"""
+    """浇注系统设计器 — 整合浇口优化、BFS排气、流道布局、手动布置"""
 
     def __init__(self, config: GatingConfig | None = None):
         self.config = config or GatingConfig()
@@ -214,10 +174,22 @@ class GatingSystem:
         )
 
         tm = model.to_trimesh()
-        cavity_volume = float(tm.volume) if tm.is_watertight else 0.0
+        if tm.is_watertight:
+            cavity_volume = float(tm.volume)
+        else:
+            try:
+                cavity_volume = float(tm.convex_hull.volume * 0.7)
+                logger.info("Non-watertight mesh, using convex hull approx volume")
+            except Exception:
+                cavity_volume = 0.0
 
         n_gates = max(1, self.config.n_gates)
-        primary_gate = self._optimize_gate_position(tm, mold)
+
+        if self.config.gate_position is not None:
+            primary_gate = self._make_manual_gate(tm, mold)
+            logger.info("Using manual gate position")
+        else:
+            primary_gate = self._optimize_gate_position(tm, mold)
 
         gates = [primary_gate]
         if n_gates > 1:
@@ -264,10 +236,10 @@ class GatingSystem:
     def apply_to_mold(self, mold: MoldResult, result: GatingResult) -> None:
         """Cut gate/vent holes into mold shells (in-place).
 
-        Boolean-subtracts long cylinders at each gate/vent position so the
-        exported shell geometry has physical through-holes that match the
-        gating design.  This mutates *mold.shells* directly; subsequent
-        GLB / export endpoints will return the updated meshes.
+        Gate cylinders are offset so they extend from above the gate
+        position downward through the entire mold, ensuring holes reach
+        the cavity surface.  Vent cylinders are centered at the vent
+        position and extend outward along the face normal.
         """
         direction = np.array([0.0, 0.0, 1.0])
         if mold.shells:
@@ -276,27 +248,64 @@ class GatingSystem:
             if n > 1e-12:
                 direction = direction / n
 
-        gate_cyl = self._make_hole_cylinder(
-            result.gate.position, direction, result.gate_diameter / 2.0,
-            mold,
-        )
-        vent_cyls = [
-            self._make_hole_cylinder(
-                v.position, np.asarray(v.normal, dtype=np.float64),
-                self.config.vent_width / 2.0, mold,
-            )
-            for v in result.vents
-        ]
+        all_shell_verts = np.vstack(
+            [sh.mesh.to_trimesh().vertices for sh in mold.shells]
+        ) if mold.shells else np.zeros((1, 3))
+        all_h = all_shell_verts @ direction
+        global_min_h = float(np.min(all_h))
+        global_max_h = float(np.max(all_h))
+
+        hole_specs: list[tuple[np.ndarray, np.ndarray, float, str]] = []
+        hole_specs.append((
+            result.gate.position, direction,
+            result.gate_diameter / 2.0, "gate",
+        ))
+        if result.gates:
+            for g in result.gates[1:]:
+                hole_specs.append((g.position, direction, result.gate_diameter / 2.0, "gate"))
+        for v in (result.vents or []):
+            vnorm = np.asarray(v.normal, dtype=np.float64)
+            vnorm = vnorm / (np.linalg.norm(vnorm) + 1e-12)
+            hole_specs.append((v.position, vnorm, self.config.vent_width / 2.0, "vent"))
 
         for sh in mold.shells:
             tm_shell = sh.mesh.to_trimesh()
+            sh_dir = np.asarray(sh.direction, dtype=np.float64)
+            sh_dir = sh_dir / (np.linalg.norm(sh_dir) + 1e-12)
+            shell_heights = tm_shell.vertices @ direction
+            shell_center_h = float(tm_shell.centroid @ direction)
+            shell_h_range = float(np.ptp(shell_heights))
             n_cut = 0
 
-            for cyl in [gate_cyl] + vent_cyls:
+            for pos, axis, radius, htype in hole_specs:
+                if htype == "gate":
+                    hole_h = float(pos @ direction)
+                    if np.dot(sh_dir, direction) > 0 and hole_h < shell_center_h - shell_h_range:
+                        continue
+                    if np.dot(sh_dir, direction) < 0 and hole_h > shell_center_h + shell_h_range:
+                        continue
+
+                if htype == "vent":
+                    vent_proj = tm_shell.vertices @ axis
+                    vent_range = float(np.ptp(vent_proj))
+                    cyl_height = min(vent_range + 10.0, 120.0)
+                    cyl_height = max(cyl_height, 15.0)
+                    cyl_center = pos
+                else:
+                    shell_min_h = float(np.min(shell_heights))
+                    shell_max_h = float(np.max(shell_heights))
+                    gate_h = float(pos @ direction)
+                    cyl_height = (shell_max_h - shell_min_h) + 8.0
+                    cyl_height = max(cyl_height, 15.0)
+                    shell_mid_h = (shell_max_h + shell_min_h) / 2.0
+                    cyl_center = pos - direction * (gate_h - shell_mid_h)
+
+                cyl = self._make_hole_cylinder(cyl_center, axis, radius, mold, cyl_height)
                 if cyl is None:
                     continue
                 if not _aabb_overlap(tm_shell, cyl):
                     continue
+
                 cut = _boolean_subtract(tm_shell, cyl)
                 if cut is not None and len(cut.faces) > 4:
                     tm_shell = cut
@@ -319,12 +328,14 @@ class GatingSystem:
         axis: np.ndarray,
         radius: float,
         mold: MoldResult,
+        height: float | None = None,
     ) -> trimesh.Trimesh | None:
-        """Long cylinder centred at *position* along *axis*."""
+        """Cylinder centred at *position* along *axis* with adaptive height."""
         try:
-            all_bounds = np.vstack([s.mesh.bounds for s in mold.shells])
-            extent = float(np.ptp(np.linalg.norm(all_bounds, axis=1)))
-            height = max(extent * 2, 60.0)
+            if height is None:
+                all_bounds = np.vstack([s.mesh.bounds for s in mold.shells])
+                extent = float(np.ptp(np.linalg.norm(all_bounds, axis=1)))
+                height = max(extent * 2, 60.0)
             cyl = trimesh.creation.cylinder(
                 radius=radius, height=height, sections=32,
             )
@@ -348,6 +359,15 @@ class GatingSystem:
             logger.warning("Failed to build hole cylinder at %s", position)
             return None
 
+    def _mold_outer_height(self, mold: MoldResult, up: np.ndarray) -> float:
+        """Max height of the upper mold shell along *up* (outer surface)."""
+        for sh in mold.shells:
+            sh_dir = np.asarray(sh.direction, dtype=np.float64)
+            if np.dot(sh_dir, up) > 0:
+                verts = sh.mesh.to_trimesh().vertices
+                return float(np.max(verts @ up))
+        return 0.0
+
     def _optimize_gate_position(
         self, tm: trimesh.Trimesh, mold: MoldResult,
     ) -> GatePosition:
@@ -367,7 +387,9 @@ class GatingSystem:
         v_axis = np.cross(up, u_axis).astype(np.float64)
         v_axis /= np.linalg.norm(v_axis)
 
-        top_height = float(bounds[1] @ up) + 5.0
+        outer_h = self._mold_outer_height(mold, up)
+        model_top = float(bounds[1] @ up)
+        top_height = max(outer_h, model_top + 5.0) + 2.0
         half_span = float(np.max(extents)) * 0.4
 
         # Build candidate grid (vectorized)
@@ -424,37 +446,194 @@ class GatingSystem:
         logger.info("Gate at [%.1f, %.1f, %.1f] score=%.3f", *best.position, best.score)
         return best
 
+    def _make_manual_gate(
+        self, tm: trimesh.Trimesh, mold: MoldResult,
+    ) -> GatePosition:
+        """Create gate at user-specified position, snapped to mold outer surface."""
+        user_pos = np.asarray(self.config.gate_position, dtype=np.float64)
+
+        up = np.array([0.0, 0.0, 1.0])
+        if mold.shells:
+            up = np.asarray(mold.shells[0].direction, dtype=np.float64)
+            up = up / (np.linalg.norm(up) + 1e-12)
+
+        try:
+            closest, _, _ = tm.nearest.on_surface([user_pos])
+            surface_pt = closest[0]
+        except Exception:
+            surface_pt = user_pos.copy()
+
+        outer_h = self._mold_outer_height(mold, up)
+        model_top = float(tm.bounds[1] @ up)
+        top_height = max(outer_h, model_top + 5.0) + 2.0
+        pt_h = float(surface_pt @ up)
+        gate_pos = surface_pt + up * (top_height - pt_h)
+
+        logger.info("Manual gate at [%.1f, %.1f, %.1f]", *gate_pos)
+        return GatePosition(position=gate_pos, score=1.0, flow_balance=0.5, accessibility=1.0)
+
     def _place_vents(
         self, tm: trimesh.Trimesh, mold: MoldResult, gate: GatePosition,
     ) -> list[VentPosition]:
-        """Place vent holes at positions farthest from the gate."""
+        """BFS fill-simulation + air-trap detection for vent placement.
+
+        Combines two complementary strategies from the merged algorithm:
+        1. Gravity-fill BFS from the gate position to compute fill_time
+           per face — late-filling areas need vents.
+        2. Air-trap detection — local height maxima in the adjacency graph
+           where air pockets form.
+        3. Farthest-point sampling for well-spaced vent distribution.
+        """
+        # Manual placement
+        if self.config.vent_positions is not None and len(self.config.vent_positions) > 0:
+            return self._place_manual_vents(tm, self.config.vent_positions)
+
         face_centers = tm.triangles_center
         face_normals = np.asarray(tm.face_normals, dtype=np.float64)
-
-        dists = np.linalg.norm(face_centers - gate.position, axis=1)
+        n_faces = len(face_centers)
         n_vents = self.config.n_vents
 
+        if n_faces < 4:
+            return self._place_vents_fallback(tm, gate, n_vents)
+
+        # Mold direction for height computation
+        up = np.array([0.0, 0.0, 1.0])
+        if mold.shells:
+            up = np.asarray(mold.shells[0].direction, dtype=np.float64)
+            up = up / (np.linalg.norm(up) + 1e-12)
+
+        face_heights = face_centers @ up
+
+        # Build face adjacency
+        import heapq
+        adj = _build_face_adjacency(tm)
+
+        # Find start face nearest to gate
+        dists_to_gate = np.linalg.norm(face_centers - gate.position, axis=1)
+        start = int(np.argmin(dists_to_gate))
+
+        # BFS Dijkstra with gravity cost
+        fill_time = np.full(n_faces, np.inf)
+        fill_time[start] = 0.0
+        visited = np.zeros(n_faces, dtype=bool)
+        heap: list[tuple[float, int]] = [(0.0, start)]
+
+        while heap:
+            t, fi = heapq.heappop(heap)
+            if visited[fi]:
+                continue
+            visited[fi] = True
+            fill_time[fi] = t
+            for nj in adj.get(fi, []):
+                if visited[nj]:
+                    continue
+                dh = face_heights[nj] - face_heights[fi]
+                cost = 1.0 + dh * 3.0 if dh > 0 else max(0.3, 1.0 + dh * 0.3)
+                new_t = t + cost
+                if new_t < fill_time[nj]:
+                    fill_time[nj] = new_t
+                    heapq.heappush(heap, (new_t, nj))
+
+        # Air trap detection: local height maxima
+        air_trap = np.zeros(n_faces)
+        for fi in range(n_faces):
+            nbrs = adj.get(fi, [])
+            if not nbrs:
+                continue
+            nbr_h = face_heights[np.array(nbrs)]
+            if face_heights[fi] > np.max(nbr_h):
+                air_trap[fi] = face_heights[fi] - float(np.mean(nbr_h))
+
+        # Normalize
+        ft_finite = fill_time[np.isfinite(fill_time)]
+        if len(ft_finite) == 0:
+            return self._place_vents_fallback(tm, gate, n_vents)
+        ft_max = float(np.max(ft_finite)) + 1e-8
+        fill_norm = np.where(np.isfinite(fill_time), fill_time / ft_max, 1.0)
+
+        h_min, h_max = float(np.min(face_heights)), float(np.max(face_heights))
+        h_range = h_max - h_min + 1e-8
+        height_norm = (face_heights - h_min) / h_range
+
+        trap_max = float(np.max(air_trap)) + 1e-8
+        trap_norm = air_trap / trap_max
+
+        # Combined score
+        vent_score = 0.40 * fill_norm + 0.35 * height_norm + 0.25 * trap_norm
+
+        # Farthest-point greedy selection
+        min_spacing = float(np.max(tm.extents)) * 0.15
         vents: list[VentPosition] = []
-        remaining_mask = np.ones(len(face_centers), dtype=bool)
+        remaining = np.ones(n_faces, dtype=bool)
 
         for _ in range(n_vents):
-            masked_dists = dists.copy()
-            masked_dists[~remaining_mask] = -np.inf
+            cands = np.where(remaining)[0]
+            if len(cands) == 0:
+                break
+            best = cands[int(np.argmax(vent_score[cands]))]
+            pos = face_centers[best].copy()
+            normal = face_normals[best].copy()
+            vents.append(VentPosition(position=pos, normal=normal))
+            d_sq = np.sum((face_centers - pos) ** 2, axis=1)
+            remaining &= (d_sq > min_spacing * min_spacing)
 
-            # Also maximize distance to existing vents
-            for vent in vents:
-                d_to_vent = np.linalg.norm(face_centers - vent.position, axis=1)
-                masked_dists = np.minimum(masked_dists, d_to_vent)
-                masked_dists[~remaining_mask] = -np.inf
+        logger.info(
+            "Vent placement (BFS): %d placed, %d air traps detected",
+            len(vents), int(np.sum(air_trap > 0)),
+        )
+        return vents
 
-            idx = int(np.argmax(masked_dists))
-            pos = face_centers[idx]
-            normal = face_normals[idx]
+    def _place_manual_vents(
+        self, tm: trimesh.Trimesh, positions: list[list[float]],
+    ) -> list[VentPosition]:
+        """Place vents at user-specified positions, snapped to surface."""
+        face_centers = tm.triangles_center
+        face_normals = np.asarray(tm.face_normals, dtype=np.float64)
+        vents: list[VentPosition] = []
+        min_spacing = self.config.vent_width * 3.0
 
-            vents.append(VentPosition(position=pos.copy(), normal=normal.copy()))
+        for upos in positions:
+            pt = np.asarray(upos, dtype=np.float64)
+            dists = np.linalg.norm(face_centers - pt, axis=1)
+            idx = int(np.argmin(dists))
+            pos = face_centers[idx].copy()
+            normal = face_normals[idx].copy()
 
-            near_mask = np.linalg.norm(face_centers - pos, axis=1) < 5.0
-            remaining_mask[near_mask] = False
+            too_close = any(
+                np.linalg.norm(pos - v.position) < min_spacing for v in vents
+            )
+            if too_close:
+                logger.warning("Manual vent too close to existing — skipping")
+                continue
+
+            vents.append(VentPosition(position=pos, normal=normal))
+
+        logger.info("Manual vents: %d/%d placed", len(vents), len(positions))
+        return vents
+
+    def _place_vents_fallback(
+        self, tm: trimesh.Trimesh, gate: GatePosition, n_vents: int,
+    ) -> list[VentPosition]:
+        """Simple fallback: faces farthest from gate."""
+        face_centers = tm.triangles_center
+        face_normals = np.asarray(tm.face_normals, dtype=np.float64)
+        dists = np.linalg.norm(face_centers - gate.position, axis=1)
+        vents: list[VentPosition] = []
+        remaining = np.ones(len(face_centers), dtype=bool)
+
+        for _ in range(n_vents):
+            masked = dists.copy()
+            masked[~remaining] = -np.inf
+            for v in vents:
+                d2 = np.linalg.norm(face_centers - v.position, axis=1)
+                masked = np.minimum(masked, d2)
+                masked[~remaining] = -np.inf
+            idx = int(np.argmax(masked))
+            vents.append(VentPosition(
+                position=face_centers[idx].copy(),
+                normal=face_normals[idx].copy(),
+            ))
+            remaining &= np.linalg.norm(face_centers - face_centers[idx], axis=1) > 5.0
 
         return vents
 
@@ -478,7 +657,9 @@ class GatingSystem:
         v_axis /= np.linalg.norm(v_axis)
 
         n = self.config.gate_search_resolution
-        top_height = float(bounds[1] @ up) + 5.0
+        outer_h = self._mold_outer_height(mold, up)
+        model_top = float(bounds[1] @ up)
+        top_height = max(outer_h, model_top + 5.0) + 2.0
         half_span = float(np.max(extents)) * 0.4
 
         su = np.linspace(-half_span, half_span, n)
@@ -636,17 +817,31 @@ class GatingSystem:
         return float(max(fill_time_s, 0.1))
 
     def _build_gate_mesh(self, gate: GatePosition, mold: MoldResult) -> trimesh.Trimesh:
-        """Build a cylindrical gate mesh."""
+        """Build a cylindrical gate mesh limited to the nearest shell thickness."""
         up = np.array([0.0, 0.0, 1.0])
         if mold.shells:
             up = np.asarray(mold.shells[0].direction, dtype=np.float64)
+        up = up / (np.linalg.norm(up) + 1e-12)
 
         r = self.config.gate_diameter / 2
-        height = max(self.config.gate_diameter * 1.5, 15.0)
+        gate_h = float(np.asarray(gate.position) @ up)
+
+        best_shell_h = 20.0
+        for sh in mold.shells:
+            shell_verts = sh.mesh.to_trimesh().vertices
+            shell_heights = shell_verts @ up
+            sh_min = float(np.min(shell_heights))
+            sh_max = float(np.max(shell_heights))
+            if sh_min <= gate_h <= sh_max + 5.0:
+                best_shell_h = sh_max - sh_min + 6.0
+                break
+
+        height = max(best_shell_h, 15.0)
+
         cyl = trimesh.creation.cylinder(radius=r, height=height, sections=24)
 
         z_axis = np.array([0.0, 0.0, 1.0])
-        if not np.allclose(up, z_axis):
+        if not np.allclose(up, z_axis) and not np.allclose(up, -z_axis):
             axis = np.cross(z_axis, up)
             axis_len = np.linalg.norm(axis)
             if axis_len > 1e-9:
@@ -661,17 +856,26 @@ class GatingSystem:
     def _build_vent_meshes(
         self, vents: list[VentPosition], mold: MoldResult,
     ) -> list[trimesh.Trimesh]:
-        """Build small box meshes for each vent."""
+        """Build elongated box meshes for each vent, spanning toward the mold surface."""
         meshes: list[trimesh.Trimesh] = []
         w = self.config.vent_width
         d = max(self.config.vent_depth * 100, 2.0)
-        h = 8.0
+
+        # Estimate mold wall thickness along vent normals
+        all_shell_verts = np.vstack([sh.mesh.to_trimesh().vertices for sh in mold.shells]) if mold.shells else None
+        base_h = 20.0
 
         for vent in vents:
-            box = trimesh.creation.box(extents=[w, d, h])
-
             normal = np.asarray(vent.normal, dtype=np.float64)
             normal /= max(np.linalg.norm(normal), 1e-9)
+
+            h = base_h
+            if all_shell_verts is not None:
+                proj = (all_shell_verts - vent.position) @ normal
+                max_proj = float(np.max(proj))
+                h = max(max_proj + 4.0, base_h)
+
+            box = trimesh.creation.box(extents=[w, d, h])
 
             z_axis = np.array([0.0, 0.0, 1.0])
             if not np.allclose(normal, z_axis) and not np.allclose(normal, -z_axis):

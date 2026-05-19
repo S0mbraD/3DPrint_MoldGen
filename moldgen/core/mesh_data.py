@@ -101,7 +101,15 @@ class MeshData:
         )
 
     def to_glb(self) -> bytes:
-        return self.to_trimesh().export(file_type="glb")
+        import trimesh as tm
+        mesh = self.to_trimesh()
+        mesh.process(validate=True)
+        try:
+            tm.repair.fix_normals(mesh, multibody=True)
+            tm.repair.fill_holes(mesh)
+        except Exception:
+            pass
+        return mesh.export(file_type="glb")
 
     def info(self) -> dict:
         return {

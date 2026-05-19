@@ -4,6 +4,7 @@ import {
   type OrientationResult,
   type PartingResult,
   type MoldResultInfo,
+  type SkinMoldResultInfo,
   type UndercutInfo,
   type UndercutHeatmapData,
 } from "../stores/moldStore";
@@ -35,26 +36,6 @@ export function useOrientationAnalysis() {
     },
     onSuccess: (result) => store.setOrientationResult(result),
     onError: () => store.setAnalyzing(false),
-  });
-}
-
-export function useEvaluateDirection() {
-  return useMutation({
-    mutationFn: async ({
-      modelId,
-      direction,
-    }: {
-      modelId: string;
-      direction: number[];
-    }) => {
-      const resp = await fetch(`${API}/${modelId}/orientation/evaluate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ direction }),
-      });
-      if (!resp.ok) throw new Error(await resp.text());
-      return (await resp.json()).score;
-    },
   });
 }
 
@@ -156,13 +137,6 @@ export function useMoldGeneration() {
       partingSurfaceType = "flat",
       partingDepth = 3.0,
       partingPitch = 10.0,
-      addPourHole = true,
-      pourHoleDiameter = 15.0,
-      pourHolePosition,
-      addVentHoles = true,
-      ventHoleDiameter = 3.0,
-      nVentHoles = 4,
-      ventHolePositions,
       addScrewHoles = false,
       screwSize = "M4",
       nScrews = 4,
@@ -170,6 +144,8 @@ export function useMoldGeneration() {
       shrinkageCompensation = 0.0,
       addEjectors = false,
       nEjectors = 4,
+      moldMaterial = "pla",
+      surfaceTexture = "none",
     }: {
       modelId: string;
       direction?: number[];
@@ -180,13 +156,6 @@ export function useMoldGeneration() {
       partingSurfaceType?: string;
       partingDepth?: number;
       partingPitch?: number;
-      addPourHole?: boolean;
-      pourHoleDiameter?: number;
-      pourHolePosition?: number[] | null;
-      addVentHoles?: boolean;
-      ventHoleDiameter?: number;
-      nVentHoles?: number;
-      ventHolePositions?: number[][] | null;
       addScrewHoles?: boolean;
       screwSize?: string;
       nScrews?: number;
@@ -194,6 +163,8 @@ export function useMoldGeneration() {
       shrinkageCompensation?: number;
       addEjectors?: boolean;
       nEjectors?: number;
+      moldMaterial?: string;
+      surfaceTexture?: string;
     }) => {
       store.setGeneratingMold(true);
       const body: Record<string, unknown> = {
@@ -204,11 +175,8 @@ export function useMoldGeneration() {
         parting_surface_type: partingSurfaceType,
         parting_depth: partingDepth,
         parting_pitch: partingPitch,
-        add_pour_hole: addPourHole,
-        pour_hole_diameter: pourHoleDiameter,
-        add_vent_holes: addVentHoles,
-        vent_hole_diameter: ventHoleDiameter,
-        n_vent_holes: nVentHoles,
+        mold_material: moldMaterial,
+        surface_texture: surfaceTexture,
         add_screw_holes: addScrewHoles,
         screw_size: screwSize,
         n_screws: nScrews,
@@ -218,8 +186,6 @@ export function useMoldGeneration() {
         n_ejectors: nEjectors,
       };
       if (direction) body.direction = direction;
-      if (pourHolePosition) body.pour_hole_position = pourHolePosition;
-      if (ventHolePositions && ventHolePositions.length > 0) body.vent_hole_positions = ventHolePositions;
 
       const resp = await fetch(`${API}/${modelId}/mold/generate`, {
         method: "POST",
@@ -235,43 +201,6 @@ export function useMoldGeneration() {
     },
     onSuccess: ({ moldId, result }) => store.setMoldResult(moldId, result),
     onError: () => store.setGeneratingMold(false),
-  });
-}
-
-export function useHolePreview() {
-  return useMutation({
-    mutationFn: async ({
-      modelId,
-      direction,
-      pourHoleDiameter = 15.0,
-      ventHoleDiameter = 3.0,
-      nVentHoles = 4,
-    }: {
-      modelId: string;
-      direction?: number[];
-      pourHoleDiameter?: number;
-      ventHoleDiameter?: number;
-      nVentHoles?: number;
-    }) => {
-      const body: Record<string, unknown> = {
-        pour_hole_diameter: pourHoleDiameter,
-        vent_hole_diameter: ventHoleDiameter,
-        n_vent_holes: nVentHoles,
-      };
-      if (direction) body.direction = direction;
-
-      const resp = await fetch(`${API}/${modelId}/mold/hole-preview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!resp.ok) throw new Error(await resp.text());
-      const data = await resp.json();
-      return {
-        pourHole: data.pour_hole as { position: number[]; diameter: number; type: string; score: number },
-        ventHoles: data.vent_holes as { position: number[]; diameter: number; type: string; score: number }[],
-      };
-    },
   });
 }
 
@@ -300,16 +229,86 @@ export function useCoolingChannelDesign() {
   });
 }
 
-export function useMoldAnalysis() {
+
+// ── Skin Mold Generation (蒙皮模具) ──
+
+export interface SkinMoldParams {
+  modelId: string;
+  direction?: number[];
+  skinThickness?: number;
+  variableThickness?: boolean;
+  curvatureInfluence?: number;
+  coreResolution?: number;
+  coreSmoothing?: number;
+  coreClearance?: number;
+  coreShellThickness?: number;
+  coreDrainHoles?: boolean;
+  addSupportPegs?: boolean;
+  pegCount?: number;
+  pegDiameter?: number;
+  pegHeight?: number;
+  registrationType?: string;
+  registrationCount?: number;
+  registrationDiameter?: number;
+  registrationHeight?: number;
+  moldWallThickness?: number;
+  moldShellType?: string;
+  partingStyle?: string;
+  addAlignmentPins?: boolean;
+  addScrewHoles?: boolean;
+  shrinkageCompensation?: number;
+}
+
+export function useSkinMoldGeneration() {
+  const store = useMoldStore();
+
   return useMutation({
-    mutationFn: async (params: { moldId: string }) => {
-      const resp = await fetch(`/api/v1/molds/result/${params.moldId}/analyze`, {
+    mutationFn: async (p: SkinMoldParams) => {
+      store.setGeneratingMold(true);
+      const body: Record<string, unknown> = {
+        skin_thickness: p.skinThickness ?? 3.0,
+        variable_thickness: p.variableThickness ?? false,
+        curvature_influence: p.curvatureInfluence ?? 0.5,
+        core_resolution: p.coreResolution ?? 64,
+        core_smoothing: p.coreSmoothing ?? 2,
+        core_clearance: p.coreClearance ?? 0.3,
+        core_shell_thickness: p.coreShellThickness ?? 0.0,
+        core_drain_holes: p.coreDrainHoles ?? false,
+        add_support_pegs: p.addSupportPegs ?? true,
+        peg_count: p.pegCount ?? 3,
+        peg_diameter: p.pegDiameter ?? 4.0,
+        peg_height: p.pegHeight ?? 6.0,
+        registration_type: p.registrationType ?? "pin",
+        registration_count: p.registrationCount ?? 4,
+        registration_diameter: p.registrationDiameter ?? 5.0,
+        registration_height: p.registrationHeight ?? 8.0,
+        mold_wall_thickness: p.moldWallThickness ?? 5.0,
+        mold_shell_type: p.moldShellType ?? "box",
+        parting_style: p.partingStyle ?? "flat",
+        add_alignment_pins: p.addAlignmentPins ?? true,
+        add_screw_holes: p.addScrewHoles ?? false,
+        shrinkage_compensation: p.shrinkageCompensation ?? 0,
+      };
+      if (p.direction) body.direction = p.direction;
+
+      const resp = await fetch(`${API}/${p.modelId}/mold/generate-skin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify(body),
       });
       if (!resp.ok) throw new Error(await resp.text());
-      return resp.json();
+      const data = await resp.json();
+      return {
+        skinMoldId: data.skin_mold_id as string,
+        moldId: data.mold_id as string,
+        result: data.result as SkinMoldResultInfo,
+        moldResult: data.result.mold as MoldResultInfo,
+      };
     },
+    onSuccess: ({ skinMoldId, moldId, result, moldResult }) => {
+      store.setSkinMoldResult(skinMoldId, result);
+      store.setMoldResult(moldId, moldResult);
+    },
+    onError: () => store.setGeneratingMold(false),
   });
 }

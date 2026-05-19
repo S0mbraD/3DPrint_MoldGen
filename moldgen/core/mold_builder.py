@@ -1,12 +1,13 @@
-"""模具壳体生成 — 布尔运算 + 体素回退 + 智能浇注/排气系统
+"""模具壳体生成 — 布尔运算 + 体素回退 + 自适应分型面
 =================================================
 
-v4 核心变更:
+v5 核心变更:
   1. 布尔运算: manifold3d → trimesh → 体素回退三级策略
   2. 体素回退: scipy marching_cubes 保证始终生成有效空腔
-  3. 浇筑口/排气口: 布尔差集切割到壳体网格上
+  3. 浇筑口/排气口: 已迁移至 gating.py 模块统一管理
   4. 网格修复: 每壳体生成后自动修复流形错误
   5. 分割封帽: 分型面始终封帽，确保水密壳体
+  6. 自适应分型面: 支持 heightfield / projected 非平面分型
 """
 
 from __future__ import annotations
@@ -21,7 +22,12 @@ import numpy as np
 import trimesh
 from scipy import ndimage
 
+from moldgen.core.boolean_ops import boolean_subtract, boolean_union, boolean_intersect
 from moldgen.core.mesh_data import MeshData
+from moldgen.core.mesh_repair import (
+    compact_vertex_indices as _compact_mesh_vertex_indices,
+    repair_trimesh,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,19 +84,22 @@ class MoldConfig:
     # FDM constraints
     min_wall_thickness: float = 1.2
     max_overhang_angle: float = 45.0
-    # Pour
-    add_pour_hole: bool = True
+    # Pour (deprecated — holes are managed by GatingSystem)
+    add_pour_hole: bool = False
     pour_hole_diameter: float = 15.0
     pour_funnel_angle: float = 30.0   # funnel taper degrees
     pour_hole_position: list[float] | None = None  # manual [x,y,z] or None=auto
-    # Vent
-    add_vent_holes: bool = True
+    # Vent (deprecated — holes are managed by GatingSystem)
+    add_vent_holes: bool = False
     vent_hole_diameter: float = 3.0
     n_vent_holes: int = 4
     vent_hole_positions: list[list[float]] | None = None  # manual [[x,y,z],...] or None=auto
     # Draft
     draft_angle_check: bool = True
     min_draft_angle: float = 1.0      # degrees
+    # Output metadata
+    mold_material: str = "pla"        # e.g. "pla" | "abs" | "petg" | "resin"
+    surface_texture: str = "none"     # e.g. "none" | "matte" | "glossy" | "textured"
 
 
 @dataclass
@@ -149,25 +158,6 @@ class HoleFeature:
             "score": round(self.score, 4),
         }
 
-
-@dataclass
-class FlangeFeature:
-    """Describes a mounting flange tab with screw hole."""
-    position: np.ndarray
-    normal: np.ndarray
-    width: float
-    thickness: float
-    screw_diameter: float
-    mesh: MeshData | None = None
-
-    def to_dict(self) -> dict:
-        return {
-            "position": self.position.tolist(),
-            "normal": self.normal.tolist(),
-            "width": round(self.width, 2),
-            "thickness": round(self.thickness, 2),
-            "screw_diameter": round(self.screw_diameter, 2),
-        }
 
 
 @dataclass
@@ -644,118 +634,9 @@ def _seal_parting_plane_gaps(
     return out
 
 
-def _compact_mesh_vertex_indices(tm: trimesh.Trimesh) -> None:
-    """Remap ``faces`` to a dense 0…N-1 range and drop unreferenced vertices.
-
-    Some repair steps leave a compact *set* of vertex IDs in ``faces`` while
-    ``vertices`` still spans 0…K-1 (K>N). ``trimesh.remove_unreferenced_vertices``
-    may fail to rewrite ``faces`` in isolated cases, leaving stale indices.
-    """
-    if tm is None or len(tm.faces) == 0:
-        return
-    faces = np.asarray(tm.faces, dtype=np.int64)
-    verts = np.asarray(tm.vertices, dtype=np.float64)
-    ok = (faces >= 0).all(axis=1) & (faces < len(verts)).all(axis=1)
-    if not np.all(ok):
-        faces = faces[ok]
-        tm.faces = faces
-        if len(faces) == 0:
-            return
-    used = np.unique(faces.ravel())
-    if used.size == 0:
-        return
-    if len(used) == len(verts) and int(used[0]) == 0 and int(used[-1]) == len(verts) - 1:
-        return
-    remap = -np.ones(len(verts), dtype=np.int64)
-    remap[used] = np.arange(len(used), dtype=np.int64)
-    tm.vertices = verts[used]
-    tm.faces = remap[faces]
-    try:
-        tm._cache.clear()
-    except Exception:
-        pass
-
-
-def _boundary_undirected_edge_count(tm: trimesh.Trimesh) -> int:
-    if tm is None or len(tm.faces) == 0:
-        return 0
-    fe = trimesh.geometry.faces_to_edges(np.asarray(tm.faces, dtype=np.int64))
-    fe = np.sort(fe, axis=1)
-    return sum(1 for _, v in Counter(map(tuple, fe)).items() if v == 1)
-
-
-def _dedupe_opposite_or_duplicate_tris(tm: trimesh.Trimesh) -> None:
-    """Remove duplicate triangles sharing the same 3 vertices (any winding).
-
-    Slice caps plus our planar seal can introduce back-to-back copies that
-    confuse slicers.  If removing extras would *increase* open boundary length,
-    the edit is skipped (some coincident triangles are structurally required).
-    """
-    if tm is None or len(tm.faces) < 2:
-        return
-    from collections import defaultdict
-
-    f = np.asarray(tm.faces, dtype=np.int64)
-    b0 = _boundary_undirected_edge_count(tm)
-    groups: dict[tuple[int, ...], list[int]] = defaultdict(list)
-    for i in range(len(f)):
-        tri = f[i]
-        if len(set(int(x) for x in tri)) < 3:
-            continue
-        key = tuple(sorted(int(x) for x in tri))
-        groups[key].append(i)
-    drop: set[int] = set()
-    for idxs in groups.values():
-        if len(idxs) <= 1:
-            continue
-        drop.update(idxs[1:])
-    if not drop:
-        return
-    keep = np.array([i for i in range(len(f)) if i not in drop], dtype=np.int64)
-    trial = f[keep]
-    tm.faces = trial
-    try:
-        tm._cache.clear()
-    except Exception:
-        pass
-    if _boundary_undirected_edge_count(tm) > b0:
-        tm.faces = f
-        try:
-            tm._cache.clear()
-        except Exception:
-            pass
-
-
 def _repair_mesh(tm: trimesh.Trimesh) -> trimesh.Trimesh:
-    """Aggressive mesh repair: remove degenerates, fix normals, fill holes."""
-    try:
-        tm.update_faces(tm.nondegenerate_faces())
-    except (AttributeError, Exception):
-        pass
-    try:
-        tm.remove_duplicate_faces()
-    except Exception:
-        pass
-    for fn in (trimesh.repair.fill_holes,
-               trimesh.repair.fix_normals,
-               trimesh.repair.fix_winding):
-        try:
-            fn(tm)
-        except Exception:
-            pass
-    try:
-        trimesh.repair.fix_inversion(tm)
-    except Exception:
-        pass
-    try:
-        _dedupe_opposite_or_duplicate_tris(tm)
-    except Exception:
-        pass
-    try:
-        _compact_mesh_vertex_indices(tm)
-    except Exception:
-        pass
-    return tm
+    """Aggressive mesh repair — delegates to unified mesh_repair module."""
+    return repair_trimesh(tm, fill=True, aggressive=True)
 
 
 def _extract_submesh(
@@ -957,7 +838,12 @@ class MoldBuilder:
     ) -> MoldResult:
         t0 = time.perf_counter()
         direction = np.asarray(direction, dtype=np.float64)
-        direction = direction / np.linalg.norm(direction)
+        norm = np.linalg.norm(direction)
+        if norm < 1e-12:
+            logger.warning("Zero-length direction, falling back to [0,0,1]")
+            direction = np.array([0.0, 0.0, 1.0])
+        else:
+            direction = direction / norm
         logger.info(
             "Building 2-part mold [%.2f,%.2f,%.2f] (%d faces)",
             *direction, model.face_count,
@@ -973,7 +859,7 @@ class MoldBuilder:
 
         tm_model = build_mesh.to_trimesh()
 
-        tm_model, self._scale_factor = _auto_rescale_to_mm(
+        tm_model, _scale = _auto_rescale_to_mm(
             tm_model, model.unit,
         )
 
@@ -1057,35 +943,14 @@ class MoldBuilder:
             if self.config.add_alignment_pins else []
         )
 
+        # NOTE: Pour/vent holes are NO LONGER generated here.
+        # They are handled exclusively by the GatingSystem module
+        # (浇注模块) which offers superior BFS fill-sim, air-trap
+        # detection, multi-gate support, runner layout, and manual
+        # placement.  The gating module's apply_to_mold() performs
+        # the boolean hole cutting on the shell meshes.
         pour_hole = None
-        if self.config.add_pour_hole:
-            if self.config.pour_hole_position is not None:
-                pour_hole = self._make_manual_pour_hole(
-                    np.asarray(self.config.pour_hole_position, dtype=np.float64),
-                    tm_model, direction,
-                )
-                logger.info("Pour hole: manual position %s", pour_hole.position.round(1).tolist())
-            else:
-                pour_hole = self._compute_pour_gate(tm_model, cavity, direction)
-
         vent_holes: list[HoleFeature] = []
-        if self.config.add_vent_holes:
-            if self.config.vent_hole_positions is not None and len(self.config.vent_hole_positions) > 0:
-                vent_holes = self._make_manual_vent_holes(
-                    [np.asarray(p, dtype=np.float64) for p in self.config.vent_hole_positions],
-                    tm_model, direction,
-                )
-                logger.info("Vent holes: %d manual positions", len(vent_holes))
-            else:
-                pour_pos = pour_hole.position if pour_hole else None
-                vent_holes = self._compute_vent_holes(
-                    tm_model, direction, pour_pos,
-                )
-
-        # ── Cut holes into shells ──
-        shells = self._cut_holes_in_shells(
-            shells, pour_hole, vent_holes, direction,
-        )
 
         # ── Through-bolt screw holes (pocket + tab design) ──
         screw_holes: list[ScrewHoleFeature] = []
@@ -1150,7 +1015,7 @@ class MoldBuilder:
         from moldgen.core.orientation import _auto_decimate
         build_mesh, _ = _auto_decimate(model, MOLD_MAX_FACES)
         tm_model = build_mesh.to_trimesh()
-        tm_model, self._scale_factor = _auto_rescale_to_mm(tm_model, model.unit)
+        tm_model, _scale = _auto_rescale_to_mm(tm_model, model.unit)
         tm_model = _repair_mesh(tm_model)
         tm_model = _ensure_min_faces(tm_model, min_faces=MOLD_MIN_FACES)
         cavity = self._create_cavity(tm_model)
@@ -1273,12 +1138,6 @@ class MoldBuilder:
         slab_offset = 0.01  # very thin
         verts = np.asarray(surf_tm.vertices, dtype=np.float64)
         faces = np.asarray(surf_tm.faces, dtype=np.int64)
-        n_v = len(verts)
-        n_f = len(faces)
-
-        # Top and bottom shifted surfaces
-        verts_top = verts + direction * slab_offset
-        verts_bot = verts - direction * slab_offset
 
         # For each original shell (upper/lower):
         # Build a "half-space" volume by combining the surface with a large
@@ -1462,119 +1321,19 @@ class MoldBuilder:
     def _robust_boolean_subtract(
         self, outer: trimesh.Trimesh, cavity: trimesh.Trimesh,
     ) -> trimesh.Trimesh | None:
-        """Try boolean outer-cavity with multiple engines."""
-        # Engine 1: manifold3d
-        try:
-            import manifold3d
-            m_outer = manifold3d.Manifold(manifold3d.Mesh(
-                vert_properties=np.asarray(outer.vertices, dtype=np.float32),
-                tri_verts=np.asarray(outer.faces, dtype=np.uint32),
-            ))
-            m_cavity = manifold3d.Manifold(manifold3d.Mesh(
-                vert_properties=np.asarray(cavity.vertices, dtype=np.float32),
-                tri_verts=np.asarray(cavity.faces, dtype=np.uint32),
-            ))
-            diff = m_outer - m_cavity
-            out = diff.to_mesh()
-            result = trimesh.Trimesh(
-                vertices=np.asarray(out.vert_properties[:, :3]),
-                faces=np.asarray(out.tri_verts), process=True,
-            )
-            if len(result.faces) > 10:
-                logger.info("manifold3d boolean OK: %d faces", len(result.faces))
-                return result
-        except Exception as e:
-            logger.warning("manifold3d boolean failed: %s", e)
-
-        # Engine 2: trimesh.boolean (tries available engines)
-        for engine in ("manifold", "blender", None):
-            try:
-                kw = {"engine": engine} if engine else {}
-                result = outer.difference(cavity, **kw)
-                if result is not None and len(result.faces) > 10:
-                    logger.info(
-                        "trimesh boolean (%s) OK: %d faces",
-                        engine or "default", len(result.faces),
-                    )
-                    return result
-            except Exception as e:
-                logger.debug("trimesh boolean (%s) failed: %s", engine, e)
-
-        return None
+        return boolean_subtract(outer, cavity, min_faces=10)
 
     # ═══════════════ Parting Surface Geometry ══════════════════════
 
     def _robust_boolean_union(
         self, mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh,
     ) -> trimesh.Trimesh | None:
-        """Try boolean union with multiple engines."""
-        try:
-            import manifold3d
-            m_a = manifold3d.Manifold(manifold3d.Mesh(
-                vert_properties=np.asarray(mesh_a.vertices, dtype=np.float32),
-                tri_verts=np.asarray(mesh_a.faces, dtype=np.uint32),
-            ))
-            m_b = manifold3d.Manifold(manifold3d.Mesh(
-                vert_properties=np.asarray(mesh_b.vertices, dtype=np.float32),
-                tri_verts=np.asarray(mesh_b.faces, dtype=np.uint32),
-            ))
-            result_m = m_a + m_b
-            out = result_m.to_mesh()
-            result = trimesh.Trimesh(
-                vertices=np.asarray(out.vert_properties[:, :3]),
-                faces=np.asarray(out.tri_verts), process=True,
-            )
-            if len(result.faces) > 4:
-                return result
-        except Exception as e:
-            logger.debug("manifold3d union failed: %s", e)
-
-        for engine in ("manifold", "blender", None):
-            try:
-                kw = {"engine": engine} if engine else {}
-                result = mesh_a.union(mesh_b, **kw)
-                if result is not None and len(result.faces) > 4:
-                    return result
-            except Exception:
-                pass
-
-        return None
+        return boolean_union(mesh_a, mesh_b)
 
     def _robust_boolean_intersect(
         self, mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh,
     ) -> trimesh.Trimesh | None:
-        """Try boolean intersection with multiple engines."""
-        try:
-            import manifold3d
-            m_a = manifold3d.Manifold(manifold3d.Mesh(
-                vert_properties=np.asarray(mesh_a.vertices, dtype=np.float32),
-                tri_verts=np.asarray(mesh_a.faces, dtype=np.uint32),
-            ))
-            m_b = manifold3d.Manifold(manifold3d.Mesh(
-                vert_properties=np.asarray(mesh_b.vertices, dtype=np.float32),
-                tri_verts=np.asarray(mesh_b.faces, dtype=np.uint32),
-            ))
-            result_m = m_a ^ m_b
-            out = result_m.to_mesh()
-            result = trimesh.Trimesh(
-                vertices=np.asarray(out.vert_properties[:, :3]),
-                faces=np.asarray(out.tri_verts), process=True,
-            )
-            if len(result.faces) > 4:
-                return result
-        except Exception as e:
-            logger.debug("manifold3d intersect failed: %s", e)
-
-        for engine in ("manifold", "blender", None):
-            try:
-                kw = {"engine": engine} if engine else {}
-                result = mesh_a.intersection(mesh_b, **kw)
-                if result is not None and len(result.faces) > 4:
-                    return result
-            except Exception:
-                pass
-
-        return None
+        return boolean_intersect(mesh_a, mesh_b)
 
     def _create_parting_interlock(
         self,
@@ -2326,90 +2085,6 @@ class MoldBuilder:
         logger.info("Clamp brackets: %d × %s screws", len(brackets), c.clamp_screw_size)
         return brackets
 
-    # ═══════════════ Flange Generation ════════════════════════════
-
-    def _generate_flanges(
-        self,
-        shells: list[MoldShell],
-        tm_model: trimesh.Trimesh,
-        direction: np.ndarray,
-        center: np.ndarray,
-    ) -> tuple[list[MoldShell], list[FlangeFeature]]:
-        """Add mounting flange tabs with screw holes to each shell at the parting plane."""
-        c = self.config
-        if not c.add_flanges:
-            return shells, []
-
-        up = direction / (np.linalg.norm(direction) + 1e-12)
-        arb = np.array([1.0, 0, 0]) if abs(up[0]) < 0.9 else np.array([0.0, 1, 0])
-        u_ax = np.cross(up, arb); u_ax /= (np.linalg.norm(u_ax) + 1e-12)
-        v_ax = np.cross(up, u_ax); v_ax /= (np.linalg.norm(v_ax) + 1e-12)
-
-        bounds = tm_model.bounds
-        max_ext = float(np.max(bounds[1] - bounds[0]))
-        flange_dist = max_ext / 2 + c.margin + c.wall_thickness + c.flange_width / 2
-
-        features: list[FlangeFeature] = []
-        updated_shells: list[MoldShell] = []
-
-        for sh in shells:
-            tm_shell = sh.mesh.to_trimesh()
-
-            for fi in range(c.n_flanges):
-                angle = 2 * np.pi * fi / c.n_flanges + np.pi / c.n_flanges
-                outward = np.cos(angle) * u_ax + np.sin(angle) * v_ax
-                flange_center = center + outward * flange_dist
-
-                T = np.eye(4)
-                T[:3, 0] = outward
-                T[:3, 1] = up
-                T[:3, 2] = np.cross(outward, up)
-                T[:3, 3] = flange_center
-
-                flange_box = trimesh.primitives.Box(
-                    extents=[c.flange_width, c.flange_thickness, c.flange_width * 0.8],
-                ).to_mesh()
-                flange_box.apply_transform(T)
-
-                screw_cyl = _make_cylinder(
-                    flange_center, up,
-                    radius=c.screw_hole_diameter / 2,
-                    height=c.flange_thickness * 3,
-                )
-
-                try:
-                    combined = trimesh.util.concatenate([tm_shell, flange_box])
-                    cut = self._robust_boolean_subtract(combined, screw_cyl)
-                    if cut is not None and len(cut.faces) > len(tm_shell.faces):
-                        tm_shell = _repair_mesh(cut)
-                    else:
-                        tm_shell = _repair_mesh(combined)
-                except Exception:
-                    try:
-                        tm_shell = trimesh.util.concatenate([tm_shell, flange_box])
-                    except Exception:
-                        pass
-
-                features.append(FlangeFeature(
-                    position=flange_center.copy(),
-                    normal=outward.copy(),
-                    width=c.flange_width,
-                    thickness=c.flange_thickness,
-                    screw_diameter=c.screw_hole_diameter,
-                ))
-
-            updated_shells.append(MoldShell(
-                shell_id=sh.shell_id,
-                mesh=MeshData.from_trimesh(tm_shell),
-                direction=sh.direction,
-                volume=float(tm_shell.volume) if tm_shell.is_watertight else sh.volume,
-                surface_area=float(tm_shell.area),
-                is_printable=sh.is_printable,
-                min_draft_angle=sh.min_draft_angle,
-            ))
-
-        return updated_shells, features
-
     # ═══════════════ Shell Splitting ═════════════════════════════
 
     def _split_solid_to_shells(
@@ -2764,6 +2439,7 @@ class MoldBuilder:
         - access:     prefer faces whose normal aligns with direction (easy drilling)
         - thickness:  prefer regions with larger local thickness (better flow)
         """
+        direction = direction / (np.linalg.norm(direction) + 1e-12)
         verts = tm_model.vertices
         normals = tm_model.vertex_normals
         heights = verts @ direction
@@ -2917,6 +2593,7 @@ class MoldBuilder:
           5. Combined score = fill_time + height + trap potential
           6. Select n_vents positions using farthest-point sampling
         """
+        direction = direction / (np.linalg.norm(direction) + 1e-12)
         c = self.config
         n_vents = c.n_vent_holes
         face_centers = tm_model.triangles_center
@@ -3061,7 +2738,7 @@ class MoldBuilder:
                 idx = int(np.argmax(remaining @ direction))
             else:
                 dists = np.min(
-                    [np.linalg.norm(remaining - p.position + offset, axis=1)
+                    [np.linalg.norm(remaining + offset - p.position, axis=1)
                      for p in positions],
                     axis=0,
                 )
@@ -3300,8 +2977,8 @@ class MoldBuilder:
                     if result is not None and len(result.faces) > 4:
                         tm_shell = result
                         cut_count += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Pillar hole boolean failed: %s", e)
             if cut_count > 0:
                 tm_shell = _repair_mesh(tm_shell)
                 sh.mesh = MeshData.from_trimesh(tm_shell)

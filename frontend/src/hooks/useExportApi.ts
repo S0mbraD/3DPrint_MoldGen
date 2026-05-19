@@ -19,7 +19,7 @@ export function useExportModel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
       });
-      if (!res.ok) throw new Error("Export failed");
+      if (!res.ok) throw new Error("导出模型失败");
       const blob = await res.blob();
       const ext = params.format;
       downloadBlob(blob, `model.${ext}`);
@@ -35,7 +35,7 @@ export function useExportMold() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
       });
-      if (!res.ok) throw new Error("Export failed");
+      if (!res.ok) throw new Error("导出模具失败");
       const blob = await res.blob();
       downloadBlob(blob, `mold_shells.zip`);
     },
@@ -50,7 +50,7 @@ export function useExportInsert() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
       });
-      if (!res.ok) throw new Error("Export failed");
+      if (!res.ok) throw new Error("导出插板失败");
       const blob = await res.blob();
       downloadBlob(blob, `inserts.zip`);
     },
@@ -65,7 +65,7 @@ export function useExportAll() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
       });
-      if (!res.ok) throw new Error("Export failed");
+      if (!res.ok) throw new Error("导出全部失败");
       const blob = await res.blob();
       downloadBlob(blob, `moldgen_export.zip`);
     },

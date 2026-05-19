@@ -6,6 +6,7 @@ import { Viewport } from "./components/viewer/Viewport";
 import { ChatBubble } from "./components/ai/ChatBubble";
 import { AgentWorkstation } from "./components/ai/AgentWorkstation";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
+import { ThemeApplier } from "./components/ThemeApplier";
 import { ToastContainer } from "./components/ui/ToastContainer";
 import { ConsolePanel } from "./components/ui/ConsolePanel";
 import { useSystemInfo } from "./hooks/useSystemInfo";
@@ -16,6 +17,7 @@ import { WorkflowPipeline } from "./components/layout/WorkflowPipeline";
 import { StepToolbar as StepToolbarOverlay } from "./components/layout/StepToolbar";
 import { PanelLeftOpen, PanelRightOpen, Settings, Terminal } from "lucide-react";
 import { useAppStore } from "./stores/appStore";
+import { useSettingsStore } from "./stores/settingsStore";
 import { toastSuccess, toastWarning, toastError } from "./stores/toastStore";
 import { flog } from "./stores/logStore";
 
@@ -63,6 +65,7 @@ export default function App() {
     useAppStore();
   const consoleOpen = useAppStore((s) => s.consoleOpen);
   const toggleConsole = useAppStore((s) => s.toggleConsole);
+  const uiScale = useSettingsStore((s) => s.fontSize) / 13;
   const { data: sysInfo } = useSystemInfo();
   const { status: backendStatus } = useBackendStatus();
   useKeyboardShortcuts();
@@ -113,7 +116,9 @@ export default function App() {
     <ErrorBoundary>
       <div className="h-screen flex flex-col bg-bg-primary">
         {/* Title Bar */}
-        <div className="flex items-center h-8 px-3 bg-bg-primary border-b border-border select-none shrink-0" data-tauri-drag-region>
+        <div className="flex items-center h-8 px-3 bg-bg-primary border-b border-border select-none shrink-0" data-tauri-drag-region
+          style={{ zoom: uiScale !== 1 ? uiScale : undefined }}
+        >
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1.5">
               <div className="w-5 h-5 rounded bg-accent/15 flex items-center justify-center">
@@ -200,6 +205,7 @@ export default function App() {
 
         {/* Settings Dialog */}
         <SettingsDialog />
+        <ThemeApplier />
 
         {/* Toast Notifications */}
         <ToastContainer />

@@ -229,6 +229,8 @@ class ThicknessAnalysisRequest(BaseModel):
 @router.post("/{model_id}/thickness")
 async def analyze_thickness(model_id: str, req: ThicknessAnalysisRequest):
     """nTopology-style wall thickness analysis via ray-based sampling.
+
+    .. deprecated:: Use ``POST /api/v1/analysis/{model_id}/thickness`` instead.
     
     Shoots opposing rays from sampled surface points to measure local
     wall thickness.  Returns per-sample thickness values, statistics,
@@ -346,7 +348,10 @@ class CurvatureAnalysisRequest(BaseModel):
 
 @router.post("/{model_id}/curvature")
 async def analyze_curvature(model_id: str, req: CurvatureAnalysisRequest):
-    """Surface curvature analysis for identifying feature regions."""
+    """Surface curvature analysis for identifying feature regions.
+
+    .. deprecated:: Use ``POST /api/v1/analysis/{model_id}/curvature`` instead.
+    """
     import asyncio
     import numpy as np
 

@@ -227,13 +227,11 @@ class MoldRequest(BaseModel):
     parting_depth: float = 3.0
     parting_pitch: float = 10.0
     add_alignment_pins: bool = True
-    add_pour_hole: bool = True
-    pour_hole_diameter: float = 15.0
-    pour_hole_position: list[float] | None = None  # manual [x,y,z] or null=auto
-    add_vent_holes: bool = True
-    vent_hole_diameter: float = 3.0
-    n_vent_holes: int = 4
-    vent_hole_positions: list[list[float]] | None = None  # manual [[x,y,z],...] or null=auto
+    # NOTE: pour/vent holes are now handled by the gating module
+    # (POST /simulation/gating/design). These fields are kept for
+    # backward compatibility but are ignored during mold generation.
+    add_pour_hole: bool = False
+    add_vent_holes: bool = False
     # Screw fastening (pocket + tab)
     add_screw_holes: bool = False
     screw_size: str = "M4"
@@ -300,13 +298,8 @@ async def generate_mold(model_id: str, req: MoldRequest | None = None):
         parting_depth=req.parting_depth,
         parting_pitch=req.parting_pitch,
         add_alignment_pins=req.add_alignment_pins,
-        add_pour_hole=req.add_pour_hole,
-        pour_hole_diameter=req.pour_hole_diameter,
-        pour_hole_position=req.pour_hole_position,
-        add_vent_holes=req.add_vent_holes,
-        vent_hole_diameter=req.vent_hole_diameter,
-        n_vent_holes=req.n_vent_holes,
-        vent_hole_positions=req.vent_hole_positions,
+        add_pour_hole=False,
+        add_vent_holes=False,
         add_screw_holes=req.add_screw_holes,
         screw_size=req.screw_size,
         n_screws=req.n_screws,
@@ -317,6 +310,8 @@ async def generate_mold(model_id: str, req: MoldRequest | None = None):
         clamp_thickness=req.clamp_thickness,
         clamp_screw_size=req.clamp_screw_size,
         n_clamp_screws=req.n_clamp_screws,
+        mold_material=req.mold_material,
+        surface_texture=req.surface_texture,
     )
     builder = MoldBuilder(config)
 
@@ -335,7 +330,13 @@ async def generate_mold(model_id: str, req: MoldRequest | None = None):
         mold_id, rd.get("n_shells", 0), rd.get("cavity_volume", 0), elapsed,
     )
 
-    return {"model_id": model_id, "mold_id": mold_id, "result": rd}
+    return {
+        "model_id": model_id,
+        "mold_id": mold_id,
+        "result": rd,
+        "mold_material": config.mold_material,
+        "surface_texture": config.surface_texture,
+    }
 
 
 # ── Pour / Vent Preview ──────────────────────────────────────────────
@@ -639,3 +640,182 @@ async def list_molds():
             "cavity_volume": round(result.cavity_volume, 2),
         }
     return {"molds": molds}
+
+
+# ── Skin Mold Generation (蒙皮模具) ─────────────────────────────────
+
+from moldgen.core.skin_mold import SkinMoldConfig, SkinMoldGenerator, SkinMoldResult
+
+_skin_mold_results: dict[str, SkinMoldResult] = {}
+
+
+class SkinMoldRequest(BaseModel):
+    direction: list[float] | None = None
+    # Skin layer
+    skin_thickness: float = 3.0
+    variable_thickness: bool = False
+    min_skin_thickness: float = 2.0
+    max_skin_thickness: float = 5.0
+    curvature_influence: float = 0.5
+    # Core
+    core_resolution: int = 64
+    core_smoothing: int = 2
+    core_clearance: float = 0.3
+    core_shell_thickness: float = 0.0
+    core_drain_holes: bool = False
+    core_drain_diameter: float = 5.0
+    core_drain_count: int = 2
+    core_max_faces: int = 120_000
+    core_morphological_closing: int = 2
+    # Support pegs
+    add_support_pegs: bool = True
+    peg_count: int = 3
+    peg_diameter: float = 4.0
+    peg_height: float = 6.0
+    # Registration
+    registration_type: str = "pin"
+    registration_count: int = 4
+    registration_diameter: float = 5.0
+    registration_height: float = 8.0
+    registration_tolerance: float = 0.2
+    # Outer mold
+    mold_wall_thickness: float = 5.0
+    mold_clearance: float = 0.15
+    mold_shell_type: str = "box"
+    mold_margin: float = 10.0
+    parting_style: str = "flat"
+    parting_surface_type: str = "flat"
+    add_alignment_pins: bool = True
+    add_screw_holes: bool = False
+    screw_size: str = "M4"
+    n_screws: int = 4
+    # Shrinkage
+    shrinkage_compensation: float = 0.0
+
+
+@router.post("/{model_id}/mold/generate-skin")
+async def generate_skin_mold(model_id: str, req: SkinMoldRequest | None = None):
+    """生成蒙皮模具：模芯 + 外模 + 定位特征"""
+    import time as _time
+
+    t0 = _time.perf_counter()
+    mesh = _get_mesh(model_id)
+    req = req or SkinMoldRequest()
+
+    import numpy as np
+
+    direction = (
+        np.array(req.direction, dtype=np.float64)
+        if req.direction
+        else _orientation_results.get(model_id, None)
+    )
+    if direction is not None and hasattr(direction, "best_direction"):
+        direction = np.array(direction.best_direction, dtype=np.float64)
+    if direction is None:
+        direction = np.array([0.0, 0.0, 1.0])
+    direction = direction / (np.linalg.norm(direction) + 1e-12)
+
+    build_mesh = mesh
+    if req.shrinkage_compensation > 0:
+        scale = 1.0 + req.shrinkage_compensation / 100.0
+        scaled_verts = mesh.vertices * scale
+        build_mesh = MeshData(
+            vertices=scaled_verts,
+            faces=mesh.faces.copy(),
+            normals=mesh.normals.copy() if mesh.normals is not None else None,
+            unit=mesh.unit,
+        )
+
+    cfg = SkinMoldConfig(
+        skin_thickness=req.skin_thickness,
+        variable_thickness=req.variable_thickness,
+        min_skin_thickness=req.min_skin_thickness,
+        max_skin_thickness=req.max_skin_thickness,
+        curvature_influence=req.curvature_influence,
+        core_resolution=req.core_resolution,
+        core_smoothing=req.core_smoothing,
+        core_clearance=req.core_clearance,
+        core_shell_thickness=req.core_shell_thickness,
+        core_drain_holes=req.core_drain_holes,
+        core_drain_diameter=req.core_drain_diameter,
+        core_drain_count=req.core_drain_count,
+        core_max_faces=req.core_max_faces,
+        core_morphological_closing=req.core_morphological_closing,
+        add_support_pegs=req.add_support_pegs,
+        peg_count=req.peg_count,
+        peg_diameter=req.peg_diameter,
+        peg_height=req.peg_height,
+        registration_type=req.registration_type,
+        registration_count=req.registration_count,
+        registration_diameter=req.registration_diameter,
+        registration_height=req.registration_height,
+        registration_tolerance=req.registration_tolerance,
+        mold_wall_thickness=req.mold_wall_thickness,
+        mold_clearance=req.mold_clearance,
+        mold_shell_type=req.mold_shell_type,
+        mold_margin=req.mold_margin,
+        parting_style=req.parting_style,
+        parting_surface_type=req.parting_surface_type,
+        add_alignment_pins=req.add_alignment_pins,
+        add_screw_holes=req.add_screw_holes,
+        screw_size=req.screw_size,
+        n_screws=req.n_screws,
+    )
+
+    generator = SkinMoldGenerator(cfg)
+
+    try:
+        result = await asyncio.to_thread(generator.generate, build_mesh, direction)
+    except Exception as e:
+        logger.exception("Skin mold generation failed")
+        raise HTTPException(500, f"Skin mold generation error: {e}") from e
+
+    skin_id = str(uuid4())[:8]
+    _skin_mold_results[skin_id] = result
+    _mold_results[skin_id] = result.mold_result
+
+    elapsed = _time.perf_counter() - t0
+    logger.info("Skin mold generated in %.2fs: id=%s", elapsed, skin_id)
+
+    return {
+        "model_id": model_id,
+        "skin_mold_id": skin_id,
+        "mold_id": skin_id,
+        "result": result.to_dict(),
+        "elapsed_s": round(elapsed, 2),
+    }
+
+
+@router.get("/skin/{skin_id}")
+async def get_skin_mold_result(skin_id: str):
+    """获取蒙皮模具结果"""
+    result = _skin_mold_results.get(skin_id)
+    if result is None:
+        raise HTTPException(404, f"Skin mold {skin_id} not found")
+    return {"skin_mold_id": skin_id, "result": result.to_dict()}
+
+
+@router.get("/skin/{skin_id}/core.glb")
+async def get_skin_core_glb(skin_id: str):
+    """下载模芯 GLB 模型"""
+    result = _skin_mold_results.get(skin_id)
+    if result is None:
+        raise HTTPException(404, f"Skin mold {skin_id} not found")
+
+    glb = result.core_mesh.to_glb()
+    return Response(content=glb, media_type="model/gltf-binary")
+
+
+@router.get("/skin/{skin_id}/thickness-map")
+async def get_skin_thickness_map(skin_id: str):
+    """获取蒙皮厚度可视化数据（per-vertex 归一化厚度）"""
+    result = _skin_mold_results.get(skin_id)
+    if result is None:
+        raise HTTPException(404, f"Skin mold {skin_id} not found")
+
+    return {
+        "skin_mold_id": skin_id,
+        "has_map": result.thickness_map is not None,
+        "thickness_map": result.thickness_map,
+        "stats": result.skin_thickness_stats,
+    }

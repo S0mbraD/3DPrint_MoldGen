@@ -69,6 +69,9 @@ export const useModelStore = create<ModelState>((set) => ({
       glbRevision: 0,
     });
     import("./appStore").then(({ useAppStore }) => useAppStore.getState().clearModelInfo());
+    import("./moldStore").then(({ useMoldStore }) => useMoldStore.getState().clearMold());
+    import("./simStore").then(({ useSimStore }) => useSimStore.getState().clearSim());
+    import("./insertStore").then(({ useInsertStore }) => useInsertStore.getState().clearInserts());
   },
 }));
 

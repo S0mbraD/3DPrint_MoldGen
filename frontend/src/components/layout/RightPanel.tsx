@@ -12,6 +12,7 @@ import { useModelStore } from "../../stores/modelStore";
 import { useMoldStore } from "../../stores/moldStore";
 import { useInsertStore } from "../../stores/insertStore";
 import { useSimStore } from "../../stores/simStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { SceneManager } from "./SceneManager";
 import { cn } from "../../lib/utils";
 
@@ -101,6 +102,17 @@ function PropRow({
   );
 }
 
+const BAR_COLORS: Record<string, string> = {
+  accent: "bg-accent",
+  warning: "bg-warning",
+  error: "bg-error",
+  success: "bg-success",
+  blue: "bg-blue-500",
+  green: "bg-green-500",
+  yellow: "bg-yellow-500",
+  red: "bg-red-500",
+};
+
 function StatBar({
   label,
   value,
@@ -113,6 +125,7 @@ function StatBar({
   color?: string;
 }) {
   const pct = max > 0 ? Math.min(value / max, 1) * 100 : 0;
+  const bgClass = BAR_COLORS[color] ?? "bg-accent";
   return (
     <div className="px-2 py-[3px]">
       <div className="flex justify-between text-[12px] mb-0.5">
@@ -121,7 +134,7 @@ function StatBar({
       </div>
       <div className="h-[3px] rounded-full bg-bg-hover overflow-hidden">
         <motion.div
-          className={`h-full rounded-full bg-${color}`}
+          className={`h-full rounded-full ${bgClass}`}
           initial={{ width: 0 }}
           animate={{ width: `${pct}%` }}
           transition={{ duration: 0.4, ease: "easeOut" }}
@@ -470,16 +483,19 @@ function StatsTab() {
 export function RightPanel() {
   const { rightPanelOpen, toggleRightPanel } = useAppStore();
   const [activeTab, setActiveTab] = useState<RightTab>("scene");
+  const scale = useSettingsStore((s) => s.fontSize) / 13;
+  const panelWidth = Math.round(280 * scale);
 
   return (
     <AnimatePresence initial={false}>
       {rightPanelOpen && (
         <motion.div
           initial={{ width: 0, opacity: 0 }}
-          animate={{ width: 280, opacity: 1 }}
+          animate={{ width: panelWidth, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={{ type: "spring", stiffness: 300, damping: 30 }}
           className="h-full bg-bg-panel border-l border-border overflow-hidden flex flex-col"
+          style={{ zoom: scale !== 1 ? scale : undefined }}
         >
           {/* Tab bar */}
           <div className="flex items-center h-8 border-b border-border shrink-0">

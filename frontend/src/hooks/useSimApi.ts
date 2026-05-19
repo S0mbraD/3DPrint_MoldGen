@@ -31,12 +31,24 @@ export function useGatingDesign() {
       material,
       gateDiameter,
       nVents,
+      nGates,
+      runnerType,
+      runnerWidth,
+      ventWidth,
+      gatePosition,
+      ventPositions,
     }: {
       modelId: string;
       moldId: string;
       material?: string;
       gateDiameter?: number;
       nVents?: number;
+      nGates?: number;
+      runnerType?: string;
+      runnerWidth?: number;
+      ventWidth?: number;
+      gatePosition?: number[] | null;
+      ventPositions?: number[][] | null;
     }) => {
       store.setDesigningGating(true);
       const body: Record<string, unknown> = {
@@ -46,6 +58,13 @@ export function useGatingDesign() {
       };
       if (gateDiameter != null) body.gate_diameter = gateDiameter;
       if (nVents != null) body.n_vents = nVents;
+      if (nGates != null) body.n_gates = nGates;
+      if (runnerType != null) body.runner_type = runnerType;
+      if (runnerWidth != null) body.runner_width = runnerWidth;
+      if (ventWidth != null) body.vent_width = ventWidth;
+      if (gatePosition) body.gate_position = gatePosition;
+      if (ventPositions && ventPositions.length > 0) body.vent_positions = ventPositions;
+
       const resp = await fetch(`${API}/gating/design`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -124,9 +143,18 @@ export function useRunOptimization() {
         }),
       });
       if (!resp.ok) throw new Error(await resp.text());
-      return (await resp.json()).result as OptimizationResultInfo;
+      const data = await resp.json();
+      return {
+        result: data.result as OptimizationResultInfo,
+        optimizedGatingId: data.optimized_gating_id as string | null,
+        optimizedSimId: data.optimized_sim_id as string | null,
+      };
     },
-    onSuccess: (result) => store.setOptimizationResult(result),
+    onSuccess: ({ result, optimizedGatingId, optimizedSimId }) => {
+      store.setOptimizationResult(result);
+      if (optimizedGatingId) store.setGatingId(optimizedGatingId);
+      if (optimizedSimId) store.setSimId(optimizedSimId);
+    },
     onError: () => store.setOptimizing(false),
   });
 }

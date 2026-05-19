@@ -12,19 +12,26 @@ import { useSimStore } from "../../stores/simStore";
 import { useAppStore, type WorkflowStep } from "../../stores/appStore";
 import {
   useViewportStore, GRID_CONFIGS, DISPLAY_MODE_LABELS,
-  type DisplayMode, type GridUnit,
+  type DisplayMode, type GridUnit, type MeasureTool,
 } from "../../stores/viewportStore";
 import { ModelViewer } from "./ModelViewer";
 import { MoldShellViewer } from "./MoldShellViewer";
 import { InsertPlateViewer } from "./InsertPlateViewer";
 import { HoleBrushPainter } from "./HoleBrushPainter";
-import { SimulationViewer, StreamlineViewer, DefectMarkers, SurfaceOverlayViewer, FEAViewer } from "./SimulationViewer";
+import {
+  SimulationViewer, StreamlineViewer, DefectMarkers, SurfaceOverlayViewer,
+  FEAViewer, VelocityArrows, ColorLegend, simPaletteCssGradient,
+  FlowParticles, FlowFrontGlow,
+} from "./SimulationViewer";
 import { GatingViewer } from "./GatingViewer";
+import { GatingPlacer } from "./GatingPlacer";
+import { MeasureOverlay } from "./MeasureOverlay";
 import { SimFloatingBar } from "./SimFloatingBar";
 import { UndercutOverlay } from "./UndercutOverlay";
 import { useInsertStore } from "../../stores/insertStore";
 import { useRepairModel, useSimplifyModel, useTransformModel } from "../../hooks/useModelApi";
 import { toastSuccess, toastError } from "../../stores/toastStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "../../lib/utils";
 import {
@@ -55,12 +62,18 @@ export function Viewport() {
 
   const gridUnit = useViewportStore((s) => s.gridUnit);
   const gridConfig = GRID_CONFIGS[gridUnit];
+  const showGrid = useSettingsStore((s) => s.showGrid);
+  const showAxes = useSettingsStore((s) => s.showAxes);
+  const showGizmo = useSettingsStore((s) => s.showGizmo);
+  const vpAutoRotate = useSettingsStore((s) => s.autoRotate);
+  const vpAntiAlias = useSettingsStore((s) => s.antiAlias);
+  const vpScale = useSettingsStore((s) => s.fontSize) / 13;
 
   return (
     <div className="flex-1 relative">
       <Canvas
         camera={{ position: [200, 150, 200], fov: 50, near: 0.1, far: 10000 }}
-        gl={{ antialias: true }}
+        gl={{ antialias: vpAntiAlias }}
         className="!absolute inset-0"
       >
         <color attach="background" args={["#13131a"]} />
@@ -77,7 +90,7 @@ export function Viewport() {
             background={false}
             environmentIntensity={0.95}
           />
-          <Grid
+          {showGrid && <Grid
             args={[1000, 1000]}
             cellSize={gridConfig.cellSize}
             cellThickness={0.5}
@@ -87,7 +100,8 @@ export function Viewport() {
             sectionColor="#2a2a3e"
             fadeDistance={gridConfig.fadeDistance}
             infiniteGrid
-          />
+          />}
+          {showAxes && <axesHelper args={[100]} />}
 
           {hasModel ? <ModelViewer /> : <PlaceholderModel />}
 
@@ -126,8 +140,13 @@ export function Viewport() {
           )}
 
           {hasGating && <GatingViewer />}
+          <GatingPlacer />
+          <MeasureOverlay />
           {hasVisualization && <SimulationViewer />}
+          {hasVisualization && <VelocityArrows />}
           {hasVisualization && <StreamlineViewer />}
+          {hasVisualization && <FlowParticles />}
+          {hasVisualization && <FlowFrontGlow />}
           {hasVisualization && <DefectMarkers />}
           {hasSurfaceMap && <SurfaceOverlayViewer />}
           {hasFEA && <FEAViewer />}
@@ -139,32 +158,32 @@ export function Viewport() {
           dampingFactor={0.1}
           minDistance={1}
           maxDistance={5000}
+          autoRotate={vpAutoRotate}
+          autoRotateSpeed={1}
         />
 
         <CameraAutoFit />
 
-        <GizmoHelper alignment="bottom-right" margin={[60, 60]}>
-          <GizmoViewport labelColor="white" axisHeadScale={0.8} />
-        </GizmoHelper>
+        {showGizmo && (
+          <GizmoHelper alignment="bottom-right" margin={[60, 60]}>
+            <GizmoViewport labelColor="white" axisHeadScale={0.8} />
+          </GizmoHelper>
+        )}
       </Canvas>
 
-      {/* Floating edit toolbar (left) */}
-      <FloatingEditToolbar />
-
-      {/* Display mode switcher (top-left, below hints) */}
-      <DisplayModeSwitcher />
-
-      {/* Scale unit switcher (top-right) */}
-      <ScaleUnitSwitcher />
-
-      {/* Viewport hints & step info */}
-      <ViewportOverlay />
-
-      {/* Heatmap legend */}
-      {hasVisualization && heatmapVisible && <HeatmapLegend />}
-
-      {/* Floating simulation controls bar */}
-      <SimFloatingBar />
+      {/* Overlay UI — scales with user font-size setting */}
+      <div className="absolute inset-0 pointer-events-none [&>*]:pointer-events-auto"
+        style={{ zoom: vpScale !== 1 ? vpScale : undefined }}
+      >
+        <FloatingEditToolbar />
+        <DisplayModeSwitcher />
+        <MeasureToolBar />
+        <ScaleUnitSwitcher />
+        <ViewportOverlay />
+        {hasVisualization && heatmapVisible && <HeatmapLegend />}
+        {hasVisualization && <ColorLegend />}
+        <SimFloatingBar />
+      </div>
     </div>
   );
 }
@@ -392,6 +411,62 @@ function DisplayModeSwitcher() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════ */
+/*  Measure Tool Bar (top-left, below display mode)                   */
+/* ═══════════════════════════════════════════════════════════════════ */
+
+const MEASURE_TOOLS: { id: MeasureTool; label: string; icon: string }[] = [
+  { id: "distance", label: "距离", icon: "📏" },
+  { id: "angle", label: "角度", icon: "📐" },
+  { id: "area", label: "面积", icon: "⬡" },
+];
+
+function MeasureToolBar() {
+  const measureTool = useViewportStore((s) => s.measureTool);
+  const setMeasureTool = useViewportStore((s) => s.setMeasureTool);
+  const clearMeasure = useViewportStore((s) => s.clearMeasure);
+  const measureResult = useViewportStore((s) => s.measureResult);
+
+  return (
+    <div className="absolute top-16 left-3 z-10 flex flex-col gap-1">
+      <div className="flex items-center gap-0.5 bg-bg-secondary/80 backdrop-blur-sm border border-border/50 rounded px-1 py-0.5">
+        <Ruler size={10} className="text-text-muted mr-1" />
+        {MEASURE_TOOLS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => {
+              if (measureTool === t.id) clearMeasure();
+              else setMeasureTool(t.id);
+            }}
+            className={cn(
+              "px-1.5 py-0.5 rounded text-[11px] transition-colors",
+              measureTool === t.id
+                ? "bg-accent text-white"
+                : "text-text-muted hover:bg-bg-hover hover:text-text-primary",
+            )}
+            title={t.label}
+          >
+            {t.icon} {t.label}
+          </button>
+        ))}
+        {measureTool !== "none" && (
+          <button
+            onClick={clearMeasure}
+            className="ml-1 text-[11px] text-danger hover:underline"
+          >
+            清除
+          </button>
+        )}
+      </div>
+      {measureResult && (
+        <div className="bg-black/70 text-yellow-300 text-[12px] font-mono px-2 py-1 rounded shadow-lg">
+          {measureResult}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════ */
 /*  Scale Unit Switcher (top-right)                                   */
 /* ═══════════════════════════════════════════════════════════════════ */
 
@@ -468,6 +543,7 @@ function HeatmapLegend() {
   const field = useSimStore((s) => s.heatmapField);
   const visData = useSimStore((s) => s.visualizationData);
   const progress = useSimStore((s) => s.animationProgress);
+  const colorPalette = useSimStore((s) => s.colorPalette);
 
   const FIELD_LABELS: Record<string, { label: string; unit: string }> = {
     fill_time: { label: "充填时间", unit: "s" },
@@ -480,6 +556,7 @@ function HeatmapLegend() {
   };
 
   const info = FIELD_LABELS[field] ?? { label: field, unit: "" };
+  const barGradient = useMemo(() => simPaletteCssGradient(colorPalette, false), [colorPalette]);
 
   const maxVal = useMemo(() => {
     if (!visData) return 1;
@@ -506,10 +583,8 @@ function HeatmapLegend() {
       <div className="bg-bg-secondary/90 backdrop-blur-sm border border-border/60 rounded-lg px-3 py-2 text-[12px] min-w-[140px]">
         <div className="font-semibold text-text-secondary mb-1.5">{info.label}</div>
         <div
-          className="h-3 rounded-sm mb-1"
-          style={{
-            background: "linear-gradient(90deg, #0d0d80, #0080cc, #1acc4d, #f2d90b, #e62619)",
-          }}
+          className="h-3 rounded-sm mb-1 border border-border/30"
+          style={{ background: barGradient }}
         />
         <div className="flex justify-between text-text-muted">
           <span>{minVal.toFixed(field === "cure_progress" ? 0 : 1)}</span>

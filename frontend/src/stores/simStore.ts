@@ -76,6 +76,10 @@ export interface SimResultInfo {
   has_visualization: boolean;
   voxel_resolution?: number[];
   analysis?: AnalysisReportInfo;
+  /** Last-known solver residual per iteration, when provided by the backend */
+  convergence_history?: { iteration: number; residual: number }[];
+  /** Characteristic Reynolds number for the flow analysis when available */
+  reynolds_number?: number;
 }
 
 export interface OptimizationResultInfo {
@@ -111,6 +115,12 @@ export interface VisualizationData {
   max_thickness: number;
   voxel_pitch: number;
   defect_positions: DefectPosition[];
+  /** Sparse velocity direction samples for arrow glyphs (pos + dir, e.g. velocity vector) */
+  velocity_vectors?: { pos: number[]; dir: number[] }[];
+  /** Polylines from backend RK2 integration (each path: sequence of [x,y,z]) */
+  streamline_paths?: number[][][];
+  /** Precomputed particle trajectories */
+  particle_paths?: { path: number[][]; times: number[]; speed: number }[];
 }
 
 export interface CrossSectionData {
@@ -132,6 +142,8 @@ export type HeatmapField =
   | "cure_progress"
   | "thickness";
 
+export type SimColorPalette = "jet" | "coolwarm" | "viridis" | "turbo" | "rainbow";
+
 interface SimState {
   selectedMaterial: string;
   gatingId: string | null;
@@ -151,11 +163,21 @@ interface SimState {
   heatmapVisible: boolean;
   heatmapOpacity: number;
   pointSize: number;
+  colorPalette: SimColorPalette;
+  showVelocityArrows: boolean;
+  showColorLegend: boolean;
 
   // Streamline & particle controls
   streamlinesVisible: boolean;
   streamlineCount: number;
   particleDensity: number; // 1 = normal, 2 = 2x, etc.
+
+  showFlowParticles: boolean;
+  showFlowFront: boolean;
+  showAnimatedStreamlines: boolean;
+  flowParticleCount: number;
+  flowParticleSpeed: number;
+  flowParticleSize: number;
 
   // Animation state
   animationPlaying: boolean;
@@ -199,10 +221,20 @@ interface SimState {
   setHeatmapVisible: (v: boolean) => void;
   setHeatmapOpacity: (v: number) => void;
   setPointSize: (v: number) => void;
+  setColorPalette: (p: SimColorPalette) => void;
+  setShowVelocityArrows: (v: boolean) => void;
+  setShowColorLegend: (v: boolean) => void;
 
   setStreamlinesVisible: (v: boolean) => void;
   setStreamlineCount: (v: number) => void;
   setParticleDensity: (v: number) => void;
+
+  setShowFlowParticles: (v: boolean) => void;
+  setShowFlowFront: (v: boolean) => void;
+  setShowAnimatedStreamlines: (v: boolean) => void;
+  setFlowParticleCount: (v: number) => void;
+  setFlowParticleSpeed: (v: number) => void;
+  setFlowParticleSize: (v: number) => void;
 
   setAnimationPlaying: (v: boolean) => void;
   setAnimationProgress: (v: number) => void;
@@ -226,6 +258,20 @@ interface SimState {
 
   setAnalysisExpanded: (v: boolean) => void;
 
+  // Interactive gating placement
+  placementMode: "none" | "gate" | "vent";
+  manualGatePos: [number, number, number] | null;
+  manualVentPositions: [number, number, number][];
+  setPlacementMode: (mode: "none" | "gate" | "vent") => void;
+  setManualGatePos: (pos: [number, number, number] | null) => void;
+  addManualVentPos: (pos: [number, number, number]) => void;
+  removeManualVentPos: (index: number) => void;
+  updateManualVentPos: (index: number, pos: [number, number, number]) => void;
+  clearManualPositions: () => void;
+
+  setGatingId: (id: string) => void;
+  setSimId: (id: string) => void;
+
   clearSim: () => void;
 }
 
@@ -240,16 +286,30 @@ export const useSimStore = create<SimState>((set) => ({
   isSimulating: false,
   isOptimizing: false,
 
+  placementMode: "none",
+  manualGatePos: null,
+  manualVentPositions: [],
+
   visualizationData: null,
   isLoadingVisualization: false,
   heatmapField: "fill_time",
   heatmapVisible: true,
   heatmapOpacity: 0.85,
   pointSize: 4.5,
+  colorPalette: "jet",
+  showVelocityArrows: false,
+  showColorLegend: true,
 
   streamlinesVisible: true,
   streamlineCount: 50,
   particleDensity: 2,
+
+  showFlowParticles: true,
+  showFlowFront: true,
+  showAnimatedStreamlines: true,
+  flowParticleCount: 200,
+  flowParticleSpeed: 1.0,
+  flowParticleSize: 2.0,
 
   animationPlaying: false,
   animationProgress: 1.0,
@@ -278,6 +338,8 @@ export const useSimStore = create<SimState>((set) => ({
   setGatingResult: (id, r) => set({ gatingId: id, gatingResult: r, isDesigningGating: false }),
   setSimResult: (id, r) => set({ simId: id, simResult: r, isSimulating: false }),
   setOptimizationResult: (r) => set({ optimizationResult: r, isOptimizing: false }),
+  setGatingId: (id) => set({ gatingId: id }),
+  setSimId: (id) => set({ simId: id }),
   setDesigningGating: (v) => set({ isDesigningGating: v }),
   setSimulating: (v) => set({ isSimulating: v }),
   setOptimizing: (v) => set({ isOptimizing: v }),
@@ -288,14 +350,28 @@ export const useSimStore = create<SimState>((set) => ({
   setHeatmapVisible: (v) => set({ heatmapVisible: v }),
   setHeatmapOpacity: (v) => set({ heatmapOpacity: v }),
   setPointSize: (v) => set({ pointSize: v }),
+  setColorPalette: (p) => set({ colorPalette: p }),
+  setShowVelocityArrows: (v) => set({ showVelocityArrows: v }),
+  setShowColorLegend: (v) => set({ showColorLegend: v }),
 
   setStreamlinesVisible: (v) => set({ streamlinesVisible: v }),
   setStreamlineCount: (v) => set({ streamlineCount: v }),
   setParticleDensity: (v) => set({ particleDensity: v }),
 
+  setShowFlowParticles: (v) => set({ showFlowParticles: v }),
+  setShowFlowFront: (v) => set({ showFlowFront: v }),
+  setShowAnimatedStreamlines: (v) => set({ showAnimatedStreamlines: v }),
+  setFlowParticleCount: (v) =>
+    set({ flowParticleCount: Math.max(1, Math.min(300, Math.round(v))) }),
+  setFlowParticleSpeed: (v) =>
+    set({ flowParticleSpeed: Math.min(3.0, Math.max(0.5, v)) }),
+  setFlowParticleSize: (v) =>
+    set({ flowParticleSize: Math.min(8.0, Math.max(0.5, v)) }),
+
   setAnimationPlaying: (v) => set({ animationPlaying: v }),
   setAnimationProgress: (v) => set({ animationProgress: v }),
-  setAnimationSpeed: (v) => set({ animationSpeed: v }),
+  setAnimationSpeed: (v) =>
+    set({ animationSpeed: Math.min(3.0, Math.max(0.5, v)) }),
   setAnimationLoop: (v) => set({ animationLoop: v }),
 
   setCrossSectionData: (data) => set({ crossSectionData: data }),
@@ -315,6 +391,23 @@ export const useSimStore = create<SimState>((set) => ({
 
   setAnalysisExpanded: (v) => set({ analysisExpanded: v }),
 
+  setPlacementMode: (mode) => set({ placementMode: mode }),
+  setManualGatePos: (pos) => set({ manualGatePos: pos }),
+  addManualVentPos: (pos) => set((s) => ({
+    manualVentPositions: [...s.manualVentPositions, pos],
+  })),
+  removeManualVentPos: (index) => set((s) => ({
+    manualVentPositions: s.manualVentPositions.filter((_, i) => i !== index),
+  })),
+  updateManualVentPos: (index, pos) => set((s) => {
+    const arr = [...s.manualVentPositions];
+    arr[index] = pos;
+    return { manualVentPositions: arr };
+  }),
+  clearManualPositions: () => set({
+    placementMode: "none", manualGatePos: null, manualVentPositions: [],
+  }),
+
   clearSim: () =>
     set({
       gatingId: null, gatingResult: null,
@@ -323,8 +416,23 @@ export const useSimStore = create<SimState>((set) => ({
       visualizationData: null,
       crossSectionData: null,
       animationPlaying: false,
+      placementMode: "none", manualGatePos: null, manualVentPositions: [],
       animationProgress: 1.0,
+      colorPalette: "jet",
+      showVelocityArrows: false,
+      showColorLegend: true,
+      showFlowParticles: true,
+      showFlowFront: true,
+      showAnimatedStreamlines: true,
+      flowParticleCount: 200,
+      flowParticleSpeed: 1.0,
+      flowParticleSize: 2.0,
       surfaceMapData: null,
+      surfaceMapLoading: false,
+      isDesigningGating: false,
+      isSimulating: false,
+      isOptimizing: false,
       feaId: null, feaResult: null, feaVisualizationData: null,
+      feaRunning: false,
     }),
 }));
